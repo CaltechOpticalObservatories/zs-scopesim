@@ -5,15 +5,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 # Basic information about your project.
-name = "your-package-name" 
+name = "zs-scopesim" 
 version = "0.1.0" 
-dependencies = []
+dependencies = [
+  "matplotlib",
+  "scopesim",
+  "scopesim_templates",
+  "astropy"
+]
 requires-python = ">=3.7"
 authors = [
-  {name = "Your Name", email = "your.email@example.com"}
+  {name = "Michael Langmayr", email = "michael.langmayr@gmail.com"}
 ]
 maintainers = [
-  {name = "Your Name", email = "your.email@example.com"}
+  {name = "Michael Langmayr", email = "michael.langmayr@gmail.com"}
 ]
 description = "A brief description of your package"
 readme = "README.md" 
@@ -27,9 +32,9 @@ classifiers = [
 # Various URLs related to your project. These links are displayed on PyPI.
 Homepage = "https://example.com" 
 Documentation = "https://readthedocs.org"
-Repository = "https://github.com/yourusername/your-repo"
-"Bug Tracker" = "https://github.com/yourusername/your-repo/issues" 
-Changelog = "https://github.com/yourusername/your-repo/blob/master/CHANGELOG.md"
+Repository = "https://github.com/CaltechOpticalObservatories/zs-scopesim"
+"Bug Tracker" = "https://github.com/CaltechOpticalObservatories/zs-scopesim/issues" 
+Changelog = "https://github.com/CaltechOpticalObservatories/zs-scopesim/blob/master/CHANGELOG.md"
 
 [project.scripts]
 # Defines command-line scripts for your package. Replace with your script and function.

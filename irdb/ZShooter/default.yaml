@@ -1,0 +1,43 @@
+alias: ZShooter
+name: ZShooter
+description: A multi-channel spectrograph for Keck
+version: 0.1
+
+packages:
+  - keck
+
+telescope: keck
+modes:
+  - SPECTRO_MODE
+
+effects:
+  - name: H_band
+    class: TERCurve
+    kwargs:
+      wavelength: [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+      throughput: [0.8, 0.9, 1.0, 1.0, 0.9, 0.8]
+    meta:
+      type: filter
+
+  - name: detector_array
+    class: DetectorList
+    kwargs:
+      array_dict:
+        id: [1]
+        x_cen: [0]
+        y_cen: [0]
+        x_size: [0.135744]
+        y_size: [0.135744]
+        pixel_size: [0.008484]
+        angle: [0.0]
+        gain: [1.0]
+      x_cen_unit: mm
+      y_cen_unit: mm
+      x_size_unit: mm
+      y_size_unit: mm
+      pixsize_unit: mm
+      angle_unit: deg
+      gain_unit: electron/adu
+    meta:
+      type: detector
+      image_plane_id: 0

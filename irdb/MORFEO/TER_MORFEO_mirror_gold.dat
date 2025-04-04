@@ -1,0 +1,14 @@
+# author : Kieran Leschinski
+# source : Ric Davies
+# description : Unprotected Gold
+# date_created : 2016-11-22
+# date_modified : 2020-08-25
+# status : Design, pre PDR list of MORFEO mirrors
+# wavelength_unit : um
+#
+# changes :
+# - 2020-08-25 (KL) fixed wavelength_unit
+#
+wavelength  reflection
+0.3         0.985
+3.0         0.985
