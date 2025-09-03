@@ -1,0 +1,38 @@
+### Config file for the Mauna Kea atmosphere and location
+object : atmosphere
+alias : ATMO
+name : MaunaKea
+description : Atmosphere and location details for the Mauna Kea observatory
+
+properties :
+    location :      MaunaKea
+    altitude :      4123        # m
+    longitude :     -155.4744    # deg
+    latitude :      19.8263    # deg
+    temperature :   2.5           # deg C
+    humidity :      0.1         # [0..1]
+    pressure :      0.620       # [bar]
+    pwv :           1.0         # [mm]
+    airmass :       "!OBS.airmass"
+    pupil_angle :   "!OBS.pupil_angle"
+    pixel_scale :   "!INST.pixel_scale"
+    background :
+        filter_name : R
+        value: 22.0
+        unit: mag
+    seeing : 0.7                # [arcsec]
+    spectrum :
+        filename: "TER_maunakea_default.dat"
+
+effects :
+- name : maunakea_atmospheric_transmission
+  description : Atmospheric transmission for Mauna Kea
+  class : TERCurve
+  kwargs:
+    filename: "TER_maunakea_default.dat"
+
+- name : seeing_psf
+  description : Seeing limited PSF
+  class : SeeingPSF
+  kwargs:
+        fwhm: "!ATMO.seeing"

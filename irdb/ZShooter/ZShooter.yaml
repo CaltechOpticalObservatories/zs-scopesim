@@ -1,0 +1,11 @@
+### Common effects list for ZShooter
+
+object: instrument
+alias: INST
+name: ZShooter
+description: Effects from the ZShooter optics
+
+properties:
+  temperature: -80 #TODO: check value
+  pixel_scale : 0.127 #TODO update with real value
+  plate_scale : 8.46666667 #TODO update with real value

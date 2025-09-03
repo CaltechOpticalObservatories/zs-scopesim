@@ -1,0 +1,14 @@
+# author : Yashvi Sharma
+# source : Nan
+# date_created  : 2025-09-02
+# date_modified : 2025-09-02
+# status :
+# type : mirror:list
+# outer_unit : m
+# inner_unit : m
+# angle_unit : degree
+# temperature_unit  : deg_C
+# changes :
+#
+name  outer  inner  angle  temperature  action         filename
+M1    10.0    1.0    0.     0           reflection     TC_mirror_aluminium.dat

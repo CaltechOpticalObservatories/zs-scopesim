@@ -1,43 +1,65 @@
-alias: ZShooter
-name: ZShooter
-description: A multi-channel spectrograph for Keck
+---
+### default observation parameters needed for ZShooter simulation
+
+object: configuration
+alias: OBS
+name: ZShooter_default_configuration
+description: default config for zshooter sim
+status: development
 version: 0.1
 
 packages:
-  - keck
+- MaunaKea
+- keck
+- ZShooter
 
-telescope: keck
-modes:
-  - SPECTRO_MODE
+yamls:
+- MaunaKea.yaml
+- keck.yaml
+- ZShooter.yaml
+- ZShooter_DET.yaml
 
-effects:
-  - name: H_band
-    class: TERCurve
-    kwargs:
-      wavelength: [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-      throughput: [0.8, 0.9, 1.0, 1.0, 0.9, 0.8]
-    meta:
-      type: filter
+properties:
+  instrument : ZShooter
+  modes : ["SPEC"]
+  airmass : 1.2
+  declination : 0
+  hour_angle : 0
+  pupil_angle : 0
+  dit : 60
+  ndit : 1
+  mjdobs : 60920
+  object : "Test"
+  ra : 0.0
+  dec : 0.0
 
-  - name: detector_array
-    class: DetectorList
-    kwargs:
-      array_dict:
-        id: [1]
-        x_cen: [0]
-        y_cen: [0]
-        x_size: [0.135744]
-        y_size: [0.135744]
-        pixel_size: [0.008484]
-        angle: [0.0]
-        gain: [1.0]
-      x_cen_unit: mm
-      y_cen_unit: mm
-      x_size_unit: mm
-      y_size_unit: mm
-      pixsize_unit: mm
-      angle_unit: deg
-      gain_unit: electron/adu
-    meta:
-      type: detector
-      image_plane_id: 0
+mode_yamls:
+- object: instrument
+  alias: OBS
+  name : SPEC
+  description : "spectroscopic mode"
+  yamls :
+    - ZShooter_SPEC.yaml
+
+---
+### default simulation parameters needed for a MICADO simulation
+object : simulation
+alias : SIM
+name : ZShooter_simulation_paramters
+description : RC simulation paramters which need to change for a zshooter run
+
+properties :
+  random :
+    seed : 9001
+
+  spectral :
+    wave_min : 0.3 #change
+    wave_mid : 1.6 #change
+    wave_max : 2.5 #change
+    spectral_bin_width: 0.0005       # 0.5 Angstrom
+
+  computing :
+    preload_field_of_views : True
+
+#  reports:
+#    preamble_file: "../docs/.rst"

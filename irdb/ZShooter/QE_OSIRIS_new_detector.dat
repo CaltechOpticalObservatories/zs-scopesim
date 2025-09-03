@@ -1,0 +1,44 @@
+# author : David Jones, Kieran Leschinski
+# source :  David Jones
+# date_created  : 2022-03-03
+# date_modified : 2022-03-12
+# type : detector:quantum_efficiency
+# description : Q2E chip quantum efficiency
+# wavelength_unit: nm
+# action : transmission
+# changes :
+# - 2022-03-12 (KL) Added meta data to new OSIRIS QE curve
+# - 2022-06-14 (DJ) Updated to lab-measured QE curve from manufacturers prediction
+wavelength  transmission
+300.0       0.25
+348.61      0.41597
+372.03      0.50482
+400.65      0.6837
+424.72      0.80418
+448.14      0.87843
+472.21      0.92348
+498.23      0.94056
+522.3       0.93209
+546.38      0.91753
+574.35      0.9115
+598.42      0.90302
+622.49      0.90063
+649.16      0.88729
+672.58      0.87517
+696.65      0.87035
+722.03      0.85822
+751.3       0.84854
+772.77      0.82547
+798.79      0.7951
+824.16      0.75256
+846.93      0.69542
+872.96      0.61883
+897.68      0.52398
+923.05      0.42548
+948.42      0.3209
+972.49      0.21632
+997.86      0.12269
+1020.63     0.5096
+1047.3      0.1694
+1073.98     0.109
+1099.35     0.073

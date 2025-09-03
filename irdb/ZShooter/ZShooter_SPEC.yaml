@@ -1,0 +1,31 @@
+### Common effects list for ZShooter
+
+object: instrument
+alias: INST
+name: ZShooter
+description: Effects from the ZShooter optics
+
+#properties:
+
+effects:
+ - name: image_slicer
+   description: apertures for the three slits
+   class: ApertureList
+   include: True
+   kwargs:
+     filename: "SPEC_APERTURES.dat"
+
+ - name: OSIRIS_detector_qe
+   description: QE curve for new OSIRIS detector, needed for spec modes
+   class: QuantumEfficiencyCurve
+   include: True
+   kwargs:
+     filename: "QE_OSIRIS_new_detector.dat"
+
+#  - name: detector_array
+#    class: DetectorList
+#    type: detector
+#    kwargs:
+#      filename: "detector_list.dat"
+#      image_plane_id: 0
+#      active_detectors: [1,2,3]
