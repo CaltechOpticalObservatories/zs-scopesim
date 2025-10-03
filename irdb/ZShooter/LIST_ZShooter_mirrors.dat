@@ -1,0 +1,14 @@
+# author : Y. Sharma
+# date_created  : 2025-09-24
+# status : Placeholder for the ZShooter selector mirror
+# type : mirror:list
+# outer_unit : m
+# inner_unit : m
+# angle_unit : degree
+# temperature_unit  : deg_C
+# changes :
+# - 2025-09-24 : created a placeholder file (copied from HAWKI)
+#
+name        outer   inner   angle   temperature     action         filename
+M0_EntrWin  0.4     0.0     0       10              transmission   TER_window.dat
+M1_Fold     0.4     0.0     20      -198            reflection     TER_selector.dat

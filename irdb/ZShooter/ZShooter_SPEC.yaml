@@ -5,27 +5,59 @@ alias: INST
 name: ZShooter
 description: Effects from the ZShooter optics
 
-#properties:
+properties:
+  decouple_detector_from_sky_headers: True  # needed for slit spectroscopy
+  dichroic_names:
+    - dichroic1
+    - dichroic2
 
 effects:
- - name: image_slicer
-   description: apertures for the three slits
-   class: ApertureList
+ - name: dichroic_tree
+   description: ZShooter dichroic tree
+   class: DichroicTreeEffect
    include: True
    kwargs:
-     filename: "SPEC_APERTURES.dat"
+     tree_filename: "dichroics/dichroic_tree.dat"
+     dichroic_names: "!INST.dichroic_names"
+     filename_format: "dichroics/TER_{}.dat"
 
- - name: OSIRIS_detector_qe
-   description: QE curve for new OSIRIS detector, needed for spec modes
+ - name: slit_nir
+   description: ZShooter NIR slit
+   class: FoVSpecificAperture
+   include: True
+   kwargs:
+     fov_id: 0
+     filename: "slits/slit_nir.dat"
+
+ - name: slit_vis
+   description: ZShooter VIS slit
+   class: FoVSpecificAperture
+   include: True
+   kwargs:
+     fov_id: 1
+     filename: "slits/slit_vis.dat"
+
+ - name: slit_uvb
+   description: ZShooter UVB slit
+   class: FoVSpecificAperture
+   include: True
+   kwargs:
+     fov_id: 2
+     filename: "slits/slit_uvb.dat"
+
+ - name: trace_list
+   description: list of spectral order trace geometry on the focal plane
+   class: SpectralTraceList
+   include: True
+   kwargs:
+     filename: "traces/TRACE_ZSHOOTER.fits"
+     wave_colname: "wavelength"
+     s_colname: "xi"
+     col_number_start: 1
+
+ - name: detector_qe
+   description: QE curve for new OSIRIS detector, placeholder for ZShooter
    class: QuantumEfficiencyCurve
    include: True
    kwargs:
      filename: "QE_OSIRIS_new_detector.dat"
-
-#  - name: detector_array
-#    class: DetectorList
-#    type: detector
-#    kwargs:
-#      filename: "detector_list.dat"
-#      image_plane_id: 0
-#      active_detectors: [1,2,3]

@@ -1,9 +1,0 @@
-# left_unit: arcsec
-# right_unit: arcsec
-# top_unit: arcsec
-# bottom_unit: arcsec
-# angle_unit: deg
- id  left  right  bottom  top  angle  conserve_image  shape
-  0  -250.0  250.0  -250.0  250.0  0.0  True  rect
-  1  -250.0  250.0  -250.0  250.0  0.0  True  rect
-  2  -250.0  250.0  -250.0  250.0  0.0  True  rect

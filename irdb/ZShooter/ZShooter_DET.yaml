@@ -1,8 +1,8 @@
 ### ZShooter DETECTOR
 object : detector
 alias : DET
-name : zshooter_detector
-description : A single 4k detector # TODO update with 3 detectors
+name : zshooter_detectors
+description : Three 4k detectors
 
 properties :
     image_plane_id : 0
@@ -13,26 +13,74 @@ properties :
     ndit : "!OBS.ndit"
 
 effects :
-  - name: 4k_detector
+  - name: detector_nir
+    description: Single 4k x 4k detector for ZShooter NIR arm
+    include: True
     class: DetectorList
     kwargs:
-      array_dict:
-        id: [1]
-        x_cen: [0]
-        y_cen: [0]
-        x_size: [4096]
-        y_size: [4096]
-        pixel_size: [0.015]
-        angle: [0.]
-        gain: [0.95]
-      x_cen_unit : mm
-      y_cen_unit : mm
-      x_size_unit : pixel
-      y_size_unit : pixel
-      pixel_size_unit : mm
-      angle_unit : deg
-      gain_unit : electron/adu
-      image_plane_id : 0
+        image_plane_id : 0
+        array_dict:
+          id: [0]
+          x_cen: [0.0]
+          y_cen: [0.0]
+          x_size: [4096]
+          y_size: [4096]
+          pixel_size: [0.015]
+          angle: [0.0]
+          gain: [1.0]
+        x_cen_unit: mm
+        y_cen_unit: mm
+        x_size_unit: pixel
+        y_size_unit: pixel
+        pixel_size_unit: mm
+        angle_unit: deg
+        gain_unit: electron/adu
+
+  - name: detector_vis
+    description: Single 4k x 4k detector for ZShooter VIS arm
+    include: True
+    class: DetectorList
+    kwargs:
+        image_plane_id : 1
+        array_dict:
+          id: [1]
+          x_cen: [0.0]
+          y_cen: [0.0]
+          x_size: [4096]
+          y_size: [4096]
+          pixel_size: [0.015]
+          angle: [0.0]
+          gain: [1.0]
+        x_cen_unit: mm
+        y_cen_unit: mm
+        x_size_unit: pixel
+        y_size_unit: pixel
+        pixel_size_unit: mm
+        angle_unit: deg
+        gain_unit: electron/adu
+
+  - name: detector_uvb
+    description: Single 4k x 4k detector for ZShooter UVB arm
+    include: True
+    class: DetectorList
+    kwargs:
+        image_plane_id : 2
+        array_dict:
+          id: [2]
+          x_cen: [0.0]
+          y_cen: [0.0]
+          x_size: [4096]
+          y_size: [4096]
+          pixel_size: [0.015]
+          angle: [0.0]
+          gain: [1.0]
+        x_cen_unit: mm
+        y_cen_unit: mm
+        x_size_unit: pixel
+        y_size_unit: pixel
+        pixel_size_unit: mm
+        angle_unit: deg
+        gain_unit: electron/adu
 
   - name: exposure_integration
     description: Summing up sky signal for all DITs and NDITs

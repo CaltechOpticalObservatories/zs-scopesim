@@ -26,7 +26,7 @@ properties:
   declination : 0
   hour_angle : 0
   pupil_angle : 0
-  dit : 60
+  dit : 3600
   ndit : 1
   mjdobs : 60920
   object : "Test"
@@ -53,9 +53,9 @@ properties :
     seed : 9001
 
   spectral :
-    wave_min : 0.3 #change
-    wave_mid : 1.6 #change
-    wave_max : 2.5 #change
+    wave_min : 0.4 #change
+    wave_mid : 1.0 #change
+    wave_max : 1.5 #change
     spectral_bin_width: 0.0005       # 0.5 Angstrom
 
   computing :

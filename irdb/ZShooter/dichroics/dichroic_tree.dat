@@ -1,0 +1,8 @@
+# name : ZShooter dichroic tree
+# author : Y. Sharma
+# date_created : 2025-09-24
+#
+id dichroic1 dichroic2
+0      T      X
+1      R      T
+2      R      R
