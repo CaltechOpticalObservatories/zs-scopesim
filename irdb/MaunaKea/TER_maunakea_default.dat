@@ -11,6 +11,7 @@
 # action : transmission
 # wavelength_unit : um
 wavelength  transmission
+0.30000      0.10000
 0.31233      0.29827
 0.31444      0.34524
 0.31570      0.37343

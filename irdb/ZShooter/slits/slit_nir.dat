@@ -4,4 +4,4 @@
 # bottom_unit: arcsec
 # angle_unit: deg
  id  left  right  bottom   top  angle  conserve_image  shape
-  0  -250   250     -1      1    0.0            True   rect
+  0   -5     5     -1      1    0.0            True   rect

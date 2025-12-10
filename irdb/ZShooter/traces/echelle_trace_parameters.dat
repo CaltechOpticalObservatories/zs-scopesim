@@ -1,0 +1,24 @@
+# author : Y. Sharma
+# date_created : 2025-10-20
+# status : draft
+# type : echelle:table
+# min_wave_unit : nm
+# max_wave_unit : nm
+# echelle_blaze_unit : deg
+# focal_length_unit : mm
+# fwhm_unit : pixel
+# detector_pad_unit : pixel
+# pixel_size_unit : mm
+# n_disp_unit : pixel
+# n_xdisp_unit : pixel
+# disp_freq_unit : mm
+# xdisp_freq_unit : mm
+# slitwidth_unit : arcsec
+# description : Table that defines the parameters for echelle trace generation, used by EchelleSpectralTraceList effect.
+# changes :
+# - 2025-10-20 : Initial creation of the file with trace parameters
+#
+prefix    aperture_id    image_plane_id    m0    n    min_wave    max_wave    echelle_blaze    focal_length    fwhm    detector_pad    pixel_size    n_disp    n_xdisp     disp_freq    xdisp_freq    slitwidth    dispdir    plate_scale        alpha    beta_center
+nIR        0              0                40    24    970         2500        64.2             225             4.7     10              0.015         4096      4096        45           175           10           x          0.159574468085     45.0    45.0
+gri        1              1                36    18    490         1020        64.2             225             4.7     10              0.015         4096      4096        100          500           10           x          0.159574468085     45.0    45.0
+ub         2              2                29    11    315         515         64.2             225             4.7     10              0.015         4096      4096        200          1000          10           x          0.159574468085     45.0    45.0

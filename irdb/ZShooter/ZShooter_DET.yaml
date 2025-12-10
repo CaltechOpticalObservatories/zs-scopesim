@@ -20,14 +20,14 @@ effects :
     kwargs:
         image_plane_id : 0
         array_dict:
-          id: [0]
-          x_cen: [0.0]
-          y_cen: [0.0]
-          x_size: [4096]
-          y_size: [4096]
-          pixel_size: [0.015]
-          angle: [0.0]
-          gain: [1.0]
+          id: [0, 1]
+          x_cen: [-30.72, 30.72]
+          y_cen: [0.0, 0.0]
+          x_size: [2048, 4096]
+          y_size: [2048, 4096]
+          pixel_size: [0.015, 0.015]
+          angle: [0.0, 0.0]
+          gain: [1.0, 1.0]
         x_cen_unit: mm
         y_cen_unit: mm
         x_size_unit: pixel
@@ -91,7 +91,7 @@ effects :
     class: DarkCurrent
     # [e-/s] level of dark current for each detector
     kwargs:
-        value: 0.001
+        value: 0.0001
 
   - name: shot_noise
     description : apply poisson shot noise to images
@@ -117,13 +117,13 @@ effects :
     description : Readout noise frames
     class : BasicReadoutNoise
     kwargs :
-        noise_std : 5
+        noise_std : 2
 
 
   - name: binning
     description: Applies binning
     class: UnequalBinnedImage
-    include: True
+    include: False
     kwargs:
         binx: "!DET.binx"
         biny: "!DET.biny"

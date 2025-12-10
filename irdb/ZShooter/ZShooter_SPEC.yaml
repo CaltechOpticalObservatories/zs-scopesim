@@ -26,7 +26,7 @@ effects:
    class: FoVSpecificAperture
    include: True
    kwargs:
-     fov_id: 0
+     fov_ids: [0]
      filename: "slits/slit_nir.dat"
 
  - name: slit_vis
@@ -34,7 +34,7 @@ effects:
    class: FoVSpecificAperture
    include: True
    kwargs:
-     fov_id: 1
+     fov_ids: [1]
      filename: "slits/slit_vis.dat"
 
  - name: slit_uvb
@@ -42,8 +42,15 @@ effects:
    class: FoVSpecificAperture
    include: True
    kwargs:
-     fov_id: 2
+     fov_ids: [2]
      filename: "slits/slit_uvb.dat"
+
+ - name: trace_eff
+   description: list of spectral order trace efficiencies
+   class: SpectralEfficiency
+   include: True
+   kwargs:
+     filename: "traces/TRACE_eff.fits"
 
  - name: trace_list
    description: list of spectral order trace geometry on the focal plane
@@ -52,7 +59,7 @@ effects:
    kwargs:
      filename: "traces/TRACE_ZSHOOTER.fits"
      wave_colname: "wavelength"
-     s_colname: "xi"
+     s_colname: "s"
      col_number_start: 1
 
  - name: detector_qe
@@ -60,4 +67,4 @@ effects:
    class: QuantumEfficiencyCurve
    include: True
    kwargs:
-     filename: "QE_OSIRIS_new_detector.dat"
+     filename: "QE.dat"

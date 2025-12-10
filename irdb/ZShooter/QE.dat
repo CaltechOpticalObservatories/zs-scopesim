@@ -1,0 +1,13 @@
+# author : Y. Sharma
+# date_created  : 2025-10-30
+# type : detector:quantum_efficiency
+# description : quantum efficiency
+# wavelength_unit: um
+# action : transmission
+# changes :
+wavelength  transmission
+0.29          0.0
+0.30          1.0
+1.00          1.0
+3.00          1.0
+3.01          0.0
