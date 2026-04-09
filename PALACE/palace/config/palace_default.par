@@ -1,0 +1,55 @@
+#Default parameter file for the Paranal Airglow Line And Continuuum Emission
+#(PALACE) model
+
+#syntax: {name}={value} on separate lines for each parameter
+
+#all or specific species (OH, O2, HO2, FeO, Na, K, O, N, or H)
+species=all
+
+#zenith angle of line of sight in degrees (< 90.):
+z=0.
+
+#month bin (0 = whole year, 1-12 = number of month):
+mbin=0
+
+#time bin (int: 0 = whole night, 1-12 = number of local time bin [1 = 18-19h,
+#12 = 5-6h]; float: either -6h to 6h or 0 to 6h and 18 to 24h):          
+tbin=0
+
+#solar radio flux at 10.7 cm in solar flux units (1 sfu = 10^4 Jy):
+srf=100.
+
+#wavelengths for standard air (True) or vacuum (False):
+isair=True
+
+#effects of absorption and scattering (True or False)?:
+isatm=True
+
+#precipitable water vapour in the atmosphere in mm (relevant if isatm=True):
+pwv=2.5
+
+#minimum wavelength of output spectrum in µm (>= 0.3):
+lammin=0.3
+
+#maximum wavelength of output spectrum in µm (<= 2.5):
+lammax=2.5
+
+#constant wavelength step of output spectrum in µm:
+dlam=1e-4
+
+#constant resolving power of output spectrum (fixed ratio of FWHM of Gaussian
+#line spread function and wavelength):
+resol=1e3
+
+#path of output directory (created if missing):
+outdir=test/
+
+#output file name (used for parameter list, spectrum, and optional plot):  
+outname=palace_test
+
+#file suffix of output spectrum (any entry different from 'fits' produces an
+#ASCII file):
+specsuffix=fits
+
+#plot of spectrum on screen (True or False)?:
+showplot=False
