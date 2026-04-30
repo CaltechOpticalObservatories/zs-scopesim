@@ -1,6 +1,6 @@
 [build-system]
 # Specifies the build system to use. 
-requires = ["setuptools>=42"]
+requires = ["setuptools>=42", "cython"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,36 +9,41 @@ name = "zs-scopesim"
 version = "0.1.0" 
 dependencies = [
   "matplotlib",
-  "scopesim",
+  "astropy",
+  "numpy",
+  "cython",
+  "scopesim @ git+https://github.com/CaltechOpticalObservatories/ScopeSim.git@main",
+  "irdb @ git+https://github.com/CaltechOpticalObservatories/irdb.git@dev_master",
   "scopesim_templates",
-  "astropy"
 ]
-requires-python = ">=3.7"
+requires-python = ">=3.10, <3.15"
 authors = [
-  {name = "Michael Langmayr", email = "michael.langmayr@gmail.com"}
+  {name = "Yashvi Sharma", email = "yssharma@astro.caltech.edu"}
 ]
 maintainers = [
-  {name = "Michael Langmayr", email = "michael.langmayr@gmail.com"}
+  {name = "Yashvi Sharma", email = "yssharma@astro.caltech.edu"}
 ]
-description = "A brief description of your package"
+description = "Simulator for ZShooter using ScopSim framework"
 readme = "README.md" 
-license = { text = "MIT" }
-keywords = ["example", "package", "keywords"] 
+license = { text = "GNU GPLv3" }
+keywords = ["astronomy"]
 classifiers = [
   "Programming Language :: Python"
 ]
 
+[tool.setuptools.packages.find]
+where = ["PALACE"]
+
+[tool.setuptools.package-data]
+"palace.data" = ["*.fits"]
+"palace.config" = ["*.par"]
+
 [project.urls]
 # Various URLs related to your project. These links are displayed on PyPI.
-Homepage = "https://example.com" 
-Documentation = "https://readthedocs.org"
 Repository = "https://github.com/CaltechOpticalObservatories/zs-scopesim"
 "Bug Tracker" = "https://github.com/CaltechOpticalObservatories/zs-scopesim/issues" 
 Changelog = "https://github.com/CaltechOpticalObservatories/zs-scopesim/blob/master/CHANGELOG.md"
 
-[project.scripts]
-# Defines command-line scripts for your package. Replace with your script and function.
-your-command = "your_module:your_function"
 
 [project.optional-dependencies]
 # Optional dependencies that can be installed with extra tags, like "dev".
