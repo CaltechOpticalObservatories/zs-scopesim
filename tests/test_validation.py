@@ -43,6 +43,46 @@ class FakeDetectorQE:
     throughput = ConstantCurve(0.5)
 
 
+class FakeDichroic:
+    def __init__(self, transmission, reflection):
+        self.surface = FakeSurface(transmission=transmission, reflection=reflection)
+
+
+class FakeDichroicTree:
+    def __init__(self):
+        self.table = Table({
+            "aperture_id": [0],
+            "d1": ["T"],
+            "d2": ["R"],
+            "unused": ["X"],
+        })
+        self.dichroics = {
+            "d1": FakeDichroic(transmission=0.8, reflection=0.1),
+            "d2": FakeDichroic(transmission=0.7, reflection=0.5),
+        }
+
+
+class FakeTrace:
+    def __init__(self, trace_id, aperture_id, image_plane_id, wave_min, wave_max):
+        self.trace_id = trace_id
+        self.wave_min = wave_min
+        self.wave_max = wave_max
+        self.meta = {
+            "trace_id": trace_id,
+            "aperture_id": aperture_id,
+            "image_plane_id": image_plane_id,
+            "extension_id": 2,
+        }
+
+
+class FakeTraceList:
+    def __init__(self):
+        self.spectral_traces = {
+            "R_2": FakeTrace("R_2", 1, 3, 0.5, 0.6),
+            "B_1": FakeTrace("B_1", 0, 2, 0.3, 0.4),
+        }
+
+
 def test_effect_name_handles_objects_without_meta():
     obj = object()
     assert val.effect_name(obj).startswith("<object object at ")
@@ -99,3 +139,23 @@ def test_surface_list_emissivity_terms_rejects_unknown_phase():
 
     with np.testing.assert_raises_regex(ValueError, "Unknown emission_phase"):
         val.surface_list_emissivity_terms(surface_list, wave)
+
+
+def test_dichroic_path_throughput_uses_tree_actions():
+    wave = np.linspace(1, 2, 4) * u.um
+
+    total, components = val.dichroic_path_throughput(
+        FakeDichroicTree(), aperture_id=0, wave=wave,
+    )
+
+    np.testing.assert_allclose(total, np.full(wave.size, 0.4))
+    assert list(components) == ["d1:T", "d2:R"]
+
+
+def test_trace_catalog_table_uses_in_memory_traces():
+    table = val.trace_catalog_table(FakeTraceList())
+
+    assert list(table["trace_id"]) == ["B_1", "R_2"]
+    assert list(table["aperture_id"]) == [0, 1]
+    assert list(table["image_plane_id"]) == [2, 3]
+    np.testing.assert_allclose(table["wave_min_um"], [0.3, 0.5])

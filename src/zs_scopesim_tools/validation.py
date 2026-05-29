@@ -61,6 +61,11 @@ def resolve_effect(effect: Any, selector_value: Any = None) -> Any:
         ) from exc
 
 
+def get_arm_effect(ztrain: Any, display_name: str, aperture_id: int) -> Any:
+    """Fetch one selected arm/channel effect from an optical train."""
+    return resolve_effect(get_effect(ztrain, display_name), aperture_id)
+
+
 def _as_float_array(values: Any) -> np.ndarray:
     if hasattr(values, "value"):
         values = values.value
@@ -80,6 +85,59 @@ def evaluate_throughput(effect: Any, wave: u.Quantity) -> np.ndarray:
     if hasattr(effect, "surface") and hasattr(effect.surface, "throughput"):
         return evaluate_curve(effect.surface.throughput, wave)
     raise TypeError(f"Cannot evaluate throughput for {effect!r}")
+
+
+def fetch_effect_spectrum_or_transmission(
+    ztrain: Any,
+    display_name: str,
+    attribute: str | None = "throughput",
+    wave: u.Quantity | None = None,
+    aperture_id: int | None = None,
+) -> tuple[u.Quantity, Any]:
+    """Fetch a curve-like attribute from an active effect.
+
+    ``attribute`` may be dotted, e.g. ``"line_TER.emission"``.
+    """
+    effect = get_effect(ztrain, display_name)
+    target = resolve_effect(effect, aperture_id) if aperture_id is not None else effect
+    if attribute is not None:
+        for attr in attribute.split("."):
+            target = getattr(target, attr)
+
+    if wave is not None:
+        return wave.to(u.um), evaluate_curve(target, wave)
+    if hasattr(target, "_get_arrays"):
+        wave_out, values = target._get_arrays(wavelengths=None)
+        return wave_out.to(u.um), values
+    if hasattr(target, "waveset"):
+        wave_out = target.waveset.to(u.um)
+        return wave_out, evaluate_curve(target, wave_out)
+    raise TypeError(f"Cannot fetch spectrum/transmission from {target!r}")
+
+
+def plot_source(source: Any, wave: u.Quantity | None = None):
+    """Plot each source field's spatial profile and spectrum."""
+    import matplotlib.pyplot as plt
+
+    wave = wave if wave is not None else np.linspace(0.3, 2.5, 1001) * u.um
+    num_fields = len(source.fields)
+    fig, axs = plt.subplots(
+        figsize=(6, 2 * num_fields),
+        nrows=num_fields,
+        ncols=2,
+        width_ratios=[1, 2],
+        constrained_layout=True,
+    )
+    if num_fields == 1:
+        axs = np.array([axs])
+    for idx, field in enumerate(source.fields):
+        ax_image, ax_spectrum = axs[idx]
+        ax_image.imshow(field.data, origin="lower", cmap="viridis")
+        ax_spectrum.plot(wave, field.spectrum(wave))
+        if idx == 0:
+            ax_image.set_title("Spatial Profile")
+            ax_spectrum.set_title("Spectrum")
+    return fig, axs
 
 
 def default_surface_groups() -> OrderedDict[str, tuple[str, ...]]:
@@ -357,6 +415,34 @@ def channel_label(aperture_id: int, traces: list[Any]) -> str:
     return f"aperture {aperture_id}"
 
 
+def trace_catalog_table(trace_list: Any) -> Table:
+    """Return the loaded trace catalog from an in-memory SpectralTraceList."""
+    rows = []
+    for trace_id, trace in trace_list.spectral_traces.items():
+        rows.append({
+            "trace_id": trace.trace_id,
+            "aperture_id": int(trace.meta["aperture_id"]),
+            "image_plane_id": int(trace.meta["image_plane_id"]),
+            "extension_id": int(trace.meta.get("extension_id", -1)),
+            "wave_min_um": float(trace.wave_min),
+            "wave_max_um": float(trace.wave_max),
+        })
+    return Table(rows=sorted(rows, key=lambda row: row["trace_id"]))
+
+
+def fov_image_plane_counts(ztrain: Any) -> Table:
+    """Return image-plane counts for the current in-memory FOV manager."""
+    image_plane_ids = [
+        int(fov.meta["image_plane_id"])
+        for fov in ztrain.fov_manager.fovs
+    ]
+    unique_ids, counts = np.unique(image_plane_ids, return_counts=True)
+    return Table({
+        "image_plane_id": unique_ids.astype(int),
+        "n_fovs": counts.astype(int),
+    })
+
+
 def build_emissivity_sanity_data(
     ztrain: Any,
     wave_nm: u.Quantity | None = None,
@@ -541,5 +627,276 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
     fig.legend(
         dedup.values(), dedup.keys(), loc="outside upper center",
         ncol=6, frameon=False,
+    )
+    return fig, axes
+
+
+def detector_geometry_table(ztrain: Any) -> Table:
+    """Return detector geometry/settings rows from active DetectorList effects."""
+    rows: list[dict[str, Any]] = []
+    for effect in active_effects(ztrain):
+        if effect.__class__.__name__ != "DetectorList":
+            continue
+        for row in effect.table:
+            rows.append({
+                "detector_id": int(_row_scalar(row, "id")),
+                "image_plane_id": int(effect.meta.get("image_plane_id")),
+                "channel": effect_name(effect).replace("detector_", "").upper(),
+                "detector": effect.meta.get("detector", ""),
+                "x_size": _row_scalar(row, "x_size"),
+                "y_size": _row_scalar(row, "y_size"),
+                "pixel_size_mm": _row_scalar(row, "pixel_size"),
+                "gain_e_per_adu": _row_scalar(row, "gain"),
+            })
+    return Table(rows=sorted(rows, key=lambda row: row["detector_id"]))
+
+
+def _selector_value_for_detector(selector: Any, detector_row: Any) -> int | None:
+    selector_key = selector.meta.get("selector_key")
+    if selector_key == "detector_id":
+        return int(detector_row["detector_id"])
+    if selector_key == "aperture_id":
+        return int(detector_row["image_plane_id"])
+    return None
+
+
+def _resolved_meta_summary(effect: Any, cmds: Any) -> str:
+    from scopesim.utils import from_currsys
+
+    keys = ("filename", "dit", "ndit", "value", "noise_std", "bias", "binx", "biny")
+    parts = []
+    for key in keys:
+        if key not in effect.meta:
+            continue
+        value = effect.meta[key]
+        try:
+            value = from_currsys(value, cmds=cmds)
+        except Exception:
+            pass
+        parts.append(f"{key}={value}")
+    if not parts:
+        return ""
+    return ", ".join(parts)
+
+
+def detector_selector_matrix(ztrain: Any) -> Table:
+    """Return detector selector settings resolved for each detector row."""
+    detectors = detector_geometry_table(ztrain)
+    selectors = [
+        effect for effect in active_effects(ztrain)
+        if hasattr(effect, "wheel_effects")
+    ]
+    rows: list[dict[str, Any]] = []
+    for detector in detectors:
+        for selector in selectors:
+            selector_value = _selector_value_for_detector(selector, detector)
+            if selector_value is None:
+                continue
+            try:
+                selected_effect = resolve_effect(selector, selector_value)
+            except KeyError:
+                continue
+            rows.append({
+                "detector_id": int(detector["detector_id"]),
+                "channel": str(detector["channel"]),
+                "detector": str(detector["detector"]),
+                "selector": effect_name(selector),
+                "selector_key": selector.meta.get("selector_key"),
+                "selector_value": selector_value,
+                "effect_class": selected_effect.__class__.__name__,
+                "settings": _resolved_meta_summary(selected_effect, ztrain.cmds),
+            })
+    return Table(rows=rows)
+
+
+def dichroic_path_throughput(
+    dichroic_tree: Any,
+    aperture_id: int,
+    wave: u.Quantity,
+) -> tuple[np.ndarray, OrderedDict[str, np.ndarray]]:
+    """Return total and per-component dichroic throughput for an aperture."""
+    table = dichroic_tree.table
+    id_col = table.colnames[0]
+    rows = table[table[id_col] == aperture_id]
+    if len(rows) != 1:
+        raise ValueError(
+            f"Expected one dichroic row for {id_col}={aperture_id}; found "
+            f"{len(rows)}"
+        )
+
+    action_lookup = {"T": "transmission", "R": "reflection", "X": None}
+    components: OrderedDict[str, np.ndarray] = OrderedDict()
+    total = np.ones(wave.size, dtype=float)
+    row = rows[0]
+    for dichroic_name in table.colnames[1:]:
+        action = action_lookup.get(str(row[dichroic_name]))
+        if action is None:
+            continue
+        curve = getattr(dichroic_tree.dichroics[dichroic_name].surface, action)
+        values = evaluate_curve(curve, wave)
+        components[f"{dichroic_name}:{action[0].upper()}"] = values
+        total *= values
+    return total, components
+
+
+def build_transmission_sanity_data(
+    ztrain: Any,
+    wave_nm: u.Quantity | None = None,
+    groups: Mapping[str, tuple[str, ...]] | None = None,
+) -> dict[str, Any]:
+    """Build channel/order throughput data for transmission sanity plots."""
+    wave_nm = wave_nm if wave_nm is not None else np.linspace(300, 2500, 5000) * u.nm
+    wave = wave_nm.to(u.um)
+
+    dichroic_tree = get_effect(ztrain, "dichroic_tree")
+    channel_selector = get_effect(ztrain, "channel_optics_selector")
+    qe_selector = get_effect(ztrain, "detector_qe_selector")
+    trace_list = get_effect(ztrain, "trace_list_analytical")
+    trace_eff = get_effect(ztrain, "trace_eff_analytical")
+    traces_for_aperture = traces_by_aperture(trace_list)
+
+    aperture_ids = [
+        int(value)
+        for value in dichroic_tree.table[dichroic_tree.table.colnames[0]]
+    ]
+    channels: OrderedDict[int, dict[str, Any]] = OrderedDict()
+    for aperture_id in aperture_ids:
+        channel_optics = resolve_effect(channel_selector, aperture_id)
+        detector_qe = resolve_effect(qe_selector, aperture_id)
+
+        dichroic_total, dichroic_components = dichroic_path_throughput(
+            dichroic_tree, aperture_id, wave,
+        )
+        optics_groups, group_counts = surface_list_group_throughputs(
+            channel_optics, wave, groups=groups,
+        )
+        optics_total = (
+            np.prod(list(optics_groups.values()), axis=0)
+            if optics_groups
+            else np.ones(wave.size)
+        )
+        qe_values = evaluate_throughput(detector_qe, wave)
+        pre_disperser_total = dichroic_total * optics_total * qe_values
+
+        orders: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        for trace in traces_for_aperture.get(aperture_id, []):
+            order_eff = _as_float_array(
+                trace_eff.efficiency_generator(trace.trace_id, wave),
+            )
+            mask = (wave >= trace.wave_min * u.um) & (wave <= trace.wave_max * u.um)
+            order_eff = np.where(mask, order_eff, np.nan)
+            orders[trace.trace_id] = {
+                "disperser": order_eff,
+                "total": pre_disperser_total * order_eff,
+                "wave_min": trace.wave_min * u.um,
+                "wave_max": trace.wave_max * u.um,
+            }
+
+        channels[aperture_id] = {
+            "label": channel_label(
+                aperture_id, traces_for_aperture.get(aperture_id, []),
+            ),
+            "dichroic_total": dichroic_total,
+            "dichroic_components": dichroic_components,
+            "optics_groups": optics_groups,
+            "optics_group_counts": group_counts,
+            "optics_total": optics_total,
+            "detector_qe": qe_values,
+            "pre_disperser_total": pre_disperser_total,
+            "orders": orders,
+        }
+
+    return {"wave_nm": wave_nm, "channels": channels}
+
+
+def validate_transmission_sanity_data(data: Mapping[str, Any]) -> None:
+    """Validate transmission sanity-check data."""
+    for aperture_id, channel in data["channels"].items():
+        if not channel["optics_groups"]:
+            raise ValueError(f"No optics groups for aperture_id={aperture_id}")
+        if not channel["orders"]:
+            raise ValueError(f"No echelle orders for aperture_id={aperture_id}")
+        arrays = [
+            channel["dichroic_total"],
+            channel["optics_total"],
+            channel["detector_qe"],
+            channel["pre_disperser_total"],
+        ]
+        arrays.extend(channel["optics_groups"].values())
+        arrays.extend(order["disperser"] for order in channel["orders"].values())
+        for arr in arrays:
+            finite = arr[np.isfinite(arr)]
+            if finite.size == 0:
+                raise ValueError(
+                    f"Empty/non-finite curve for aperture_id={aperture_id}"
+                )
+            if np.nanmin(finite) < -1e-6 or np.nanmax(finite) > 1.5:
+                warnings.warn(
+                    f"Throughput outside expected range for "
+                    f"aperture_id={aperture_id}: "
+                    f"{np.nanmin(finite):.3g}..{np.nanmax(finite):.3g}",
+                    stacklevel=2,
+                )
+
+
+def plot_transmission_sanity(data: Mapping[str, Any]):
+    """Plot channel/order throughput sanity-check data."""
+    import matplotlib.pyplot as plt
+
+    wave = data["wave_nm"].to_value(u.nm)
+    fig, axes = plt.subplots(
+        2, 3, figsize=(16, 7.5), sharex=True, sharey=True,
+        constrained_layout=True,
+    )
+
+    group_colors = {
+        "preoptics": "tab:blue",
+        "collimator": "tab:green",
+        "camera": "tab:cyan",
+        "other": "0.5",
+    }
+
+    for ax, (aperture_id, channel) in zip(axes.flat, data["channels"].items()):
+        for name, values in channel["optics_groups"].items():
+            ax.plot(
+                wave, values, lw=1.0,
+                color=group_colors.get(name, "0.5"),
+                label=name,
+            )
+
+        ax.plot(
+            wave, channel["dichroic_total"], lw=1.2,
+            color="tab:purple", label="dichroics",
+        )
+        ax.plot(
+            wave, channel["detector_qe"], lw=1.2,
+            color="tab:red", label="detector QE",
+        )
+
+        for idx, (_trace_id, order) in enumerate(channel["orders"].items()):
+            order_label = "disperser/order" if idx == 0 else None
+            total_label = "total/order" if idx == 0 else None
+            ax.plot(
+                wave, order["disperser"], lw=0.7, color="tab:orange",
+                alpha=0.35, label=order_label,
+            )
+            ax.plot(
+                wave, order["total"], lw=1.8, color="black",
+                alpha=0.65, label=total_label,
+            )
+
+        ax.set_title(f"{channel['label']} (aperture {aperture_id})")
+        ax.set_xlim(wave.min(), wave.max())
+        ax.set_ylim(0, 1.05)
+        ax.grid(alpha=0.2)
+
+    for ax in axes[-1, :]:
+        ax.set_xlabel("Wavelength [nm]")
+    for ax in axes[:, 0]:
+        ax.set_ylabel("Throughput")
+
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    fig.legend(
+        handles, labels, loc="outside upper center", ncol=7, frameon=False,
     )
     return fig, axes
