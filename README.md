@@ -1,30 +1,70 @@
-# Instrument simulator for ZShooter
-This repository contains notebooks and code for simulating ZShooter using ScopeSim.
+# ZShooter ScopeSim Workspace
 
-The ScopeSim and irdb packages installed through zs-scopesim (pyproject.toml) are forked 
-versions with additional custom features needed for ZShooter.
+This repository is the authoritative home for ZShooter ScopeSim science
+notebooks, simulator documentation, and project-owned simulator workflow tools.
+It also carries a vendored copy of PALACE for local airglow-model development.
 
-Additionally, a modified version of [PALACE code ](https://zenodo.org/records/14064023) is used by 
-the modified ScopeSim for modeling sky line-emission background component. This code is provided
-in the `PALACE/palace` directory and will be installed as a package when installing zs-scopesim. 
+The main simulator stack uses the Caltech Optical Observatories forks of
+ScopeSim and irdb. Those packages are installed as editable checkouts so users
+can inspect the code and developers can reproduce science-team environments.
 
-## Installation
-Clone the repository:
+## Quickstart
+
+Clone this repository and create or update an environment:
+
 ```bash
 git clone https://github.com/CaltechOpticalObservatories/zs-scopesim.git
 cd zs-scopesim
-```
-Create a virtual environment:
-```bash
-python3 -m venv .venv
-source .venv/bin/activate 
-```
-Install the package:
-```bash
-pip install -e .
-```
-In case there are issues in PALACE installation due to the Cython build, use:
-```bash
-pip install -e . --no-build-isolation
+python scripts/bootstrap_env.py --manager mamba --env-name zssim
 ```
 
+For a local venv instead:
+
+```bash
+python scripts/bootstrap_env.py --manager venv --venv .venv
+```
+
+By default, bootstrap uses existing ScopeSim and irdb checkouts in `~/src`
+without fetching or checking out branches/tags. This keeps developer and
+science-user working trees safe. To explicitly move managed checkouts to the
+refs in `env/zshooter-stack.toml`, run:
+
+```bash
+scripts/sync_stack.sh --install
+```
+
+Check the environment:
+
+```bash
+zs-sim doctor
+```
+
+Start notebooks:
+
+```bash
+scripts/run_notebooks.sh
+```
+
+## Reproducibility
+
+Known-good editable checkout refs are recorded in
+`env/zshooter-stack.toml`. To sync the COO ScopeSim and irdb forks to those
+refs, use:
+
+```bash
+scripts/sync_stack.sh
+```
+
+Dirty checkouts are not moved unless `--allow-dirty` is supplied.
+
+When reporting issues, include:
+
+```bash
+zs-sim doctor
+```
+
+## Documentation
+
+Developer and user documentation lives in `docs/` and is built with Sphinx.
+The layout is intentionally small and structured so the ZShooter project site
+can stage these pages later.

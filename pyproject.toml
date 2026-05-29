@@ -1,54 +1,49 @@
 [build-system]
-# Specifies the build system to use. 
-requires = ["setuptools>=42", "cython"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-# Basic information about your project.
-name = "zs-scopesim" 
-version = "0.1.0" 
-dependencies = [
-  "matplotlib",
-  "astropy",
-  "numpy",
-  "cython",
-  "scopesim @ git+https://github.com/CaltechOpticalObservatories/ScopeSim.git@main",
-  "irdb @ git+https://github.com/CaltechOpticalObservatories/irdb.git@dev_master",
-  "scopesim_templates",
-]
-requires-python = ">=3.10, <3.15"
+name = "zs-scopesim"
+version = "0.1.0"
+description = "ZShooter simulator notebooks, documentation, and workflow tools"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
 authors = [
-  {name = "Yashvi Sharma", email = "yssharma@astro.caltech.edu"}
+  { name = "ZShooter Team" },
 ]
-maintainers = [
-  {name = "Yashvi Sharma", email = "yssharma@astro.caltech.edu"}
+dependencies = [
+  "packaging>=23",
+  "tomli>=2; python_version < '3.11'",
 ]
-description = "Simulator for ZShooter using ScopSim framework"
-readme = "README.md" 
-license = { text = "GNU GPLv3" }
-keywords = ["astronomy"]
 classifiers = [
-  "Programming Language :: Python"
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Scientific/Engineering :: Astronomy",
 ]
-
-[tool.setuptools.packages.find]
-where = ["PALACE"]
-
-[tool.setuptools.package-data]
-"palace.data" = ["*.fits"]
-"palace.config" = ["*.par"]
-
-[project.urls]
-# Various URLs related to your project. These links are displayed on PyPI.
-Repository = "https://github.com/CaltechOpticalObservatories/zs-scopesim"
-"Bug Tracker" = "https://github.com/CaltechOpticalObservatories/zs-scopesim/issues" 
-Changelog = "https://github.com/CaltechOpticalObservatories/zs-scopesim/blob/master/CHANGELOG.md"
-
 
 [project.optional-dependencies]
-# Optional dependencies that can be installed with extra tags, like "dev".
 dev = [
-  "pytest", 
   "black",
-  "flake8"
+  "pytest",
+  "ruff",
 ]
+docs = [
+  "myst-parser",
+  "sphinx",
+  "sphinx-book-theme",
+]
+notebooks = [
+  "ipykernel",
+  "jupyterlab",
+]
+
+[project.scripts]
+zs-sim = "zs_scopesim_tools.cli:main"
+
+[project.urls]
+Repository = "https://github.com/CaltechOpticalObservatories/zs-scopesim"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,43 @@
+[python]
+constraint = ">=3.10,<3.15"
+recommended = "3.14"
+
+[paths]
+src_dir = "~/src"
+
+[repos.scopesim]
+url = "https://github.com/CaltechOpticalObservatories/ScopeSim.git"
+path = "ScopeSim"
+relative_to = "src_dir"
+ref = "main"
+editable = true
+managed = true
+
+[repos.irdb]
+url = "https://github.com/CaltechOpticalObservatories/irdb.git"
+path = "irdb"
+relative_to = "src_dir"
+ref = "dev_master"
+editable = true
+managed = true
+
+[repos.zs_scopesim]
+path = "."
+relative_to = "repo"
+ref = "main"
+editable = true
+managed = false
+
+[local.palace]
+path = "PALACE"
+editable = true
+
+[pip]
+packages = [
+  "scopesim_templates",
+  "spextra",
+  "skycalc_ipy",
+  "pyckles",
+  "jupyterlab",
+  "ipykernel",
+]
