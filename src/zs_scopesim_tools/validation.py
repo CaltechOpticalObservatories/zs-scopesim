@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 from astropy import units as u
 from astropy.table import Table
+from synphot.units import PHOTLAM
 
 
 def effect_name(effect: Any) -> str:
@@ -515,6 +516,269 @@ def build_emissivity_sanity_data(
         }
 
     return {"wave_nm": wave_nm, "channels": channels, "details": Table(rows=details)}
+
+
+def evaluate_emission_density(surface: Any, wave: u.Quantity) -> u.Quantity | None:
+    """Evaluate a ScopeSim surface emission curve on ``wave``."""
+    emission = getattr(surface, "emission", None)
+    if emission is None:
+        return None
+    values = emission(wave)
+    if not isinstance(values, u.Quantity):
+        values = values * PHOTLAM
+    return values
+
+
+def surface_list_post_disperser_diffuse_terms(
+    surface_list: Any,
+    wave: u.Quantity,
+    groups: Mapping[str, tuple[str, ...]] | None = None,
+    qe_values: np.ndarray | None = None,
+    emission_phase: str = "post_disperser",
+) -> tuple[OrderedDict[str, u.Quantity], list[dict[str, Any]]]:
+    """Return post-disperser diffuse spectra grouped by optics metadata.
+
+    This is the physical counterpart to ``surface_list_emissivity_terms``. It
+    follows ScopeSim's downstream-emission bookkeeping, but only surfaces tagged
+    with ``emission_phase == "post_disperser"`` are returned as image-plane
+    diffuse background candidates.
+    """
+    name_col = _real_colname("name", surface_list.table.colnames)
+    action_col = _real_colname("action", surface_list.table.colnames)
+    if name_col is None or action_col is None:
+        raise ValueError("SurfaceList table must contain name and action columns.")
+
+    rows: list[dict[str, Any]] = []
+    for row in surface_list.table:
+        surface_name = str(_row_scalar(row, name_col))
+        action_name = str(_row_scalar(row, action_col))
+        group_name = surface_group_for_row(row, groups)
+        phase_name = emission_phase_for_row(row, group_name)
+        if phase_name not in {"pre_disperser", "post_disperser", "none"}:
+            raise ValueError(
+                f"Unknown emission_phase {phase_name!r} for {surface_name!r}; "
+                "expected pre_disperser, post_disperser, or none."
+            )
+        surface = surface_list.surfaces[surface_name]
+        rows.append({
+            "surface_name": surface_name,
+            "group": group_name,
+            "phase": phase_name,
+            "action": action_name,
+            "action_values": evaluate_curve(getattr(surface, action_name), wave),
+            "emission_values": evaluate_emission_density(surface, wave),
+            "temperature": surface.meta.get("temperature"),
+        })
+
+    downstream = [np.ones(wave.size, dtype=float) for _ in range(len(rows) + 1)]
+    for idx in range(len(rows) - 1, -1, -1):
+        downstream[idx] = downstream[idx + 1] * rows[idx]["action_values"]
+
+    if qe_values is None:
+        qe_values = np.ones(wave.size, dtype=float)
+
+    grouped: OrderedDict[str, u.Quantity] = OrderedDict()
+    details: list[dict[str, Any]] = []
+    for idx, row in enumerate(rows):
+        is_diffuse = row["phase"] == emission_phase
+        contribution = None
+        if is_diffuse and row["emission_values"] is not None:
+            contribution = row["emission_values"] * downstream[idx + 1] * qe_values
+            group_name = row["group"]
+            grouped[group_name] = (
+                contribution if group_name not in grouped
+                else grouped[group_name] + contribution
+            )
+
+        peak = np.nan
+        if contribution is not None:
+            peak = float(np.nanmax(_as_float_array(contribution)))
+        details.append({
+            "surface": row["surface_name"],
+            "group": row["group"],
+            "emission_phase": row["phase"],
+            "action": row["action"],
+            "temperature": row["temperature"],
+            "included_as_diffuse": is_diffuse,
+            "qe_applied": is_diffuse,
+            "peak_after_qe": peak,
+        })
+
+    return grouped, details
+
+
+def _image_plane_pixel_area(ztrain: Any, image_plane_id: int) -> u.Quantity:
+    from scopesim.utils import pixel_area
+
+    return pixel_area(ztrain.image_planes[image_plane_id].header)
+
+
+def _telescope_area(ztrain: Any) -> u.Quantity:
+    from scopesim.utils import from_currsys, quantify
+
+    return quantify(from_currsys("!TEL.area", ztrain.cmds), u.m**2)
+
+
+def build_post_disperser_diffuse_background_data(
+    ztrain: Any,
+    wave_nm: u.Quantity | None = None,
+    groups: Mapping[str, tuple[str, ...]] | None = None,
+    positional_qe_by_aperture: Mapping[int, Any] | None = None,
+) -> dict[str, Any]:
+    """Build image-plane post-disperser diffuse background data."""
+    from scopesim.effects.illumination import integrate_spectral_background
+
+    wave_nm = wave_nm if wave_nm is not None else np.linspace(300, 2500, 5000) * u.nm
+    wave = wave_nm.to(u.um)
+    positional_qe_by_aperture = positional_qe_by_aperture or {}
+    telescope_area = _telescope_area(ztrain)
+
+    dichroic_tree = get_effect(ztrain, "dichroic_tree")
+    channel_selector = get_effect(ztrain, "channel_optics_selector")
+    qe_selector = get_effect(ztrain, "detector_qe_selector")
+    trace_list = get_effect(ztrain, "trace_list_analytical")
+    traces_for_aperture = traces_by_aperture(trace_list)
+
+    aperture_ids = [
+        int(value)
+        for value in dichroic_tree.table[dichroic_tree.table.colnames[0]]
+    ]
+    channels: OrderedDict[int, dict[str, Any]] = OrderedDict()
+    details: list[dict[str, Any]] = []
+    for aperture_id in aperture_ids:
+        channel_optics = resolve_effect(channel_selector, aperture_id)
+        detector_qe = resolve_effect(qe_selector, aperture_id)
+        traces = traces_for_aperture.get(aperture_id, [])
+        image_plane_id = (
+            int(traces[0].meta["image_plane_id"]) if traces else aperture_id
+        )
+        image_pixel_area = _image_plane_pixel_area(ztrain, image_plane_id)
+        qe_values = effective_diffuse_qe(
+            detector_qe,
+            wave,
+            positional_qe=positional_qe_by_aperture.get(aperture_id),
+        )
+        spectra, surface_details = surface_list_post_disperser_diffuse_terms(
+            channel_optics,
+            wave,
+            groups=groups,
+            qe_values=qe_values,
+        )
+        rates = OrderedDict(
+            (name, integrate_spectral_background(
+                spectrum,
+                wave,
+                telescope_area=telescope_area,
+                image_pixel_area=image_pixel_area,
+            ))
+            for name, spectrum in spectra.items()
+        )
+        total_spectrum = _sum_quantity_terms(spectra)
+        total_rate = float(np.sum(list(rates.values()))) if rates else 0.0
+        label = channel_label(aperture_id, traces)
+
+        for row in surface_details:
+            row["aperture_id"] = aperture_id
+            row["image_plane_id"] = image_plane_id
+            row["channel"] = label
+            details.append(row)
+
+        channels[aperture_id] = {
+            "label": label,
+            "image_plane_id": image_plane_id,
+            "spectra": spectra,
+            "total_spectrum": total_spectrum,
+            "rates_ph_s_pix": rates,
+            "total_rate_ph_s_pix": total_rate,
+            "detector_qe": qe_values,
+            "pixel_area": image_pixel_area,
+            "telescope_area": telescope_area,
+            "detector_qe_note": "throughput only; detector emissivity is not modeled",
+        }
+
+    return {"wave_nm": wave_nm, "channels": channels, "details": Table(rows=details)}
+
+
+def _sum_quantity_terms(terms: Mapping[str, u.Quantity]) -> u.Quantity | None:
+    total = None
+    for values in terms.values():
+        total = values if total is None else total + values
+    return total
+
+
+def validate_post_disperser_diffuse_background_data(data: Mapping[str, Any]) -> None:
+    """Validate post-disperser diffuse background helper output."""
+    for aperture_id, channel in data["channels"].items():
+        if not channel["spectra"]:
+            raise ValueError(
+                f"No post-disperser diffuse spectra for aperture_id={aperture_id}"
+            )
+        if channel["total_rate_ph_s_pix"] < -1e-12:
+            raise ValueError(
+                f"Negative diffuse background for aperture_id={aperture_id}: "
+                f"{channel['total_rate_ph_s_pix']}"
+            )
+        if "detector_emissivity" in channel:
+            raise ValueError("Detector emissivity must not be included.")
+
+
+def _plot_quantity_values(values: u.Quantity) -> np.ndarray:
+    try:
+        return values.to_value(PHOTLAM)
+    except Exception:
+        return _as_float_array(values)
+
+
+def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
+    """Plot post-disperser diffuse spectra and integrated image-plane rates."""
+    import matplotlib.pyplot as plt
+
+    wave = data["wave_nm"].to_value(u.nm)
+    fig, axes = plt.subplots(
+        2, 3, figsize=(16, 7.5), sharex=True, constrained_layout=True,
+    )
+    colors = {
+        "camera": "tab:cyan",
+        "collimator": "tab:green",
+        "preoptics": "tab:blue",
+        "other": "0.5",
+    }
+    for ax, (aperture_id, channel) in zip(axes.flat, data["channels"].items()):
+        for name, spectrum in channel["spectra"].items():
+            ax.plot(
+                wave,
+                _plot_quantity_values(spectrum),
+                lw=1.0,
+                color=colors.get(name, "0.5"),
+                label=f"{name} diffuse",
+            )
+        if channel["total_spectrum"] is not None:
+            ax.plot(
+                wave,
+                _plot_quantity_values(channel["total_spectrum"]),
+                lw=1.8,
+                color="black",
+                alpha=0.75,
+                label="total diffuse",
+            )
+        ax.set_title(
+            f"{channel['label']} (image plane {channel['image_plane_id']}): "
+            f"{channel['total_rate_ph_s_pix']:.3g} ph/s/pix",
+        )
+        ax.set_xlim(wave.min(), wave.max())
+        ax.grid(alpha=0.2)
+
+    for ax in axes[-1, :]:
+        ax.set_xlabel("Wavelength [nm]")
+    for ax in axes[:, 0]:
+        ax.set_ylabel("Spectral background [PHOTLAM equiv.]")
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    dedup = OrderedDict(zip(labels, handles))
+    fig.legend(
+        dedup.values(), dedup.keys(), loc="outside upper center",
+        ncol=4, frameon=False,
+    )
+    return fig, axes
 
 
 def _sum_terms(terms: Mapping[str, np.ndarray], size: int) -> np.ndarray:

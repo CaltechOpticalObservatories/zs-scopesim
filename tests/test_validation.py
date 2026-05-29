@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 from astropy import units as u
 from astropy.table import Table
+from synphot.units import PHOTLAM
 
 from zs_scopesim_tools import validation as val
 
@@ -15,11 +16,26 @@ class ConstantCurve:
         return np.full(wave.size, self.value)
 
 
+class ConstantEmission:
+    def __init__(self, value):
+        self.value = value
+
+    def __call__(self, wave):
+        return np.full(wave.size, self.value) * PHOTLAM
+
+
 class FakeSurface:
-    def __init__(self, transmission=1.0, reflection=0.0, emissivity=0.0):
+    def __init__(
+        self,
+        transmission=1.0,
+        reflection=0.0,
+        emissivity=0.0,
+        emission=0.0,
+    ):
         self.transmission = ConstantCurve(transmission)
         self.reflection = ConstantCurve(reflection)
         self.emissivity = ConstantCurve(emissivity)
+        self.emission = ConstantEmission(emission)
         self.throughput = self.transmission
         self.meta = {"temperature": 120}
         self.table = Table({"wavelength": [1.0], "transmission": [transmission]})
@@ -34,8 +50,8 @@ class FakeSurfaceList:
             "emission_phase": ["pre_disperser", "post_disperser"],
         })
         self.surfaces = {
-            "Pre": FakeSurface(transmission=0.5, emissivity=0.1),
-            "Camera": FakeSurface(transmission=0.8, emissivity=0.2),
+            "Pre": FakeSurface(transmission=0.5, emissivity=0.1, emission=100.0),
+            "Camera": FakeSurface(transmission=0.8, emissivity=0.2, emission=2.0),
         }
 
 
@@ -139,6 +155,29 @@ def test_surface_list_emissivity_terms_rejects_unknown_phase():
 
     with np.testing.assert_raises_regex(ValueError, "Unknown emission_phase"):
         val.surface_list_emissivity_terms(surface_list, wave)
+
+
+def test_surface_list_post_disperser_diffuse_terms_uses_post_phase_and_qe():
+    wave = np.linspace(1, 2, 4) * u.um
+    qe_values = np.full(wave.size, 0.5)
+
+    spectra, details = val.surface_list_post_disperser_diffuse_terms(
+        FakeSurfaceList(), wave, qe_values=qe_values,
+    )
+
+    assert list(spectra) == ["camera"]
+    np.testing.assert_allclose(spectra["camera"].value, np.full(wave.size, 1.0))
+    included = [row for row in details if row["included_as_diffuse"]]
+    assert [row["surface"] for row in included] == ["Camera"]
+
+
+def test_surface_list_post_disperser_diffuse_terms_rejects_unknown_phase():
+    surface_list = FakeSurfaceList()
+    surface_list.table["emission_phase"][1] = "typo"
+    wave = np.linspace(1, 2, 4) * u.um
+
+    with np.testing.assert_raises_regex(ValueError, "Unknown emission_phase"):
+        val.surface_list_post_disperser_diffuse_terms(surface_list, wave)
 
 
 def test_dichroic_path_throughput_uses_tree_actions():
