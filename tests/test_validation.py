@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from astropy import units as u
+from astropy.io import fits
 from astropy.table import Table
 from synphot.units import PHOTLAM
 
@@ -99,6 +100,24 @@ class FakeTraceList:
         }
 
 
+class FakeImagePlane:
+    def __init__(self, header):
+        self.header = header
+
+
+class FakeTrainWithImagePlane:
+    cmds = {"!INST.plate_scale": 10.0}
+
+    def __init__(self):
+        header = fits.Header({
+            "CDELT1D": 0.015,
+            "CUNIT1D": "mm",
+            "CDELT2D": 0.015,
+            "CUNIT2D": "mm",
+        })
+        self.image_planes = [FakeImagePlane(header)]
+
+
 def test_effect_name_handles_objects_without_meta():
     obj = object()
     assert val.effect_name(obj).startswith("<object object at ")
@@ -178,6 +197,12 @@ def test_surface_list_post_disperser_diffuse_terms_rejects_unknown_phase():
 
     with np.testing.assert_raises_regex(ValueError, "Unknown emission_phase"):
         val.surface_list_post_disperser_diffuse_terms(surface_list, wave)
+
+
+def test_image_plane_pixel_area_handles_detector_wcs_headers():
+    area = val._image_plane_pixel_area(FakeTrainWithImagePlane(), 0)
+
+    np.testing.assert_allclose(area.to_value(u.arcsec**2), 0.0225)
 
 
 def test_dichroic_path_throughput_uses_tree_actions():

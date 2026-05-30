@@ -608,9 +608,12 @@ def surface_list_post_disperser_diffuse_terms(
 
 
 def _image_plane_pixel_area(ztrain: Any, image_plane_id: int) -> u.Quantity:
-    from scopesim.utils import pixel_area
+    from scopesim.effects.illumination import image_plane_pixel_area
 
-    return pixel_area(ztrain.image_planes[image_plane_id].header)
+    return image_plane_pixel_area(
+        ztrain.image_planes[image_plane_id].header,
+        ztrain.cmds,
+    )
 
 
 def _telescope_area(ztrain: Any) -> u.Quantity:
