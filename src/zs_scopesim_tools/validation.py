@@ -1338,6 +1338,209 @@ def detector_selector_matrix(ztrain: Any) -> Table:
     return Table(rows=rows)
 
 
+def detector_background_budget_table(
+    ztrain: Any,
+    post_diffuse_data: Mapping[str, Any] | None = None,
+    post_diffuse_consistency: Table | None = None,
+) -> Table:
+    """Return per-detector background and noise budget terms.
+
+    The additive signal columns follow the detector pipeline: image-plane
+    diffuse rates are multiplied by ``DIT * NDIT``; dark current is already a
+    detector term in e-/s/pix; read noise is reported as RMS after NDIT.
+    Detector QE is already included in the diffuse rate and is not treated as
+    an emissive detector source.
+    """
+    detectors = detector_geometry_table(ztrain)
+    rows: list[dict[str, Any]] = []
+    for detector in detectors:
+        detector_id = int(detector["detector_id"])
+        image_plane_id = int(detector["image_plane_id"])
+        exposure = _selected_detector_effect(
+            ztrain, "exposure_integration_selector", detector,
+        )
+        dark_current = _selected_detector_effect(
+            ztrain, "dark_current_selector", detector,
+        )
+        read_noise = _selected_detector_effect(
+            ztrain, "readout_noise_selector", detector,
+        )
+        bias = _selected_detector_effect(ztrain, "bias_selector", detector)
+
+        dit = _resolved_detector_meta(exposure, "dit", ztrain.cmds, detector_id)
+        ndit = _resolved_detector_meta(exposure, "ndit", ztrain.cmds, detector_id)
+        exposure_time = dit * ndit
+        diffuse_rate = _post_diffuse_rate_for_image_plane(
+            ztrain,
+            image_plane_id,
+            post_diffuse_data=post_diffuse_data,
+            post_diffuse_consistency=post_diffuse_consistency,
+        )
+        dark_rate = _resolved_detector_meta(
+            dark_current, "value", ztrain.cmds, detector_id, default=0.0,
+        )
+        read_noise_single = _resolved_detector_meta(
+            read_noise, "noise_std", ztrain.cmds, detector_id, default=0.0,
+        )
+        read_ndit = _resolved_detector_meta(
+            read_noise, "ndit", ztrain.cmds, detector_id, default=ndit,
+        )
+        bias_level = _resolved_detector_meta(
+            bias, "bias", ztrain.cmds, detector_id, default=0.0,
+        )
+
+        diffuse_counts = diffuse_rate * exposure_time
+        dark_counts = dark_rate * exposure_time
+        diffuse_noise = np.sqrt(max(diffuse_counts, 0.0))
+        dark_noise = np.sqrt(max(dark_counts, 0.0))
+        read_noise_total = read_noise_single * np.sqrt(read_ndit)
+        total_noise = np.sqrt(
+            diffuse_noise**2 + dark_noise**2 + read_noise_total**2,
+        )
+
+        rows.append({
+            "detector_id": detector_id,
+            "image_plane_id": image_plane_id,
+            "channel": str(detector["channel"]),
+            "detector": str(detector["detector"]),
+            "dit_s": dit,
+            "ndit": ndit,
+            "exposure_time_s": exposure_time,
+            "post_diffuse_rate_ph_s_pix": diffuse_rate,
+            "post_diffuse_e_pix": diffuse_counts,
+            "dark_current_e_s_pix": dark_rate,
+            "dark_current_e_pix": dark_counts,
+            "bias_e_pix": bias_level,
+            "read_noise_e_rms": read_noise_total,
+            "diffuse_shot_noise_e_rms": diffuse_noise,
+            "dark_shot_noise_e_rms": dark_noise,
+            "total_noise_e_rms": total_noise,
+        })
+
+    return Table(rows=rows)
+
+
+def plot_detector_background_budget(table: Table):
+    """Plot additive detector-background and noise terms by channel."""
+    import matplotlib.pyplot as plt
+
+    channels = [str(value) for value in table["channel"]]
+    x = np.arange(len(channels))
+    fig, axes = plt.subplots(
+        1, 2, figsize=(14, 4.6), constrained_layout=True,
+    )
+    signal_ax, noise_ax = axes
+
+    diffuse = np.asarray(table["post_diffuse_e_pix"], dtype=float)
+    dark = np.asarray(table["dark_current_e_pix"], dtype=float)
+    bias = np.asarray(table["bias_e_pix"], dtype=float)
+    signal_ax.bar(x, diffuse, width=0.7, label="post-disperser diffuse")
+    signal_ax.bar(x, dark, width=0.7, bottom=diffuse, label="dark current")
+    signal_ax.plot(x, bias, "o", color="black", label="bias offset")
+    signal_ax.set_yscale("symlog", linthresh=1.0)
+    signal_ax.set_xticks(x, channels)
+    signal_ax.set_ylabel("Detector signal [e-/pix]")
+    signal_ax.set_title("Additive Signal")
+    signal_ax.grid(axis="y", alpha=0.2)
+    signal_ax.legend(frameon=False, fontsize="small")
+
+    width = 0.2
+    noise_terms = [
+        ("diffuse shot", "diffuse_shot_noise_e_rms", "tab:blue"),
+        ("dark shot", "dark_shot_noise_e_rms", "tab:green"),
+        ("read", "read_noise_e_rms", "tab:orange"),
+        ("total", "total_noise_e_rms", "black"),
+    ]
+    offsets = (np.arange(len(noise_terms)) - 1.5) * width
+    for offset, (label, column, color) in zip(offsets, noise_terms, strict=True):
+        noise_ax.bar(
+            x + offset, np.asarray(table[column], dtype=float),
+            width=width, color=color, label=label,
+        )
+    noise_ax.set_yscale("symlog", linthresh=1.0)
+    noise_ax.set_xticks(x, channels)
+    noise_ax.set_ylabel("Noise [e- RMS/pix]")
+    noise_ax.set_title("Noise Terms")
+    noise_ax.grid(axis="y", alpha=0.2)
+    noise_ax.legend(frameon=False, fontsize="small")
+    return fig, axes
+
+
+def _selected_detector_effect(
+    ztrain: Any,
+    selector_name: str,
+    detector_row: Any,
+) -> Any | None:
+    try:
+        selector = get_effect(ztrain, selector_name)
+    except ValueError:
+        return None
+    selector_value = _selector_value_for_detector(selector, detector_row)
+    if selector_value is None:
+        return None
+    try:
+        return resolve_effect(selector, selector_value)
+    except KeyError:
+        return None
+
+
+def _resolved_detector_meta(
+    effect: Any | None,
+    key: str,
+    cmds: Any,
+    detector_id: int,
+    *,
+    default: float = np.nan,
+) -> float:
+    from scopesim.utils import from_currsys
+
+    if effect is None or key not in getattr(effect, "meta", {}):
+        return float(default)
+    value = from_currsys(effect.meta[key], cmds)
+    if isinstance(value, Mapping):
+        value = from_currsys(value[detector_id], cmds)
+    return float(value)
+
+
+def _post_diffuse_rate_for_image_plane(
+    ztrain: Any,
+    image_plane_id: int,
+    *,
+    post_diffuse_data: Mapping[str, Any] | None = None,
+    post_diffuse_consistency: Table | None = None,
+) -> float:
+    if post_diffuse_consistency is not None:
+        matches = post_diffuse_consistency[
+            np.asarray(post_diffuse_consistency["image_plane_id"], dtype=int)
+            == image_plane_id
+        ]
+        if len(matches):
+            if (
+                "effect_included" in matches.colnames
+                and not bool(matches[0]["effect_included"])
+            ):
+                return 0.0
+            return float(matches[0]["effect_rate_ph_s_pix"])
+
+    if post_diffuse_data is not None:
+        for channel in post_diffuse_data["channels"].values():
+            if int(channel["image_plane_id"]) == image_plane_id:
+                return float(channel["total_rate_ph_s_pix"])
+
+    try:
+        selector = get_effect(
+            ztrain, "post_echelle_diffuse_background_selector", active_only=False,
+        )
+        if not getattr(selector, "include", True):
+            return 0.0
+        effect = resolve_effect(selector, image_plane_id)
+    except (ValueError, KeyError):
+        return 0.0
+    if not getattr(effect, "include", True):
+        return 0.0
+    return float(effect.background_value(ztrain.image_planes[image_plane_id]))
+
+
 def dichroic_path_throughput(
     dichroic_tree: Any,
     aperture_id: int,

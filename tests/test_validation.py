@@ -153,6 +153,75 @@ class FakeTrainWithDiffuseEffect(FakeTrainWithImagePlane):
         self.optics_manager = FakeOpticsManager()
 
 
+class DetectorList:
+    include = True
+
+    def __init__(self):
+        self.meta = {
+            "name": "detector_b",
+            "image_plane_id": 0,
+            "detector": "CCD_B",
+        }
+        self.table = Table({
+            "id": [0],
+            "x_size": [2],
+            "y_size": [2],
+            "pixel_size": [0.015],
+            "gain": [1.0],
+        })
+
+
+class FakeSelectedEffect:
+    include = True
+
+    def __init__(self, **meta):
+        self.meta = meta
+
+
+class FakeNamedSelector:
+    include = True
+
+    def __init__(self, name, selector_key, effects):
+        self.display_name = name
+        self.meta = {"name": name, "selector_key": selector_key}
+        self.wheel_effects = effects
+
+
+class FakeBudgetOpticsManager:
+    def __init__(self):
+        self.all_effects = [
+            DetectorList(),
+            FakeNamedSelector(
+                "exposure_integration_selector",
+                "detector_id",
+                {0: FakeSelectedEffect(dit=10.0, ndit=3)},
+            ),
+            FakeNamedSelector(
+                "dark_current_selector",
+                "detector_id",
+                {0: FakeSelectedEffect(value=0.1, dit=10.0, ndit=3)},
+            ),
+            FakeNamedSelector(
+                "readout_noise_selector",
+                "detector_id",
+                {0: FakeSelectedEffect(noise_std=5.0, ndit=3)},
+            ),
+            FakeNamedSelector(
+                "bias_selector",
+                "detector_id",
+                {0: FakeSelectedEffect(bias=1040.0)},
+            ),
+        ]
+
+
+class FakeBudgetTrain(FakeTrainWithImagePlane):
+    cmds = {}
+
+    def __init__(self):
+        super().__init__()
+        self.optics_manager = FakeBudgetOpticsManager()
+
+
 def test_effect_name_handles_objects_without_meta():
     obj = object()
     assert val.effect_name(obj).startswith("<object object at ")
@@ -339,3 +408,26 @@ def test_trace_catalog_table_uses_in_memory_traces():
     assert list(table["aperture_id"]) == [0, 1]
     assert list(table["image_plane_id"]) == [2, 3]
     np.testing.assert_allclose(table["wave_min_um"], [0.3, 0.5])
+
+
+def test_detector_background_budget_table_combines_detector_terms():
+    diffuse_data = {
+        "channels": {
+            0: {
+                "image_plane_id": 0,
+                "total_rate_ph_s_pix": 2.0,
+            },
+        },
+    }
+
+    table = val.detector_background_budget_table(
+        FakeBudgetTrain(), post_diffuse_data=diffuse_data,
+    )
+
+    assert list(table["channel"]) == ["B"]
+    np.testing.assert_allclose(table["exposure_time_s"], [30.0])
+    np.testing.assert_allclose(table["post_diffuse_e_pix"], [60.0])
+    np.testing.assert_allclose(table["dark_current_e_pix"], [3.0])
+    np.testing.assert_allclose(table["read_noise_e_rms"], [5.0 * np.sqrt(3)])
+    expected_total_noise = np.sqrt(60.0 + 3.0 + 75.0)
+    np.testing.assert_allclose(table["total_noise_e_rms"], [expected_total_noise])
