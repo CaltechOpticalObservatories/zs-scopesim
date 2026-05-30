@@ -270,6 +270,57 @@ def test_validate_post_disperser_diffuse_effect_consistency_rejects_mismatch():
         val.validate_post_disperser_diffuse_effect_consistency(table, rtol=1e-6)
 
 
+def test_copy_image_plane_data_returns_detached_arrays():
+    class DataPlane:
+        def __init__(self):
+            self.hdu = fits.ImageHDU(data=np.ones((2, 2)))
+
+    ztrain = type("Train", (), {"image_planes": [DataPlane()]})()
+
+    copied = val.copy_image_plane_data(ztrain)
+    ztrain.image_planes[0].hdu.data[0, 0] = 9
+
+    assert list(copied) == [0]
+    np.testing.assert_allclose(copied[0], np.ones((2, 2)))
+
+
+def test_image_plane_delta_summary_compares_uniform_expected_rates():
+    with_effect = {
+        2: np.full((2, 3), 4.25),
+        3: np.full((2, 2), 8.5),
+    }
+    without_effect = {
+        2: np.full((2, 3), 1.25),
+        3: np.full((2, 2), 4.5),
+    }
+    expected = Table({
+        "image_plane_id": [2, 3],
+        "effect_rate_ph_s_pix": [3.0, 4.0],
+    })
+
+    table = val.image_plane_delta_summary(
+        with_effect, without_effect, expected_rates=expected,
+    )
+
+    assert list(table["image_plane_id"]) == [2, 3]
+    assert list(table["shape"]) == ["2x3", "2x2"]
+    np.testing.assert_allclose(table["mean_delta_ph_s_pix"], [3.0, 4.0])
+    np.testing.assert_allclose(table["std_delta_ph_s_pix"], [0.0, 0.0])
+    np.testing.assert_allclose(table["expected_rel_delta"], [0.0, 0.0])
+    val.validate_image_plane_delta_summary(table)
+
+
+def test_validate_image_plane_delta_summary_rejects_nonuniform_delta():
+    table = Table({
+        "expected_rel_delta": [0.0],
+        "std_delta_ph_s_pix": [0.2],
+        "mean_delta_ph_s_pix": [1.0],
+    })
+
+    with np.testing.assert_raises_regex(ValueError, "not spatially uniform"):
+        val.validate_image_plane_delta_summary(table)
+
+
 def test_dichroic_path_throughput_uses_tree_actions():
     wave = np.linspace(1, 2, 4) * u.um
 

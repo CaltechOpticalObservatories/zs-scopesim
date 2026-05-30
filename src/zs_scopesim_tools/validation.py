@@ -807,6 +807,237 @@ def _relative_delta(value: float, reference: float) -> float:
     return (value - reference) / reference
 
 
+def copy_image_plane_data(ztrain: Any) -> dict[int, np.ndarray]:
+    """Return detached copies of populated optical-train image planes."""
+    copies = {}
+    for image_plane_id, image_plane in enumerate(ztrain.image_planes):
+        if image_plane is None:
+            continue
+        try:
+            data = _image_plane_array(image_plane)
+        except ValueError:
+            continue
+        copies[int(image_plane_id)] = np.array(data, dtype=float, copy=True)
+    return copies
+
+
+def image_plane_delta_summary(
+    with_effect: Any,
+    without_effect: Any,
+    *,
+    expected_rates: Mapping[str, Any] | Mapping[int, float] | Table | None = None,
+    expected_rate_column: str | None = None,
+    image_plane_ids: list[int] | np.ndarray | None = None,
+) -> Table:
+    """Summarize image-plane differences from toggling a scalar background.
+
+    ``with_effect`` and ``without_effect`` may be image-plane objects, HDUs,
+    arrays, mappings keyed by image-plane id, or an optical train. The returned
+    table is intended for checks such as post-disperser diffuse emissivity,
+    where the expected image-plane signature is a uniform additive offset.
+    """
+    with_planes = _image_plane_items(with_effect, image_plane_ids)
+    without_planes = _image_plane_items(without_effect, image_plane_ids)
+    if set(with_planes) != set(without_planes):
+        raise ValueError(
+            "with_effect and without_effect have different image-plane ids: "
+            f"{sorted(with_planes)} != {sorted(without_planes)}"
+        )
+
+    expected_by_plane = _expected_rates_by_image_plane(
+        expected_rates, expected_rate_column,
+    )
+    rows = []
+    for image_plane_id in sorted(with_planes):
+        enabled = with_planes[image_plane_id]
+        disabled = without_planes[image_plane_id]
+        if enabled.shape != disabled.shape:
+            raise ValueError(
+                f"Image plane {image_plane_id} shape mismatch: "
+                f"{enabled.shape} != {disabled.shape}"
+            )
+
+        delta = enabled - disabled
+        finite_delta = delta[np.isfinite(delta)]
+        if finite_delta.size == 0:
+            raise ValueError(f"Image plane {image_plane_id} has no finite pixels.")
+
+        mean_delta = float(np.mean(finite_delta))
+        std_delta = float(np.std(finite_delta))
+        min_delta = float(np.min(finite_delta))
+        max_delta = float(np.max(finite_delta))
+        median_delta = float(np.median(finite_delta))
+        expected_rate = expected_by_plane.get(image_plane_id, np.nan)
+        rows.append({
+            "image_plane_id": int(image_plane_id),
+            "shape": "x".join(str(value) for value in enabled.shape),
+            "n_pixels": int(finite_delta.size),
+            "mean_delta_ph_s_pix": mean_delta,
+            "median_delta_ph_s_pix": median_delta,
+            "std_delta_ph_s_pix": std_delta,
+            "min_delta_ph_s_pix": min_delta,
+            "max_delta_ph_s_pix": max_delta,
+            "peak_to_peak_delta_ph_s_pix": max_delta - min_delta,
+            "std_over_abs_mean": _ratio_to_abs_reference(std_delta, mean_delta),
+            "expected_rate_ph_s_pix": expected_rate,
+            "mean_minus_expected_ph_s_pix": mean_delta - expected_rate,
+            "expected_rel_delta": _relative_delta(mean_delta, expected_rate),
+        })
+
+    return Table(rows=rows)
+
+
+def validate_image_plane_delta_summary(
+    table: Table,
+    *,
+    expected_rtol: float = 1e-3,
+    uniformity_rtol: float = 1e-4,
+    uniformity_atol: float = 1e-6,
+    require_expected: bool = True,
+) -> None:
+    """Validate that an image-plane delta is uniform and rate-consistent."""
+    if len(table) == 0:
+        raise ValueError("Image-plane delta summary is empty.")
+
+    expected_rel_delta = np.asarray(table["expected_rel_delta"], dtype=float)
+    if require_expected and not np.all(np.isfinite(expected_rel_delta)):
+        bad = table[~np.isfinite(expected_rel_delta)]
+        raise ValueError(f"Missing expected image-plane rates: {bad}")
+
+    finite_expected = np.isfinite(expected_rel_delta)
+    if np.any(np.abs(expected_rel_delta[finite_expected]) > expected_rtol):
+        bad = table[
+            finite_expected & (np.abs(expected_rel_delta) > expected_rtol)
+        ]
+        raise ValueError(
+            f"Image-plane delta differs from expected rate above "
+            f"{expected_rtol}: {bad}"
+        )
+
+    std_delta = np.asarray(table["std_delta_ph_s_pix"], dtype=float)
+    mean_delta = np.asarray(table["mean_delta_ph_s_pix"], dtype=float)
+    tolerance = uniformity_atol + uniformity_rtol * np.abs(mean_delta)
+    if np.any(std_delta > tolerance):
+        bad = table[std_delta > tolerance]
+        raise ValueError(
+            "Image-plane delta is not spatially uniform within "
+            f"atol={uniformity_atol}, rtol={uniformity_rtol}: {bad}"
+        )
+
+
+def _image_plane_items(
+    planes: Any,
+    image_plane_ids: list[int] | np.ndarray | None = None,
+) -> dict[int, np.ndarray]:
+    if hasattr(planes, "image_planes"):
+        planes = planes.image_planes
+
+    if isinstance(planes, Mapping):
+        items = {
+            int(image_plane_id): _image_plane_array(plane)
+            for image_plane_id, plane in planes.items()
+        }
+        if image_plane_ids is None:
+            return items
+        missing = [
+            int(image_plane_id) for image_plane_id in image_plane_ids
+            if int(image_plane_id) not in items
+        ]
+        if missing:
+            raise ValueError(f"Missing image-plane ids: {missing}")
+        return {
+            int(image_plane_id): items[int(image_plane_id)]
+            for image_plane_id in image_plane_ids
+        }
+
+    if (
+        isinstance(planes, np.ndarray)
+        or hasattr(planes, "hdu")
+        or hasattr(planes, "data")
+    ):
+        planes = [planes]
+
+    values = list(planes)
+    if image_plane_ids is None:
+        image_plane_ids = np.arange(len(values), dtype=int)
+    if len(image_plane_ids) != len(values):
+        raise ValueError(
+            f"Expected {len(values)} image-plane ids, got {len(image_plane_ids)}."
+        )
+    return {
+        int(image_plane_id): _image_plane_array(plane)
+        for image_plane_id, plane in zip(image_plane_ids, values, strict=True)
+    }
+
+
+def _image_plane_array(image_plane: Any) -> np.ndarray:
+    if image_plane is None:
+        raise ValueError("Image plane is None.")
+    if hasattr(image_plane, "hdu") and image_plane.hdu is not None:
+        data = image_plane.hdu.data
+    elif hasattr(image_plane, "data"):
+        data = image_plane.data
+    else:
+        data = image_plane
+    if data is None:
+        raise ValueError(f"Image plane {image_plane!r} has no data array.")
+    return np.asarray(data, dtype=float)
+
+
+def _expected_rates_by_image_plane(
+    expected_rates: Mapping[str, Any] | Mapping[int, float] | Table | None,
+    expected_rate_column: str | None,
+) -> dict[int, float]:
+    if expected_rates is None:
+        return {}
+
+    if isinstance(expected_rates, Table):
+        if "image_plane_id" not in expected_rates.colnames:
+            raise ValueError("Expected-rate table needs an image_plane_id column.")
+        rate_col = expected_rate_column or _first_available_column(
+            expected_rates,
+            (
+                "effect_rate_ph_s_pix",
+                "matched_helper_rate_ph_s_pix",
+                "helper_rate_ph_s_pix",
+                "total_rate_ph_s_pix",
+            ),
+        )
+        return {
+            int(row["image_plane_id"]): float(row[rate_col])
+            for row in expected_rates
+        }
+
+    if "channels" in expected_rates:
+        return {
+            int(channel["image_plane_id"]): float(channel["total_rate_ph_s_pix"])
+            for channel in expected_rates["channels"].values()
+        }
+
+    return {
+        int(image_plane_id): float(rate)
+        for image_plane_id, rate in expected_rates.items()
+    }
+
+
+def _first_available_column(table: Table, candidates: tuple[str, ...]) -> str:
+    for candidate in candidates:
+        if candidate in table.colnames:
+            return candidate
+    raise ValueError(
+        "Expected-rate table has none of these columns: "
+        f"{', '.join(candidates)}"
+    )
+
+
+def _ratio_to_abs_reference(value: float, reference: float) -> float:
+    if not np.isfinite(value) or not np.isfinite(reference):
+        return np.nan
+    if reference == 0:
+        return 0.0 if value == 0 else np.inf
+    return value / abs(reference)
+
+
 def _sum_quantity_terms(terms: Mapping[str, u.Quantity]) -> u.Quantity | None:
     total = None
     for values in terms.values():
