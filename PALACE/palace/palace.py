@@ -2089,7 +2089,8 @@ def _convolve_p(flux0, dflux0, imin, imax, rsig, xerf0, dxerf, yerf):
             
         #Get position in array of error function values
         ierf = ((x * errfac - xerfmin) // dxerf).astype('int32')
-        ierf = np.clip(ierf, 0, nerf - 1)
+        ierf[ierf < 0] = 0
+        ierf[ierf >= nerf] = nerf - 1
                 
         #Get weights for each relevant pixel from integration of error
         #function

@@ -689,6 +689,14 @@ def build_post_disperser_diffuse_background_data(
         channels[aperture_id] = {
             "label": label,
             "image_plane_id": image_plane_id,
+            "trace_wave_min_nm": (
+                min(_trace_wave_nm(trace.wave_min) for trace in traces)
+                if traces else np.nan
+            ),
+            "trace_wave_max_nm": (
+                max(_trace_wave_nm(trace.wave_max) for trace in traces)
+                if traces else np.nan
+            ),
             "spectra": spectra,
             "total_spectrum": total_spectrum,
             "rates_ph_s_pix": rates,
@@ -1045,6 +1053,11 @@ def _sum_quantity_terms(terms: Mapping[str, u.Quantity]) -> u.Quantity | None:
     return total
 
 
+def _trace_wave_nm(value: Any) -> float:
+    wave = value if isinstance(value, u.Quantity) else value * u.um
+    return float(wave.to_value(u.nm))
+
+
 def validate_post_disperser_diffuse_background_data(data: Mapping[str, Any]) -> None:
     """Validate post-disperser diffuse background helper output."""
     for aperture_id, channel in data["channels"].items():
@@ -1083,11 +1096,19 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
         "other": "0.5",
     }
     for ax, (aperture_id, channel) in zip(axes.flat, data["channels"].items()):
+        trace_min = channel.get("trace_wave_min_nm", np.nan)
+        trace_max = channel.get("trace_wave_max_nm", np.nan)
+        if np.isfinite(trace_min) and np.isfinite(trace_max):
+            ax.axvspan(
+                trace_min, trace_max, color="0.2", alpha=0.08,
+                label="trace wavelength span",
+            )
+
         for name, spectrum in channel["spectra"].items():
             ax.plot(
                 wave,
                 _plot_quantity_values(spectrum),
-                lw=1.0,
+                lw=1.4,
                 color=colors.get(name, "0.5"),
                 label=f"{name} diffuse",
             )
@@ -1095,7 +1116,7 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
             ax.plot(
                 wave,
                 _plot_quantity_values(channel["total_spectrum"]),
-                lw=1.8,
+                lw=1.5,
                 color="black",
                 alpha=0.75,
                 label="total diffuse",
@@ -1113,6 +1134,11 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
         ax.set_ylabel("Spectral background [PHOTLAM equiv.]")
     handles, labels = axes.flat[0].get_legend_handles_labels()
     dedup = OrderedDict(zip(labels, handles))
+    fig.suptitle(
+        "Post-disperser diffuse emission is added after dichroic/echelle "
+        "trace mapping; pre-disperser thermal light remains dichroic-filtered.",
+        fontsize=11,
+    )
     fig.legend(
         dedup.values(), dedup.keys(), loc="outside upper center",
         ncol=4, frameon=False,
