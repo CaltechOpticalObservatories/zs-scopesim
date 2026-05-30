@@ -702,6 +702,111 @@ def build_post_disperser_diffuse_background_data(
     return {"wave_nm": wave_nm, "channels": channels, "details": Table(rows=details)}
 
 
+def post_disperser_diffuse_effect_consistency_table(
+    ztrain: Any,
+    helper_data: Mapping[str, Any],
+    *,
+    effect_display_name: str = "post_echelle_diffuse_background_selector",
+    match_effect_grid: bool = True,
+) -> Table:
+    """Compare notebook helper rates to the configured image-plane effect.
+
+    ``helper_data`` is normally the output of
+    :func:`build_post_disperser_diffuse_background_data`. The ``matched`` rate
+    is recomputed on the effect's own wavelength grid when possible, so the
+    table separates wavelength-sampling differences from real wiring problems.
+    """
+    selector = get_effect(ztrain, effect_display_name, active_only=False)
+    matched_data_by_image_plane = {}
+    if match_effect_grid:
+        matched_data_by_image_plane = _matched_post_diffuse_data_by_image_plane(
+            ztrain, helper_data, selector,
+        )
+
+    rows = []
+    for aperture_id, channel in helper_data["channels"].items():
+        image_plane_id = int(channel["image_plane_id"])
+        effect = resolve_effect(selector, image_plane_id)
+        effect_rate = float(effect.background_value(ztrain.image_planes[image_plane_id]))
+        helper_rate = float(channel["total_rate_ph_s_pix"])
+        matched_channel = matched_data_by_image_plane.get(image_plane_id, {}).get(
+            "channels", {},
+        ).get(aperture_id)
+        matched_rate = (
+            float(matched_channel["total_rate_ph_s_pix"])
+            if matched_channel is not None
+            else np.nan
+        )
+        rows.append({
+            "aperture_id": int(aperture_id),
+            "channel": channel["label"],
+            "image_plane_id": image_plane_id,
+            "effect_class": effect.__class__.__name__,
+            "effect_included": bool(getattr(effect, "include", True)),
+            "surface_file": effect.meta.get("filename", ""),
+            "detector_qe_file": effect.meta.get("detector_qe_filename", ""),
+            "pixel_area_arcsec2": channel["pixel_area"].to_value(u.arcsec**2),
+            "helper_rate_ph_s_pix": helper_rate,
+            "effect_rate_ph_s_pix": effect_rate,
+            "helper_rel_delta": _relative_delta(helper_rate, effect_rate),
+            "matched_helper_rate_ph_s_pix": matched_rate,
+            "matched_rel_delta": _relative_delta(matched_rate, effect_rate),
+        })
+
+    return Table(rows=rows)
+
+
+def validate_post_disperser_diffuse_effect_consistency(
+    table: Table,
+    *,
+    rtol: float = 1e-6,
+    use_matched: bool = True,
+) -> None:
+    """Validate helper/effect agreement for post-disperser diffuse background."""
+    delta_col = "matched_rel_delta" if use_matched else "helper_rel_delta"
+    finite = np.isfinite(table[delta_col])
+    if not np.all(finite):
+        bad = table[~finite]
+        raise ValueError(f"Non-finite {delta_col} rows: {bad}")
+
+    abs_delta = np.abs(np.asarray(table[delta_col], dtype=float))
+    if np.nanmax(abs_delta) > rtol:
+        bad = table[abs_delta > rtol]
+        raise ValueError(
+            f"Post-disperser diffuse helper/effect mismatch above {rtol}: {bad}"
+        )
+
+
+def _matched_post_diffuse_data_by_image_plane(
+    ztrain: Any,
+    helper_data: Mapping[str, Any],
+    selector: Any,
+) -> dict[int, Mapping[str, Any]]:
+    matched = {}
+    cache = {}
+    for channel in helper_data["channels"].values():
+        image_plane_id = int(channel["image_plane_id"])
+        effect = resolve_effect(selector, image_plane_id)
+        if not hasattr(effect, "_waveset"):
+            continue
+        wave_nm = effect._waveset().to(u.nm)
+        cache_key = tuple(np.round(wave_nm.to_value(u.nm), 12))
+        if cache_key not in cache:
+            cache[cache_key] = build_post_disperser_diffuse_background_data(
+                ztrain, wave_nm=wave_nm,
+            )
+        matched[image_plane_id] = cache[cache_key]
+    return matched
+
+
+def _relative_delta(value: float, reference: float) -> float:
+    if not np.isfinite(value) or not np.isfinite(reference):
+        return np.nan
+    if reference == 0:
+        return 0.0 if value == 0 else np.inf
+    return (value - reference) / reference
+
+
 def _sum_quantity_terms(terms: Mapping[str, u.Quantity]) -> u.Quantity | None:
     total = None
     for values in terms.values():

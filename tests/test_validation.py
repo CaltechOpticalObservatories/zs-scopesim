@@ -118,6 +118,41 @@ class FakeTrainWithImagePlane:
         self.image_planes = [FakeImagePlane(header)]
 
 
+class FakeDiffuseEffect:
+    include = True
+    meta = {
+        "filename": "optics/LIST_fake.dat",
+        "detector_qe_filename": "detector_specs/QE_fake.dat",
+    }
+
+    def __init__(self, rate):
+        self.rate = rate
+
+    def background_value(self, image_plane):
+        return self.rate
+
+
+class FakeSelector:
+    display_name = "post_echelle_diffuse_background_selector"
+    include = True
+    meta = {"name": display_name}
+
+    def __init__(self):
+        self.wheel_effects = {2: FakeDiffuseEffect(1.0)}
+
+
+class FakeOpticsManager:
+    def __init__(self):
+        self.all_effects = [FakeSelector()]
+
+
+class FakeTrainWithDiffuseEffect(FakeTrainWithImagePlane):
+    def __init__(self):
+        super().__init__()
+        self.image_planes = [None, None, *self.image_planes]
+        self.optics_manager = FakeOpticsManager()
+
+
 def test_effect_name_handles_objects_without_meta():
     obj = object()
     assert val.effect_name(obj).startswith("<object object at ")
@@ -203,6 +238,36 @@ def test_image_plane_pixel_area_handles_detector_wcs_headers():
     area = val._image_plane_pixel_area(FakeTrainWithImagePlane(), 0)
 
     np.testing.assert_allclose(area.to_value(u.arcsec**2), 0.0225)
+
+
+def test_post_disperser_diffuse_effect_consistency_table_compares_rates():
+    helper_data = {
+        "channels": {
+            0: {
+                "label": "B",
+                "image_plane_id": 2,
+                "pixel_area": 0.01 * u.arcsec**2,
+                "total_rate_ph_s_pix": 1.01,
+            },
+        },
+    }
+
+    table = val.post_disperser_diffuse_effect_consistency_table(
+        FakeTrainWithDiffuseEffect(), helper_data, match_effect_grid=False,
+    )
+
+    assert list(table["channel"]) == ["B"]
+    np.testing.assert_allclose(table["effect_rate_ph_s_pix"], [1.0])
+    np.testing.assert_allclose(table["helper_rel_delta"], [0.01])
+
+
+def test_validate_post_disperser_diffuse_effect_consistency_rejects_mismatch():
+    table = Table({
+        "matched_rel_delta": [0.0, 1e-3],
+    })
+
+    with np.testing.assert_raises_regex(ValueError, "mismatch"):
+        val.validate_post_disperser_diffuse_effect_consistency(table, rtol=1e-6)
 
 
 def test_dichroic_path_throughput_uses_tree_actions():
