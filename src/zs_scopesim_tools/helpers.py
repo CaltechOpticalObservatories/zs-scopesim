@@ -102,7 +102,7 @@ def warning_prevent_sync_alt_ra_dec(cmd: Any) -> None:
     target, _location, _time = get_observation_info_from_cmds(cmd)
     cmd["!OBS.alt"] = float(target.alt.to("deg").value)
     icrs_target = target.transform_to("icrs")
-    cmd["!OBS.ra"] = str(icrs_target.ra.to("deg"))
+    cmd["!OBS.ra"] = str(icrs_target.ra.to("deg")) #TODO convert to h:m:s
     cmd["!OBS.dec"] = str(icrs_target.dec.to("deg"))
 
 
