@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from astropy import units as u
 
 from zs_scopesim_tools import sources
 
@@ -84,3 +85,59 @@ def test_numeric_wave_step_is_interpreted_as_angstrom(tmp_path, monkeypatch):
 
     assert source["spectrum"] == "spectrum"
     assert np.allclose(np.diff(captured["points"]), 5)
+
+
+def test_slit_frame_offsets_uses_zero_degrees_along_slit():
+    x, y = sources.slit_frame_offsets(2 * u.arcsec, 0 * u.deg)
+
+    np.testing.assert_allclose(x.to_value(u.arcsec), [0.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(y.to_value(u.arcsec), [-1.0, 1.0])
+
+
+def test_slit_frame_offsets_can_anchor_first_source_on_axis():
+    x, y = sources.slit_frame_offsets(
+        2 * u.arcsec, 90 * u.deg, centered=False)
+
+    np.testing.assert_allclose(x.to_value(u.arcsec), [0.0, 2.0])
+    np.testing.assert_allclose(y.to_value(u.arcsec), [0.0, 0.0], atol=1e-12)
+
+
+def test_two_point_source_builds_slit_frame_table(monkeypatch):
+    captured = {}
+
+    class FakeSource:
+        def __init__(self, *, spectra, table):
+            captured["spectra"] = spectra
+            captured["table"] = table
+            self.meta = {}
+
+    import sys
+    import types
+
+    scopesim_module = types.ModuleType("scopesim")
+    source_pkg = types.ModuleType("scopesim.source")
+    source_module = types.ModuleType("scopesim.source.source")
+    templates_module = types.ModuleType("scopesim.source.source_templates")
+    source_module.Source = FakeSource
+    templates_module.ab_spectrum = lambda mag: f"ab:{mag}"
+    source_pkg.source = source_module
+    source_pkg.source_templates = templates_module
+    scopesim_module.source = source_pkg
+    monkeypatch.setitem(sys.modules, "scopesim", scopesim_module)
+    monkeypatch.setitem(sys.modules, "scopesim.source", source_pkg)
+    monkeypatch.setitem(sys.modules, "scopesim.source.source", source_module)
+    monkeypatch.setitem(
+        sys.modules, "scopesim.source.source_templates", templates_module)
+
+    source = sources.two_point_source(
+        separation=2 * u.arcsec,
+        angle_on_slit=90 * u.deg,
+        centered=False,
+        mag=19,
+    )
+
+    assert source.meta["angle_on_slit"] == 90
+    assert captured["spectra"] == ["ab:19"]
+    np.testing.assert_allclose(captured["table"]["x"], [0, 2])
+    np.testing.assert_allclose(captured["table"]["y"], [0, 0], atol=1e-12)
+    assert captured["table"].meta["frame"] == "slit"

@@ -250,6 +250,31 @@ def test_effective_diffuse_qe_uses_average_positional_qe():
     np.testing.assert_allclose(qe, np.full(wave.size, 0.425))
 
 
+def test_slit_pair_status_table_marks_across_slit_source_outside():
+    table = Table({
+        "x": [0.0, 1.0],
+        "y": [0.0, 0.0],
+        "label": ["on", "off"],
+    })
+    table["x"].unit = u.arcsec
+    table["y"].unit = u.arcsec
+
+    status = val.slit_pair_status_table(
+        table, slit_width=0.7 * u.arcsec, slit_length=10 * u.arcsec)
+
+    assert list(status["label"]) == ["on", "off"]
+    assert list(status["in_slit"]) == [True, False]
+
+
+def test_slit_loss_summary_table_computes_throughput():
+    table = val.slit_loss_summary_table([
+        {"scenario": "adc_on", "source": "source_0", "input_signal": 10, "output_signal": 7},
+        {"scenario": "adc_on", "source": "source_1", "input_signal": 10, "output_signal": 0},
+    ])
+
+    np.testing.assert_allclose(table["throughput"], [0.7, 0.0])
+
+
 def test_surface_list_emissivity_terms_splits_phases_and_applies_qe():
     wave = np.linspace(1, 2, 4) * u.um
     qe_values = np.full(wave.size, 0.5)

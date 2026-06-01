@@ -166,3 +166,96 @@ def constant_photon_flux_flat(
         lookup_table=spectrum_model(waves),
     )
     return uniform_source(spectrum, extent=extent)
+
+
+def slit_frame_offsets(
+    separation: u.Quantity = 1.0 * u.arcsec,
+    angle_on_slit: u.Quantity = 0.0 * u.deg,
+    *,
+    centered: bool = True,
+) -> tuple[u.Quantity, u.Quantity]:
+    """Return two source offsets in the slit frame.
+
+    The slit-frame convention is ``x`` across the slit and ``y`` along the
+    slit. ``angle_on_slit=0 deg`` therefore separates the pair along the slit;
+    ``angle_on_slit=90 deg`` separates the pair across the slit.
+
+    If ``centered`` is True, the pair is centered on ``(0, 0)``. If False,
+    source 0 is placed at ``(0, 0)`` and source 1 receives the full offset.
+    """
+    sep = u.Quantity(separation).to(u.arcsec)
+    angle = u.Quantity(angle_on_slit).to(u.rad)
+    dx = sep * np.sin(angle)
+    dy = sep * np.cos(angle)
+    if centered:
+        return (
+            u.Quantity([-0.5 * dx.value, 0.5 * dx.value], dx.unit),
+            u.Quantity([-0.5 * dy.value, 0.5 * dy.value], dy.unit),
+        )
+    return (
+        u.Quantity([0.0, dx.value], dx.unit),
+        u.Quantity([0.0, dy.value], dy.unit),
+    )
+
+
+def two_point_source(
+    *,
+    separation: u.Quantity = 1.0 * u.arcsec,
+    angle_on_slit: u.Quantity = 0.0 * u.deg,
+    center: tuple[u.Quantity, u.Quantity] = (0.0 * u.arcsec, 0.0 * u.arcsec),
+    centered: bool = True,
+    spectrum: Any | None = None,
+    mag: float = 20.0,
+    weights: Sequence[float] = (1.0, 1.0),
+):
+    """Build a two-point-source scene for slit-loss/ADC validation.
+
+    ``angle_on_slit`` is the desired apparent pair angle on the slit after the
+    user has set the scene/derotation geometry. The helper itself only builds
+    the source positions in that slit frame.
+    """
+    from scopesim.source.source import Source
+    from scopesim.source.source_templates import ab_spectrum
+
+    if len(weights) != 2:
+        raise ValueError("weights must contain exactly two values.")
+
+    x_offsets, y_offsets = slit_frame_offsets(
+        separation=separation,
+        angle_on_slit=angle_on_slit,
+        centered=centered,
+    )
+    x0 = u.Quantity(center[0]).to(u.arcsec)
+    y0 = u.Quantity(center[1]).to(u.arcsec)
+    x = x0 + x_offsets
+    y = y0 + y_offsets
+    spectrum = spectrum if spectrum is not None else ab_spectrum(mag=mag)
+
+    table = Table(
+        data=[
+            x.to_value(u.arcsec),
+            y.to_value(u.arcsec),
+            np.asarray(weights, dtype=float),
+            np.zeros(2, dtype=int),
+            ["source_0", "source_1"],
+        ],
+        names=["x", "y", "weight", "ref", "label"],
+        units=[u.arcsec, u.arcsec, None, None, None],
+    )
+    table.meta.update({
+        "angle_on_slit": u.Quantity(angle_on_slit).to_value(u.deg),
+        "angle_on_slit_unit": "deg",
+        "separation": u.Quantity(separation).to_value(u.arcsec),
+        "separation_unit": "arcsec",
+        "centered": centered,
+        "frame": "slit",
+        "x_convention": "across slit",
+        "y_convention": "along slit",
+    })
+    source = Source(spectra=[spectrum], table=table)
+    source.meta.update({
+        "function_call": "two_point_source",
+        "angle_on_slit": table.meta["angle_on_slit"],
+        "angle_on_slit_unit": "deg",
+    })
+    return source

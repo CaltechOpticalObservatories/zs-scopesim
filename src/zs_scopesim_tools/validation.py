@@ -12,6 +12,15 @@ from astropy import units as u
 from astropy.table import Table
 from synphot.units import PHOTLAM
 
+from .plots import (
+    plot_detector_background_budget,
+    plot_emissivity_sanity,
+    plot_post_disperser_diffuse_background,
+    plot_slit_pair_geometry,
+    plot_source,
+    plot_transmission_sanity,
+)
+
 
 def effect_name(effect: Any) -> str:
     """Return the notebook-facing name of a ScopeSim effect."""
@@ -114,31 +123,6 @@ def fetch_effect_spectrum_or_transmission(
         wave_out = target.waveset.to(u.um)
         return wave_out, evaluate_curve(target, wave_out)
     raise TypeError(f"Cannot fetch spectrum/transmission from {target!r}")
-
-
-def plot_source(source: Any, wave: u.Quantity | None = None):
-    """Plot each source field's spatial profile and spectrum."""
-    import matplotlib.pyplot as plt
-
-    wave = wave if wave is not None else np.linspace(0.3, 2.5, 1001) * u.um
-    num_fields = len(source.fields)
-    fig, axs = plt.subplots(
-        figsize=(6, 2 * num_fields),
-        nrows=num_fields,
-        ncols=2,
-        width_ratios=[1, 2],
-        constrained_layout=True,
-    )
-    if num_fields == 1:
-        axs = np.array([axs])
-    for idx, field in enumerate(source.fields):
-        ax_image, ax_spectrum = axs[idx]
-        ax_image.imshow(field.data, origin="lower", cmap="viridis")
-        ax_spectrum.plot(wave, field.spectrum(wave))
-        if idx == 0:
-            ax_image.set_title("Spatial Profile")
-            ax_spectrum.set_title("Spectrum")
-    return fig, axs
 
 
 def default_surface_groups() -> OrderedDict[str, tuple[str, ...]]:
@@ -1074,76 +1058,75 @@ def validate_post_disperser_diffuse_background_data(data: Mapping[str, Any]) -> 
             raise ValueError("Detector emissivity must not be included.")
 
 
-def _plot_quantity_values(values: u.Quantity) -> np.ndarray:
-    try:
-        return values.to_value(PHOTLAM)
-    except Exception:
-        return _as_float_array(values)
-
-
-def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
-    """Plot post-disperser diffuse spectra and integrated image-plane rates."""
-    import matplotlib.pyplot as plt
-
-    wave = data["wave_nm"].to_value(u.nm)
-    fig, axes = plt.subplots(
-        2, 3, figsize=(16, 7.5), sharex=True, constrained_layout=True,
-    )
-    colors = {
-        "camera": "tab:cyan",
-        "collimator": "tab:green",
-        "preoptics": "tab:blue",
-        "other": "0.5",
-    }
-    for ax, (aperture_id, channel) in zip(axes.flat, data["channels"].items()):
-        trace_min = channel.get("trace_wave_min_nm", np.nan)
-        trace_max = channel.get("trace_wave_max_nm", np.nan)
-        if np.isfinite(trace_min) and np.isfinite(trace_max):
-            ax.axvspan(
-                trace_min, trace_max, color="0.2", alpha=0.08,
-                label="trace wavelength span",
+def source_position_table(source_or_table: Any) -> Table:
+    """Return the point-source position table from a Source or Table."""
+    if isinstance(source_or_table, Table):
+        table = source_or_table
+    elif hasattr(source_or_table, "fields"):
+        table_fields = [
+            field.field for field in source_or_table.fields
+            if hasattr(field, "field") and isinstance(field.field, Table)
+        ]
+        if len(table_fields) != 1:
+            raise ValueError(
+                "Expected exactly one table source field; found "
+                f"{len(table_fields)}."
             )
+        table = table_fields[0]
+    else:
+        raise TypeError("Expected a ScopeSim Source or astropy Table.")
 
-        for name, spectrum in channel["spectra"].items():
-            ax.plot(
-                wave,
-                _plot_quantity_values(spectrum),
-                lw=1.4,
-                color=colors.get(name, "0.5"),
-                label=f"{name} diffuse",
-            )
-        if channel["total_spectrum"] is not None:
-            ax.plot(
-                wave,
-                _plot_quantity_values(channel["total_spectrum"]),
-                lw=1.5,
-                color="black",
-                alpha=0.75,
-                label="total diffuse",
-            )
-        ax.set_title(
-            f"{channel['label']} (image plane {channel['image_plane_id']}): "
-            f"{channel['total_rate_ph_s_pix']:.3g} ph/s/pix",
-        )
-        ax.set_xlim(wave.min(), wave.max())
-        ax.grid(alpha=0.2)
+    for column in ("x", "y"):
+        if column not in table.colnames:
+            raise ValueError(f"Source position table has no {column!r} column.")
+    return table
 
-    for ax in axes[-1, :]:
-        ax.set_xlabel("Wavelength [nm]")
-    for ax in axes[:, 0]:
-        ax.set_ylabel("Spectral background [PHOTLAM equiv.]")
-    handles, labels = axes.flat[0].get_legend_handles_labels()
-    dedup = OrderedDict(zip(labels, handles))
-    fig.suptitle(
-        "Post-disperser diffuse emission is added after dichroic/echelle "
-        "trace mapping; pre-disperser thermal light remains dichroic-filtered.",
-        fontsize=11,
+
+def slit_pair_status_table(
+    source_or_table: Any,
+    *,
+    slit_width: u.Quantity = 0.7 * u.arcsec,
+    slit_length: u.Quantity = 10.0 * u.arcsec,
+) -> Table:
+    """Return point-source positions and whether each falls inside the slit."""
+    table = source_position_table(source_or_table)
+    x = u.Quantity(table["x"]).to(u.arcsec)
+    y = u.Quantity(table["y"]).to(u.arcsec)
+    width = u.Quantity(slit_width).to(u.arcsec)
+    length = u.Quantity(slit_length).to(u.arcsec)
+    in_slit = (np.abs(x) <= 0.5 * width) & (np.abs(y) <= 0.5 * length)
+
+    labels = (
+        [str(value) for value in table["label"]]
+        if "label" in table.colnames
+        else [f"source_{idx}" for idx in range(len(table))]
     )
-    fig.legend(
-        dedup.values(), dedup.keys(), loc="outside upper center",
-        ncol=4, frameon=False,
-    )
-    return fig, axes
+    rows = []
+    for idx, label in enumerate(labels):
+        rows.append({
+            "source_index": idx,
+            "label": label,
+            "x_arcsec": x[idx].to_value(u.arcsec),
+            "y_arcsec": y[idx].to_value(u.arcsec),
+            "in_slit": bool(in_slit[idx]),
+        })
+    return Table(rows=rows)
+
+
+def slit_loss_summary_table(rows: list[Mapping[str, Any]]) -> Table:
+    """Return slit-throughput summary rows from input/output signal pairs."""
+    output_rows = []
+    for row in rows:
+        input_signal = float(row["input_signal"])
+        output_signal = float(row["output_signal"])
+        if input_signal == 0:
+            throughput = np.nan if output_signal != 0 else 0.0
+        else:
+            throughput = output_signal / input_signal
+        output = dict(row)
+        output["throughput"] = throughput
+        output_rows.append(output)
+    return Table(rows=output_rows)
 
 
 def _sum_terms(terms: Mapping[str, np.ndarray], size: int) -> np.ndarray:
@@ -1183,81 +1166,6 @@ def validate_emissivity_sanity_data(data: Mapping[str, Any]) -> None:
 
     if "detector_emissivity" in next(iter(data["channels"].values())):
         raise ValueError("Detector emissivity should not be part of QE validation data.")
-
-
-def plot_emissivity_sanity(data: Mapping[str, Any]):
-    """Plot split pre/post-disperser emissivity sanity-check data."""
-    import matplotlib.pyplot as plt
-
-    wave = data["wave_nm"].to_value(u.nm)
-    fig, axes = plt.subplots(
-        2, 3, figsize=(16, 7.5), sharex=True, sharey=True,
-        constrained_layout=True,
-    )
-    group_colors = {
-        "preoptics": "tab:blue",
-        "collimator": "tab:green",
-        "camera": "tab:cyan",
-        "other": "0.5",
-    }
-
-    ymax = 0.0
-    for channel in data["channels"].values():
-        curves = (
-            list(channel["pre_disperser_terms"].values())
-            + list(channel["post_disperser_terms"].values())
-            + [channel["pre_disperser_output_equiv"],
-               channel["post_disperser_after_qe"]]
-        )
-        for curve in curves:
-            finite = curve[np.isfinite(curve)]
-            if finite.size:
-                ymax = max(ymax, float(np.nanmax(finite)))
-    ymax = max(0.05, min(1.5, ymax * 1.08))
-
-    for ax, (aperture_id, channel) in zip(axes.flat, data["channels"].items()):
-        for name, values in channel["pre_disperser_terms"].items():
-            ax.plot(
-                wave, values, lw=1.0, ls="--",
-                color=group_colors.get(name, "0.5"),
-                label=f"pre {name}",
-            )
-        for name, values in channel["post_disperser_terms"].items():
-            ax.plot(
-                wave, values, lw=1.0, ls="-",
-                color=group_colors.get(name, "0.5"),
-                label=f"post {name}",
-            )
-
-        ax.plot(
-            wave, channel["pre_disperser_output_equiv"], lw=1.6,
-            color="tab:purple", alpha=0.75, label="pre total",
-        )
-        ax.plot(
-            wave, channel["post_disperser_after_qe"], lw=1.8,
-            color="black", alpha=0.75, label="post total after QE",
-        )
-        ax.plot(
-            wave, channel["detector_qe"], lw=0.9, ls=":",
-            color="tab:red", alpha=0.8, label="QE throughput",
-        )
-        ax.set_title(f"{channel['label']} (aperture {aperture_id})")
-        ax.set_xlim(wave.min(), wave.max())
-        ax.set_ylim(0, ymax)
-        ax.grid(alpha=0.2)
-
-    for ax in axes[-1, :]:
-        ax.set_xlabel("Wavelength [nm]")
-    for ax in axes[:, 0]:
-        ax.set_ylabel("Dimensionless response")
-
-    handles, labels = axes.flat[0].get_legend_handles_labels()
-    dedup = OrderedDict(zip(labels, handles))
-    fig.legend(
-        dedup.values(), dedup.keys(), loc="outside upper center",
-        ncol=6, frameon=False,
-    )
-    return fig, axes
 
 
 def detector_geometry_table(ztrain: Any) -> Table:
@@ -1418,52 +1326,6 @@ def detector_background_budget_table(
         })
 
     return Table(rows=rows)
-
-
-def plot_detector_background_budget(table: Table):
-    """Plot additive detector-background and noise terms by channel."""
-    import matplotlib.pyplot as plt
-
-    channels = [str(value) for value in table["channel"]]
-    x = np.arange(len(channels))
-    fig, axes = plt.subplots(
-        1, 2, figsize=(14, 4.6), constrained_layout=True,
-    )
-    signal_ax, noise_ax = axes
-
-    diffuse = np.asarray(table["post_diffuse_e_pix"], dtype=float)
-    dark = np.asarray(table["dark_current_e_pix"], dtype=float)
-    bias = np.asarray(table["bias_e_pix"], dtype=float)
-    signal_ax.bar(x, diffuse, width=0.7, label="post-disperser diffuse")
-    signal_ax.bar(x, dark, width=0.7, bottom=diffuse, label="dark current")
-    signal_ax.plot(x, bias, "o", color="black", label="bias offset")
-    signal_ax.set_yscale("symlog", linthresh=1.0)
-    signal_ax.set_xticks(x, channels)
-    signal_ax.set_ylabel("Detector signal [e-/pix]")
-    signal_ax.set_title("Additive Signal")
-    signal_ax.grid(axis="y", alpha=0.2)
-    signal_ax.legend(frameon=False, fontsize="small")
-
-    width = 0.2
-    noise_terms = [
-        ("diffuse shot", "diffuse_shot_noise_e_rms", "tab:blue"),
-        ("dark shot", "dark_shot_noise_e_rms", "tab:green"),
-        ("read", "read_noise_e_rms", "tab:orange"),
-        ("total", "total_noise_e_rms", "black"),
-    ]
-    offsets = (np.arange(len(noise_terms)) - 1.5) * width
-    for offset, (label, column, color) in zip(offsets, noise_terms, strict=True):
-        noise_ax.bar(
-            x + offset, np.asarray(table[column], dtype=float),
-            width=width, color=color, label=label,
-        )
-    noise_ax.set_yscale("symlog", linthresh=1.0)
-    noise_ax.set_xticks(x, channels)
-    noise_ax.set_ylabel("Noise [e- RMS/pix]")
-    noise_ax.set_title("Noise Terms")
-    noise_ax.grid(axis="y", alpha=0.2)
-    noise_ax.legend(frameon=False, fontsize="small")
-    return fig, axes
 
 
 def _selected_detector_effect(
@@ -1669,66 +1531,3 @@ def validate_transmission_sanity_data(data: Mapping[str, Any]) -> None:
                     f"{np.nanmin(finite):.3g}..{np.nanmax(finite):.3g}",
                     stacklevel=2,
                 )
-
-
-def plot_transmission_sanity(data: Mapping[str, Any]):
-    """Plot channel/order throughput sanity-check data."""
-    import matplotlib.pyplot as plt
-
-    wave = data["wave_nm"].to_value(u.nm)
-    fig, axes = plt.subplots(
-        2, 3, figsize=(16, 7.5), sharex=True, sharey=True,
-        constrained_layout=True,
-    )
-
-    group_colors = {
-        "preoptics": "tab:blue",
-        "collimator": "tab:green",
-        "camera": "tab:cyan",
-        "other": "0.5",
-    }
-
-    for ax, (aperture_id, channel) in zip(axes.flat, data["channels"].items()):
-        for name, values in channel["optics_groups"].items():
-            ax.plot(
-                wave, values, lw=1.0,
-                color=group_colors.get(name, "0.5"),
-                label=name,
-            )
-
-        ax.plot(
-            wave, channel["dichroic_total"], lw=1.2,
-            color="tab:purple", label="dichroics",
-        )
-        ax.plot(
-            wave, channel["detector_qe"], lw=1.2,
-            color="tab:red", label="detector QE",
-        )
-
-        for idx, (_trace_id, order) in enumerate(channel["orders"].items()):
-            order_label = "disperser/order" if idx == 0 else None
-            total_label = "total/order" if idx == 0 else None
-            ax.plot(
-                wave, order["disperser"], lw=0.7, color="tab:orange",
-                alpha=0.35, label=order_label,
-            )
-            ax.plot(
-                wave, order["total"], lw=1.8, color="black",
-                alpha=0.65, label=total_label,
-            )
-
-        ax.set_title(f"{channel['label']} (aperture {aperture_id})")
-        ax.set_xlim(wave.min(), wave.max())
-        ax.set_ylim(0, 1.05)
-        ax.grid(alpha=0.2)
-
-    for ax in axes[-1, :]:
-        ax.set_xlabel("Wavelength [nm]")
-    for ax in axes[:, 0]:
-        ax.set_ylabel("Throughput")
-
-    handles, labels = axes.flat[0].get_legend_handles_labels()
-    fig.legend(
-        handles, labels, loc="outside upper center", ncol=7, frameon=False,
-    )
-    return fig, axes
