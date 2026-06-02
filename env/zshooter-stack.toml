@@ -40,4 +40,15 @@ packages = [
   "pyckles",
   "jupyterlab",
   "ipykernel",
+  "astropy",
+  "scipy",
+  "numpy",
+  "yappi",
+  "pandas",
+  "ipydatagrid",
+  "pytest",
+  "ipywidgets",
+  "IProgress",
+  "jupyter"
+
 ]
