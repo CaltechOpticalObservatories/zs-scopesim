@@ -57,7 +57,27 @@ class FakeSurfaceList:
 
 
 class FakeDetectorQE:
+    meta = {"name": "fake_detector_qe", "filename": "QE_fake.dat"}
     throughput = ConstantCurve(0.5)
+
+
+class FakeTaperedQuantumEfficiency:
+    def __init__(self):
+        self.meta = {
+            "name": "fake_tapered_qe",
+            "center_wave_min": 0.3,
+            "center_wave_max": 0.4,
+            "fwhm": 0.06,
+            "peak": 0.95,
+        }
+        self.footprints = []
+
+    def throughput(self, wave):
+        return np.full(wave.size, 0.6)
+
+    def effective_diffuse_throughput(self, wave, footprint=None):
+        self.footprints.append(footprint)
+        return np.full(wave.size, 0.7)
 
 
 class FakeDichroic:
@@ -98,6 +118,15 @@ class FakeTraceList:
             "R_2": FakeTrace("R_2", 1, 3, 0.5, 0.6),
             "B_1": FakeTrace("B_1", 0, 2, 0.3, 0.4),
         }
+
+
+class FakeTraceEfficiency:
+    include = True
+    display_name = "trace_eff_analytical"
+    meta = {"name": display_name}
+
+    def efficiency_generator(self, trace_id, wave):
+        return np.full(wave.size, 0.9)
 
 
 class FakeImagePlane:
@@ -179,12 +208,42 @@ class FakeSelectedEffect:
 
 
 class FakeNamedSelector:
-    include = True
-
-    def __init__(self, name, selector_key, effects):
+    def __init__(self, name, selector_key, effects, *, include=True):
+        self.include = include
         self.display_name = name
         self.meta = {"name": name, "selector_key": selector_key}
         self.wheel_effects = effects
+
+
+def named_effect(effect, name, *, include=True):
+    effect.include = include
+    effect.display_name = name
+    meta = getattr(effect, "meta", {}) or {}
+    meta.setdefault("name", name)
+    effect.meta = meta
+    return effect
+
+
+class FakeScienceOpticsManager:
+    def __init__(self, qe_selectors):
+        self.all_effects = [
+            named_effect(FakeDichroicTree(), "dichroic_tree"),
+            FakeNamedSelector(
+                "channel_optics_selector",
+                "aperture_id",
+                {0: FakeSurfaceList()},
+            ),
+            *qe_selectors,
+            named_effect(FakeTraceList(), "trace_list_analytical"),
+            FakeTraceEfficiency(),
+        ]
+
+
+class FakeScienceTrain:
+    cmds = {}
+
+    def __init__(self, qe_selectors):
+        self.optics_manager = FakeScienceOpticsManager(qe_selectors)
 
 
 class FakeBudgetOpticsManager:
@@ -248,6 +307,91 @@ def test_effective_diffuse_qe_uses_average_positional_qe():
     qe = val.effective_diffuse_qe(FakeDetectorQE(), wave, spatial_map)
 
     np.testing.assert_allclose(qe, np.full(wave.size, 0.425))
+
+
+def test_effective_diffuse_qe_uses_effect_footprint_average():
+    wave = np.linspace(1, 2, 4) * u.um
+    footprint = object()
+    detector_qe = FakeTaperedQuantumEfficiency()
+
+    qe = val.effective_diffuse_qe(
+        detector_qe, wave, footprint=footprint,
+    )
+
+    np.testing.assert_allclose(qe, np.full(wave.size, 0.7))
+    assert detector_qe.footprints == [footprint]
+
+
+def test_build_transmission_sanity_data_can_auto_select_enabled_qe():
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain([
+        FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+            include=False,
+        ),
+        FakeNamedSelector(
+            "tapered_detector_qe_selector",
+            "aperture_id",
+            {0: FakeTaperedQuantumEfficiency()},
+        ),
+    ])
+
+    data = val.build_transmission_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    channel = data["channels"][0]
+    np.testing.assert_allclose(channel["detector_qe"], [0.6, 0.6])
+    np.testing.assert_allclose(channel["pre_disperser_total"], [0.096, 0.096])
+
+
+def test_build_emissivity_sanity_data_accepts_non_surface_qe():
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain([
+        FakeNamedSelector(
+            "tapered_detector_qe_selector",
+            "aperture_id",
+            {0: FakeTaperedQuantumEfficiency()},
+        ),
+    ])
+
+    data = val.build_emissivity_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    channel = data["channels"][0]
+    np.testing.assert_allclose(channel["detector_qe"], [0.7, 0.7])
+    np.testing.assert_allclose(
+        channel["post_disperser_after_qe"], [0.14, 0.14],
+    )
+    details = data["details"]
+    qe_rows = details[np.asarray(details["group"], dtype=str) == "detector_qe"]
+    assert len(qe_rows) == 1
+    assert qe_rows[0]["effect_class"] == "FakeTaperedQuantumEfficiency"
+    assert qe_rows[0]["transmission_source"] == "configured"
+
+
+def test_auto_qe_selection_rejects_ambiguous_enabled_selectors():
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain([
+        FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        ),
+        FakeNamedSelector(
+            "tapered_detector_qe_selector",
+            "aperture_id",
+            {0: FakeTaperedQuantumEfficiency()},
+        ),
+    ])
+
+    with np.testing.assert_raises_regex(ValueError, "qe_selector_name"):
+        val.build_transmission_sanity_data(
+            train, wave_nm=wave_nm, qe_selector_name=None,
+        )
 
 
 def test_slit_pair_status_table_marks_across_slit_source_outside():

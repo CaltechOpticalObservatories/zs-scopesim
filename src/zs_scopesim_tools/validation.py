@@ -97,6 +97,86 @@ def evaluate_throughput(effect: Any, wave: u.Quantity) -> np.ndarray:
     raise TypeError(f"Cannot evaluate throughput for {effect!r}")
 
 
+def _evaluate_diffuse_throughput(
+    effect: Any,
+    wave: u.Quantity,
+    *,
+    footprint: Any = None,
+) -> np.ndarray:
+    if hasattr(effect, "effective_diffuse_throughput"):
+        with u.set_enabled_equivalencies(u.spectral()):
+            values = effect.effective_diffuse_throughput(
+                wave, footprint=footprint,
+            )
+        return _as_float_array(values)
+    return evaluate_throughput(effect, wave)
+
+
+def _candidate_qe_effects(effect: Any) -> list[Any]:
+    if hasattr(effect, "wheel_effects"):
+        return list(effect.wheel_effects.values())
+    return [effect]
+
+
+def _looks_like_qe_effect(effect: Any) -> bool:
+    name = effect_name(effect).lower()
+    class_name = effect.__class__.__name__.lower()
+    if "qe" in name or "quantumefficiency" in class_name:
+        return True
+    return any(
+        "quantumefficiency" in candidate.__class__.__name__.lower()
+        for candidate in _candidate_qe_effects(effect)
+    )
+
+
+def _get_qe_selector(
+    ztrain: Any,
+    qe_selector_name: str | None,
+    *,
+    active_only: bool = True,
+) -> Any:
+    if qe_selector_name is not None:
+        return get_effect(
+            ztrain, qe_selector_name, active_only=active_only,
+        )
+
+    effects = active_effects(ztrain) if active_only else ztrain.optics_manager.all_effects
+    candidates = [effect for effect in effects if _looks_like_qe_effect(effect)]
+    if len(candidates) != 1:
+        available = [
+            effect_name(effect) for effect in candidates
+        ] or sorted(effect_name(effect) for effect in effects)
+        raise ValueError(
+            "Expected exactly one enabled QE selector when "
+            "qe_selector_name=None; found "
+            f"{len(candidates)}. Pass qe_selector_name explicitly. "
+            f"Candidates/available effects: {available}"
+        )
+    return candidates[0]
+
+
+def _qe_detail_summary(effect: Any) -> dict[str, Any]:
+    meta = getattr(effect, "meta", {}) or {}
+    surface = getattr(effect, "surface", None)
+    summary = {
+        "effect_class": effect.__class__.__name__,
+        "qe_model": effect.__class__.__name__,
+        "qe_source": meta.get("filename", "configured"),
+        "action": meta.get("action", "throughput"),
+        "temperature": meta.get("temperature"),
+        "transmission_source": "configured",
+    }
+    if surface is not None:
+        surface_meta = getattr(surface, "meta", {}) or {}
+        summary.update({
+            "qe_source": meta.get("filename", surface_meta.get("filename", "surface")),
+            "action": surface_meta.get("action", meta.get("action", "transmission")),
+            "temperature": surface_meta.get("temperature", meta.get("temperature")),
+            "transmission_source": ter_property_sources(surface)["transmission"],
+        })
+    return summary
+
+
 def fetch_effect_spectrum_or_transmission(
     ztrain: Any,
     display_name: str,
@@ -370,6 +450,7 @@ def effective_diffuse_qe(
     detector_qe: Any,
     wave: u.Quantity,
     positional_qe: Callable[[u.Quantity], Any] | np.ndarray | None = None,
+    footprint: Any = None,
 ) -> np.ndarray:
     """Return detector QE for diffuse image-plane backgrounds.
 
@@ -377,7 +458,9 @@ def effective_diffuse_qe(
     pass a positional QE map or callable; this function applies its average
     positional response instead of skipping QE for non-dispersed light.
     """
-    spectral_qe = evaluate_throughput(detector_qe, wave)
+    spectral_qe = _evaluate_diffuse_throughput(
+        detector_qe, wave, footprint=footprint,
+    )
     return spectral_qe * representative_positional_qe(positional_qe, wave)
 
 
@@ -433,6 +516,8 @@ def build_emissivity_sanity_data(
     wave_nm: u.Quantity | None = None,
     groups: Mapping[str, tuple[str, ...]] | None = None,
     positional_qe_by_aperture: Mapping[int, Any] | None = None,
+    qe_selector_name: str | None = "detector_qe_selector",
+    active_only: bool = True,
 ) -> dict[str, Any]:
     """Build split pre/post-disperser emissivity sanity-check data."""
     wave_nm = wave_nm if wave_nm is not None else np.linspace(300, 2500, 5000) * u.nm
@@ -441,7 +526,9 @@ def build_emissivity_sanity_data(
 
     dichroic_tree = get_effect(ztrain, "dichroic_tree")
     channel_selector = get_effect(ztrain, "channel_optics_selector")
-    qe_selector = get_effect(ztrain, "detector_qe_selector")
+    qe_selector = _get_qe_selector(
+        ztrain, qe_selector_name, active_only=active_only,
+    )
     trace_list = get_effect(ztrain, "trace_list_analytical")
     traces_for_aperture = traces_by_aperture(trace_list)
 
@@ -472,16 +559,20 @@ def build_emissivity_sanity_data(
             row["channel"] = label
             details.append(row)
 
+        qe_detail = _qe_detail_summary(detector_qe)
         details.append({
             "aperture_id": aperture_id,
             "channel": label,
             "surface": effect_name(detector_qe),
             "group": "detector_qe",
             "emission_phase": "throughput_only",
-            "action": detector_qe.surface.meta.get("action", "transmission"),
-            "temperature": detector_qe.surface.meta.get("temperature"),
+            "effect_class": qe_detail["effect_class"],
+            "qe_model": qe_detail["qe_model"],
+            "qe_source": qe_detail["qe_source"],
+            "action": qe_detail["action"],
+            "temperature": qe_detail["temperature"],
             "emissivity_source": "not used",
-            "transmission_source": ter_property_sources(detector_qe.surface)["transmission"],
+            "transmission_source": qe_detail["transmission_source"],
             "reflection_source": "not used",
             "qe_applied": True,
             "peak_output_emissivity": np.nan,
@@ -611,6 +702,8 @@ def build_post_disperser_diffuse_background_data(
     wave_nm: u.Quantity | None = None,
     groups: Mapping[str, tuple[str, ...]] | None = None,
     positional_qe_by_aperture: Mapping[int, Any] | None = None,
+    qe_selector_name: str | None = "detector_qe_selector",
+    active_only: bool = True,
 ) -> dict[str, Any]:
     """Build image-plane post-disperser diffuse background data."""
     from scopesim.effects.illumination import integrate_spectral_background
@@ -622,7 +715,9 @@ def build_post_disperser_diffuse_background_data(
 
     dichroic_tree = get_effect(ztrain, "dichroic_tree")
     channel_selector = get_effect(ztrain, "channel_optics_selector")
-    qe_selector = get_effect(ztrain, "detector_qe_selector")
+    qe_selector = _get_qe_selector(
+        ztrain, qe_selector_name, active_only=active_only,
+    )
     trace_list = get_effect(ztrain, "trace_list_analytical")
     traces_for_aperture = traces_by_aperture(trace_list)
 
@@ -640,10 +735,16 @@ def build_post_disperser_diffuse_background_data(
             int(traces[0].meta["image_plane_id"]) if traces else aperture_id
         )
         image_pixel_area = _image_plane_pixel_area(ztrain, image_plane_id)
+        image_plane = (
+            ztrain.image_planes[image_plane_id]
+            if image_plane_id < len(ztrain.image_planes)
+            else None
+        )
         qe_values = effective_diffuse_qe(
             detector_qe,
             wave,
             positional_qe=positional_qe_by_aperture.get(aperture_id),
+            footprint=image_plane,
         )
         spectra, surface_details = surface_list_post_disperser_diffuse_terms(
             channel_optics,
@@ -700,6 +801,8 @@ def post_disperser_diffuse_effect_consistency_table(
     *,
     effect_display_name: str = "post_echelle_diffuse_background_selector",
     match_effect_grid: bool = True,
+    qe_selector_name: str | None = "detector_qe_selector",
+    active_only: bool = True,
 ) -> Table:
     """Compare notebook helper rates to the configured image-plane effect.
 
@@ -712,7 +815,11 @@ def post_disperser_diffuse_effect_consistency_table(
     matched_data_by_image_plane = {}
     if match_effect_grid:
         matched_data_by_image_plane = _matched_post_diffuse_data_by_image_plane(
-            ztrain, helper_data, selector,
+            ztrain,
+            helper_data,
+            selector,
+            qe_selector_name=qe_selector_name,
+            active_only=active_only,
         )
 
     rows = []
@@ -773,6 +880,9 @@ def _matched_post_diffuse_data_by_image_plane(
     ztrain: Any,
     helper_data: Mapping[str, Any],
     selector: Any,
+    *,
+    qe_selector_name: str | None = "detector_qe_selector",
+    active_only: bool = True,
 ) -> dict[int, Mapping[str, Any]]:
     matched = {}
     cache = {}
@@ -785,7 +895,10 @@ def _matched_post_diffuse_data_by_image_plane(
         cache_key = tuple(np.round(wave_nm.to_value(u.nm), 12))
         if cache_key not in cache:
             cache[cache_key] = build_post_disperser_diffuse_background_data(
-                ztrain, wave_nm=wave_nm,
+                ztrain,
+                wave_nm=wave_nm,
+                qe_selector_name=qe_selector_name,
+                active_only=active_only,
             )
         matched[image_plane_id] = cache[cache_key]
     return matched
@@ -1437,6 +1550,8 @@ def build_transmission_sanity_data(
     ztrain: Any,
     wave_nm: u.Quantity | None = None,
     groups: Mapping[str, tuple[str, ...]] | None = None,
+    qe_selector_name: str | None = "detector_qe_selector",
+    active_only: bool = True,
 ) -> dict[str, Any]:
     """Build channel/order throughput data for transmission sanity plots."""
     wave_nm = wave_nm if wave_nm is not None else np.linspace(300, 2500, 5000) * u.nm
@@ -1444,7 +1559,9 @@ def build_transmission_sanity_data(
 
     dichroic_tree = get_effect(ztrain, "dichroic_tree")
     channel_selector = get_effect(ztrain, "channel_optics_selector")
-    qe_selector = get_effect(ztrain, "detector_qe_selector")
+    qe_selector = _get_qe_selector(
+        ztrain, qe_selector_name, active_only=active_only,
+    )
     trace_list = get_effect(ztrain, "trace_list_analytical")
     trace_eff = get_effect(ztrain, "trace_eff_analytical")
     traces_for_aperture = traces_by_aperture(trace_list)
