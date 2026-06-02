@@ -80,6 +80,26 @@ class FakeTaperedQuantumEfficiency:
         return np.full(wave.size, 0.7)
 
 
+class FakeTEREffect:
+    include = True
+
+    def __init__(
+        self,
+        transmission=1.0,
+        reflection=0.0,
+        emissivity=0.0,
+        emission=0.0,
+        **meta,
+    ):
+        self.meta = {"name": "fake_ter", "action": "transmission", **meta}
+        self.surface = FakeSurface(
+            transmission=transmission,
+            reflection=reflection,
+            emissivity=emissivity,
+            emission=emission,
+        )
+
+
 class FakeDichroic:
     def __init__(self, transmission, reflection):
         self.surface = FakeSurface(transmission=transmission, reflection=reflection)
@@ -225,7 +245,7 @@ def named_effect(effect, name, *, include=True):
 
 
 class FakeScienceOpticsManager:
-    def __init__(self, qe_selectors):
+    def __init__(self, qe_selectors, optical_selectors):
         self.all_effects = [
             named_effect(FakeDichroicTree(), "dichroic_tree"),
             FakeNamedSelector(
@@ -233,6 +253,7 @@ class FakeScienceOpticsManager:
                 "aperture_id",
                 {0: FakeSurfaceList()},
             ),
+            *optical_selectors,
             *qe_selectors,
             named_effect(FakeTraceList(), "trace_list_analytical"),
             FakeTraceEfficiency(),
@@ -242,8 +263,10 @@ class FakeScienceOpticsManager:
 class FakeScienceTrain:
     cmds = {}
 
-    def __init__(self, qe_selectors):
-        self.optics_manager = FakeScienceOpticsManager(qe_selectors)
+    def __init__(self, qe_selectors, optical_selectors=()):
+        self.optics_manager = FakeScienceOpticsManager(
+            qe_selectors, optical_selectors,
+        )
 
 
 class FakeBudgetOpticsManager:
@@ -294,6 +317,11 @@ def test_surface_group_for_row_prefers_explicit_metadata():
 def test_emission_phase_for_row_prefers_explicit_metadata():
     row = FakeSurfaceList().table[1]
     assert val.emission_phase_for_row(row, "camera") == "post_disperser"
+
+
+def test_emission_phase_for_row_normalizes_common_aliases():
+    row = Table({"name": ["Filter"], "emission_phase": ["postdisperser"]})[0]
+    assert val.emission_phase_for_row(row) == "post_disperser"
 
 
 def test_emission_phase_for_row_falls_back_to_camera_post_disperser():
@@ -347,6 +375,33 @@ def test_build_transmission_sanity_data_can_auto_select_enabled_qe():
     np.testing.assert_allclose(channel["pre_disperser_total"], [0.096, 0.096])
 
 
+def test_build_transmission_sanity_data_includes_extra_optical_selector():
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain(
+        [FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        )],
+        optical_selectors=[FakeNamedSelector(
+            "ir_blocking_filter_selector",
+            "aperture_id",
+            {0: FakeTEREffect(transmission=0.25)},
+        )],
+    )
+
+    data = val.build_transmission_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    channel = data["channels"][0]
+    np.testing.assert_allclose(channel["optics_groups"]["preoptics"], [0.5, 0.5])
+    np.testing.assert_allclose(
+        channel["optics_groups"]["ir_blocking_filter"], [0.25, 0.25],
+    )
+    np.testing.assert_allclose(channel["pre_disperser_total"], [0.02, 0.02])
+
+
 def test_build_emissivity_sanity_data_accepts_non_surface_qe():
     wave_nm = np.array([350.0, 360.0]) * u.nm
     train = FakeScienceTrain([
@@ -371,6 +426,65 @@ def test_build_emissivity_sanity_data_accepts_non_surface_qe():
     assert len(qe_rows) == 1
     assert qe_rows[0]["effect_class"] == "FakeTaperedQuantumEfficiency"
     assert qe_rows[0]["transmission_source"] == "configured"
+
+
+def test_build_emissivity_sanity_data_applies_downstream_extra_selector():
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    extra_selector = FakeNamedSelector(
+        "ir_blocking_filter_selector",
+        "aperture_id",
+        {0: FakeTEREffect(transmission=0.25)},
+    )
+    extra_selector.meta["emission_phase"] = "postdisperser"
+    train = FakeScienceTrain(
+        [FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        )],
+        optical_selectors=[extra_selector],
+    )
+
+    data = val.build_emissivity_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    channel = data["channels"][0]
+    np.testing.assert_allclose(
+        channel["post_disperser_after_qe"], [0.025, 0.025],
+    )
+    details = data["details"]
+    assert "ir_blocking_filter" in set(details["group"])
+    filter_rows = details[
+        np.asarray(details["group"], dtype=str) == "ir_blocking_filter"
+    ]
+    assert filter_rows[0]["emission_phase"] == "post_disperser"
+
+
+def test_post_disperser_diffuse_data_applies_downstream_extra_selector(monkeypatch):
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain(
+        [FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        )],
+        optical_selectors=[FakeNamedSelector(
+            "ir_blocking_filter_selector",
+            "aperture_id",
+            {0: FakeTEREffect(transmission=0.25)},
+        )],
+    )
+    train.image_planes = [None, None, FakeImagePlane(fits.Header())]
+    monkeypatch.setattr(val, "_image_plane_pixel_area", lambda _ztrain, _id: 1 * u.arcsec**2)
+    monkeypatch.setattr(val, "_telescope_area", lambda _ztrain: 1 * u.m**2)
+
+    data = val.build_post_disperser_diffuse_background_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    spectrum = data["channels"][0]["spectra"]["camera"]
+    np.testing.assert_allclose(spectrum.value, [0.25, 0.25])
 
 
 def test_auto_qe_selection_rejects_ambiguous_enabled_selectors():

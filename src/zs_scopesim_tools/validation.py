@@ -177,6 +177,147 @@ def _qe_detail_summary(effect: Any) -> dict[str, Any]:
     return summary
 
 
+def _is_surface_list_effect(effect: Any) -> bool:
+    return hasattr(effect, "surfaces") and hasattr(effect, "table")
+
+
+def _is_surface_effect(effect: Any) -> bool:
+    surface = getattr(effect, "surface", None)
+    return surface is not None and any(
+        hasattr(surface, attr)
+        for attr in ("throughput", "transmission", "reflection", "emissivity")
+    )
+
+
+def _selected_aperture_effect(effect: Any, aperture_id: int) -> Any | None:
+    if not hasattr(effect, "wheel_effects"):
+        return None
+    if getattr(effect, "meta", {}).get("selector_key") != "aperture_id":
+        return None
+    try:
+        return resolve_effect(effect, aperture_id)
+    except KeyError:
+        return None
+
+
+def _surface_effect_group_name(parent: Any, effect: Any) -> str:
+    for meta in (getattr(effect, "meta", {}), getattr(parent, "meta", {})):
+        group_name = _clean_metadata_value(meta.get("throughput_group"))
+        if group_name is not None:
+            return group_name
+
+    name = effect_name(parent)
+    return name[:-9] if name.endswith("_selector") else name
+
+
+def _surface_effect_phase_name(parent: Any, effect: Any) -> str:
+    for meta in (getattr(effect, "meta", {}), getattr(parent, "meta", {})):
+        phase_name = _clean_emission_phase(meta.get("emission_phase"))
+        if phase_name is not None:
+            return phase_name
+    return "none"
+
+
+def _surface_effect_action_name(effect: Any) -> str:
+    surface = getattr(effect, "surface", None)
+    for meta in (
+        getattr(surface, "meta", {}) if surface is not None else {},
+        getattr(effect, "meta", {}),
+    ):
+        action_name = _clean_metadata_value(meta.get("action"))
+        if action_name is not None:
+            return action_name
+    return "transmission"
+
+
+def channel_optical_components(
+    ztrain: Any,
+    aperture_id: int,
+    *,
+    qe_selector: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Return active per-aperture optical components before trace mapping."""
+    excluded_ids = {id(qe_selector)} if qe_selector is not None else set()
+    components: list[dict[str, Any]] = []
+    for parent in active_effects(ztrain):
+        if id(parent) in excluded_ids or _looks_like_qe_effect(parent):
+            continue
+        effect = _selected_aperture_effect(parent, aperture_id)
+        if effect is None or _looks_like_qe_effect(effect):
+            continue
+        if not (_is_surface_list_effect(effect) or _is_surface_effect(effect)):
+            continue
+        components.append({
+            "selector": parent,
+            "selector_name": effect_name(parent),
+            "effect": effect,
+        })
+    return components
+
+
+def optical_surface_rows(
+    components: list[dict[str, Any]],
+    wave: u.Quantity,
+    groups: Mapping[str, tuple[str, ...]] | None = None,
+) -> list[dict[str, Any]]:
+    """Flatten discovered optical components into ordered surface rows."""
+    rows: list[dict[str, Any]] = []
+    for component in components:
+        parent = component["selector"]
+        effect = component["effect"]
+        selector_name = component["selector_name"]
+        if _is_surface_list_effect(effect):
+            name_col = _real_colname("name", effect.table.colnames)
+            action_col = _real_colname("action", effect.table.colnames)
+            if name_col is None or action_col is None:
+                raise ValueError(
+                    "SurfaceList table must contain name and action columns."
+                )
+            for row in effect.table:
+                surface_name = str(_row_scalar(row, name_col))
+                action_name = str(_row_scalar(row, action_col))
+                group_name = surface_group_for_row(row, groups)
+                phase_name = emission_phase_for_row(row, group_name)
+                surface = effect.surfaces[surface_name]
+                rows.append({
+                    "component": selector_name,
+                    "surface_name": surface_name,
+                    "group": group_name,
+                    "emission_phase": phase_name,
+                    "action": action_name,
+                    "surface": surface,
+                    "action_values": evaluate_curve(
+                        getattr(surface, action_name), wave,
+                    ),
+                    "emissivity": evaluate_ter_property(
+                        surface, "emissivity", wave,
+                    ),
+                    "emission_values": evaluate_emission_density(surface, wave),
+                    "temperature": surface.meta.get("temperature"),
+                    "ter_sources": ter_property_sources(surface),
+                })
+            continue
+
+        surface = effect.surface
+        action_name = _surface_effect_action_name(effect)
+        group_name = _surface_effect_group_name(parent, effect)
+        phase_name = _surface_effect_phase_name(parent, effect)
+        rows.append({
+            "component": selector_name,
+            "surface_name": selector_name,
+            "group": group_name,
+            "emission_phase": phase_name,
+            "action": action_name,
+            "surface": surface,
+            "action_values": evaluate_curve(getattr(surface, action_name), wave),
+            "emissivity": evaluate_ter_property(surface, "emissivity", wave),
+            "emission_values": evaluate_emission_density(surface, wave),
+            "temperature": surface.meta.get("temperature"),
+            "ter_sources": ter_property_sources(surface),
+        })
+    return rows
+
+
 def fetch_effect_spectrum_or_transmission(
     ztrain: Any,
     display_name: str,
@@ -236,6 +377,21 @@ def _clean_metadata_value(value: Any) -> str | None:
     return text
 
 
+def _clean_emission_phase(value: Any) -> str | None:
+    phase_name = _clean_metadata_value(value)
+    if phase_name is None:
+        return None
+    key = phase_name.lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "predisperser": "pre_disperser",
+        "pre_disperser": "pre_disperser",
+        "postdisperser": "post_disperser",
+        "post_disperser": "post_disperser",
+        "none": "none",
+    }
+    return aliases.get(key, phase_name)
+
+
 def surface_group_for_name(
     surface_name: str,
     groups: Mapping[str, tuple[str, ...]] | None = None,
@@ -269,7 +425,7 @@ def emission_phase_for_row(row: Any, group_name: str | None = None) -> str:
     """Return explicit row emission phase, falling back conservatively."""
     phase_col = _real_colname("emission_phase", row.colnames)
     if phase_col is not None:
-        phase_name = _clean_metadata_value(_row_scalar(row, phase_col))
+        phase_name = _clean_emission_phase(_row_scalar(row, phase_col))
         if phase_name is not None:
             return phase_name
 
@@ -341,6 +497,23 @@ def surface_list_group_throughputs(
     return grouped, counts
 
 
+def optical_surface_group_throughputs(
+    rows: list[dict[str, Any]],
+    wave: u.Quantity,
+) -> tuple[OrderedDict[str, np.ndarray], dict[str, int]]:
+    """Return grouped throughputs from flattened optical surface rows."""
+    grouped: OrderedDict[str, np.ndarray] = OrderedDict()
+    counts: dict[str, int] = {}
+    for row in rows:
+        group_name = row["group"]
+        if group_name not in grouped:
+            grouped[group_name] = np.ones(wave.size, dtype=float)
+            counts[group_name] = 0
+        grouped[group_name] *= row["action_values"]
+        counts[group_name] += 1
+    return grouped, counts
+
+
 def surface_list_emissivity_terms(
     surface_list: Any,
     wave: u.Quantity,
@@ -357,28 +530,24 @@ def surface_list_emissivity_terms(
     because this diffuse light is injected at the image plane instead of being
     trace-mapped as a spectral source.
     """
-    name_col = _real_colname("name", surface_list.table.colnames)
-    action_col = _real_colname("action", surface_list.table.colnames)
+    rows = optical_surface_rows(
+        [{
+            "selector": surface_list,
+            "selector_name": effect_name(surface_list),
+            "effect": surface_list,
+        }],
+        wave,
+        groups=groups,
+    )
+    return optical_surface_emissivity_terms(rows, wave, qe_values=qe_values)
 
-    rows: list[dict[str, Any]] = []
-    for row in surface_list.table:
-        surface_name = str(_row_scalar(row, name_col))
-        action_name = str(_row_scalar(row, action_col))
-        group_name = surface_group_for_row(row, groups)
-        phase_name = emission_phase_for_row(row, group_name)
-        surface = surface_list.surfaces[surface_name]
-        rows.append({
-            "surface_name": surface_name,
-            "group": group_name,
-            "emission_phase": phase_name,
-            "action": action_name,
-            "surface": surface,
-            "action_values": evaluate_curve(getattr(surface, action_name), wave),
-            "emissivity": evaluate_ter_property(surface, "emissivity", wave),
-            "temperature": surface.meta.get("temperature"),
-            "ter_sources": ter_property_sources(surface),
-        })
 
+def optical_surface_emissivity_terms(
+    rows: list[dict[str, Any]],
+    wave: u.Quantity,
+    qe_values: np.ndarray | None = None,
+) -> tuple[dict[str, OrderedDict[str, np.ndarray]], dict[str, int], list[dict[str, Any]]]:
+    """Return grouped emissivity terms from flattened optical surface rows."""
     downstream = [np.ones(wave.size, dtype=float) for _ in range(len(rows) + 1)]
     for idx in range(len(rows) - 1, -1, -1):
         downstream[idx] = downstream[idx + 1] * rows[idx]["action_values"]
@@ -391,6 +560,20 @@ def surface_list_emissivity_terms(
     details: list[dict[str, Any]] = []
     for idx, row in enumerate(rows):
         if row["emission_phase"] == "none":
+            details.append({
+                "component": row["component"],
+                "surface": row["surface_name"],
+                "group": row["group"],
+                "emission_phase": "none",
+                "action": row["action"],
+                "temperature": row["temperature"],
+                "emissivity_source": row["ter_sources"]["emissivity"],
+                "transmission_source": row["ter_sources"]["transmission"],
+                "reflection_source": row["ter_sources"]["reflection"],
+                "qe_applied": False,
+                "peak_output_emissivity": np.nan,
+                "peak_after_qe": np.nan,
+            })
             continue
 
         contribution = row["emissivity"] * downstream[idx + 1]
@@ -417,6 +600,7 @@ def surface_list_emissivity_terms(
         counts[f"{phase_name}:{group_name}"] += 1
 
         details.append({
+            "component": row["component"],
             "surface": row["surface_name"],
             "group": group_name,
             "emission_phase": phase_name,
@@ -525,7 +709,6 @@ def build_emissivity_sanity_data(
     positional_qe_by_aperture = positional_qe_by_aperture or {}
 
     dichroic_tree = get_effect(ztrain, "dichroic_tree")
-    channel_selector = get_effect(ztrain, "channel_optics_selector")
     qe_selector = _get_qe_selector(
         ztrain, qe_selector_name, active_only=active_only,
     )
@@ -539,7 +722,6 @@ def build_emissivity_sanity_data(
     channels: OrderedDict[int, dict[str, Any]] = OrderedDict()
     details: list[dict[str, Any]] = []
     for aperture_id in aperture_ids:
-        channel_optics = resolve_effect(channel_selector, aperture_id)
         detector_qe = resolve_effect(qe_selector, aperture_id)
         qe_values = effective_diffuse_qe(
             detector_qe,
@@ -547,8 +729,12 @@ def build_emissivity_sanity_data(
             positional_qe=positional_qe_by_aperture.get(aperture_id),
         )
 
-        phase_terms, counts, surface_details = surface_list_emissivity_terms(
-            channel_optics, wave, groups=groups, qe_values=qe_values,
+        components = channel_optical_components(
+            ztrain, aperture_id, qe_selector=qe_selector,
+        )
+        surface_rows = optical_surface_rows(components, wave, groups=groups)
+        phase_terms, counts, surface_details = optical_surface_emissivity_terms(
+            surface_rows, wave, qe_values=qe_values,
         )
         pre_total = _sum_terms(phase_terms["pre_disperser"], wave.size)
         post_total = _sum_terms(phase_terms["post_disperser"], wave.size)
@@ -618,32 +804,35 @@ def surface_list_post_disperser_diffuse_terms(
     with ``emission_phase == "post_disperser"`` are returned as image-plane
     diffuse background candidates.
     """
-    name_col = _real_colname("name", surface_list.table.colnames)
-    action_col = _real_colname("action", surface_list.table.colnames)
-    if name_col is None or action_col is None:
-        raise ValueError("SurfaceList table must contain name and action columns.")
+    rows = optical_surface_rows(
+        [{
+            "selector": surface_list,
+            "selector_name": effect_name(surface_list),
+            "effect": surface_list,
+        }],
+        wave,
+        groups=groups,
+    )
+    return optical_surface_post_disperser_diffuse_terms(
+        rows, wave, qe_values=qe_values, emission_phase=emission_phase,
+    )
 
-    rows: list[dict[str, Any]] = []
-    for row in surface_list.table:
-        surface_name = str(_row_scalar(row, name_col))
-        action_name = str(_row_scalar(row, action_col))
-        group_name = surface_group_for_row(row, groups)
-        phase_name = emission_phase_for_row(row, group_name)
+
+def optical_surface_post_disperser_diffuse_terms(
+    rows: list[dict[str, Any]],
+    wave: u.Quantity,
+    qe_values: np.ndarray | None = None,
+    emission_phase: str = "post_disperser",
+) -> tuple[OrderedDict[str, u.Quantity], list[dict[str, Any]]]:
+    """Return post-disperser diffuse spectra from flattened surface rows."""
+    for row in rows:
+        phase_name = row["emission_phase"]
         if phase_name not in {"pre_disperser", "post_disperser", "none"}:
             raise ValueError(
-                f"Unknown emission_phase {phase_name!r} for {surface_name!r}; "
-                "expected pre_disperser, post_disperser, or none."
+                f"Unknown emission_phase {phase_name!r} for "
+                f"{row['surface_name']!r}; expected pre_disperser, "
+                "post_disperser, or none."
             )
-        surface = surface_list.surfaces[surface_name]
-        rows.append({
-            "surface_name": surface_name,
-            "group": group_name,
-            "phase": phase_name,
-            "action": action_name,
-            "action_values": evaluate_curve(getattr(surface, action_name), wave),
-            "emission_values": evaluate_emission_density(surface, wave),
-            "temperature": surface.meta.get("temperature"),
-        })
 
     downstream = [np.ones(wave.size, dtype=float) for _ in range(len(rows) + 1)]
     for idx in range(len(rows) - 1, -1, -1):
@@ -655,7 +844,7 @@ def surface_list_post_disperser_diffuse_terms(
     grouped: OrderedDict[str, u.Quantity] = OrderedDict()
     details: list[dict[str, Any]] = []
     for idx, row in enumerate(rows):
-        is_diffuse = row["phase"] == emission_phase
+        is_diffuse = row["emission_phase"] == emission_phase
         contribution = None
         if is_diffuse and row["emission_values"] is not None:
             contribution = row["emission_values"] * downstream[idx + 1] * qe_values
@@ -669,9 +858,10 @@ def surface_list_post_disperser_diffuse_terms(
         if contribution is not None:
             peak = float(np.nanmax(_as_float_array(contribution)))
         details.append({
+            "component": row["component"],
             "surface": row["surface_name"],
             "group": row["group"],
-            "emission_phase": row["phase"],
+            "emission_phase": row["emission_phase"],
             "action": row["action"],
             "temperature": row["temperature"],
             "included_as_diffuse": is_diffuse,
@@ -714,7 +904,6 @@ def build_post_disperser_diffuse_background_data(
     telescope_area = _telescope_area(ztrain)
 
     dichroic_tree = get_effect(ztrain, "dichroic_tree")
-    channel_selector = get_effect(ztrain, "channel_optics_selector")
     qe_selector = _get_qe_selector(
         ztrain, qe_selector_name, active_only=active_only,
     )
@@ -728,7 +917,6 @@ def build_post_disperser_diffuse_background_data(
     channels: OrderedDict[int, dict[str, Any]] = OrderedDict()
     details: list[dict[str, Any]] = []
     for aperture_id in aperture_ids:
-        channel_optics = resolve_effect(channel_selector, aperture_id)
         detector_qe = resolve_effect(qe_selector, aperture_id)
         traces = traces_for_aperture.get(aperture_id, [])
         image_plane_id = (
@@ -746,10 +934,13 @@ def build_post_disperser_diffuse_background_data(
             positional_qe=positional_qe_by_aperture.get(aperture_id),
             footprint=image_plane,
         )
-        spectra, surface_details = surface_list_post_disperser_diffuse_terms(
-            channel_optics,
+        components = channel_optical_components(
+            ztrain, aperture_id, qe_selector=qe_selector,
+        )
+        surface_rows = optical_surface_rows(components, wave, groups=groups)
+        spectra, surface_details = optical_surface_post_disperser_diffuse_terms(
+            surface_rows,
             wave,
-            groups=groups,
             qe_values=qe_values,
         )
         rates = OrderedDict(
@@ -1558,7 +1749,6 @@ def build_transmission_sanity_data(
     wave = wave_nm.to(u.um)
 
     dichroic_tree = get_effect(ztrain, "dichroic_tree")
-    channel_selector = get_effect(ztrain, "channel_optics_selector")
     qe_selector = _get_qe_selector(
         ztrain, qe_selector_name, active_only=active_only,
     )
@@ -1572,14 +1762,17 @@ def build_transmission_sanity_data(
     ]
     channels: OrderedDict[int, dict[str, Any]] = OrderedDict()
     for aperture_id in aperture_ids:
-        channel_optics = resolve_effect(channel_selector, aperture_id)
         detector_qe = resolve_effect(qe_selector, aperture_id)
 
         dichroic_total, dichroic_components = dichroic_path_throughput(
             dichroic_tree, aperture_id, wave,
         )
-        optics_groups, group_counts = surface_list_group_throughputs(
-            channel_optics, wave, groups=groups,
+        components = channel_optical_components(
+            ztrain, aperture_id, qe_selector=qe_selector,
+        )
+        surface_rows = optical_surface_rows(components, wave, groups=groups)
+        optics_groups, group_counts = optical_surface_group_throughputs(
+            surface_rows, wave,
         )
         optics_total = (
             np.prod(list(optics_groups.values()), axis=0)
