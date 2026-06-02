@@ -648,6 +648,106 @@ def effective_diffuse_qe(
     return spectral_qe * representative_positional_qe(positional_qe, wave)
 
 
+def detector_qe_accounting_summary(detector_qe: Any) -> dict[str, Any]:
+    """Return notebook-facing detector QE accounting metadata."""
+    qe_detail = _qe_detail_summary(detector_qe)
+    is_position_aware = hasattr(detector_qe, "throughput_at")
+    uses_footprint = bool(getattr(detector_qe, "uses_detector_footprint", False))
+    meta = getattr(detector_qe, "meta", {}) or {}
+    return {
+        **qe_detail,
+        "trace_mapped_qe": (
+            "per-pixel detector coordinates from trace mapping"
+            if is_position_aware
+            else "wavelength-only spectral throughput"
+        ),
+        "transmission_plot_qe": (
+            "footprint/detector-axis average shown for display; order totals "
+            "use slit-center trace detector coordinates"
+            if uses_footprint
+            else "same wavelength-only spectral throughput used for all orders"
+        ),
+        "diffuse_qe": (
+            "mean over uniformly sampled detector-axis positions"
+            if uses_footprint
+            else "wavelength-only spectral throughput"
+        ),
+        "diffuse_position_samples": meta.get("diffuse_position_samples"),
+        "position_axis": meta.get("axis"),
+        "position_min": meta.get("position_min"),
+        "position_max": meta.get("position_max"),
+    }
+
+
+def _trace_center_detector_positions(
+    trace: Any,
+    wave: u.Quantity,
+    image_plane: Any | None = None,
+) -> dict[str, np.ndarray] | None:
+    """Return slit-center detector coordinates for a trace and wave grid."""
+    if not all(hasattr(trace, attr) for attr in ("xilam2x", "xilam2y")):
+        return None
+
+    wave_um = wave.to_value(u.um)
+    xi = np.zeros(wave_um.shape, dtype=float)
+    x_mm = np.asarray(trace.xilam2x(xi, wave_um), dtype=float)
+    y_mm = np.asarray(trace.xilam2y(xi, wave_um), dtype=float)
+    coords = {
+        "detector_x_mm": x_mm,
+        "detector_y_mm": y_mm,
+    }
+
+    if image_plane is None:
+        return coords
+
+    try:
+        from astropy.wcs import WCS
+
+        x_pix, y_pix = WCS(image_plane.header, key="D").all_world2pix(
+            x_mm, y_mm, 0,
+        )
+        coords["detector_x"] = np.asarray(x_pix, dtype=float)
+        coords["detector_y"] = np.asarray(y_pix, dtype=float)
+    except Exception:
+        pass
+
+    return coords
+
+
+def evaluate_trace_detector_qe(
+    detector_qe: Any,
+    trace: Any,
+    wave: u.Quantity,
+    image_plane: Any | None = None,
+) -> tuple[np.ndarray, str]:
+    """Evaluate detector QE for a trace sanity curve."""
+    if not hasattr(detector_qe, "throughput_at"):
+        return evaluate_throughput(detector_qe, wave), "spectral throughput"
+
+    coords = _trace_center_detector_positions(trace, wave, image_plane)
+    if coords is None:
+        return (
+            evaluate_throughput(detector_qe, wave),
+            "representative detector midpoint",
+        )
+
+    with u.set_enabled_equivalencies(u.spectral()):
+        values = detector_qe.throughput_at(
+            wave,
+            detector_x=coords.get("detector_x"),
+            detector_y=coords.get("detector_y"),
+            detector_x_mm=coords["detector_x_mm"],
+            detector_y_mm=coords["detector_y_mm"],
+            trace=trace,
+        )
+    method = (
+        "slit-center trace detector pixels"
+        if "detector_y" in coords or "detector_x" in coords
+        else "representative detector midpoint; detector-pixel WCS unavailable"
+    )
+    return _as_float_array(values), method
+
+
 def traces_by_aperture(trace_list: Any) -> dict[int, list[Any]]:
     """Group spectral traces by aperture id."""
     grouped: dict[int, list[Any]] = defaultdict(list)
@@ -773,6 +873,7 @@ def build_emissivity_sanity_data(
             "pre_disperser_output_equiv": pre_total,
             "post_disperser_after_qe": post_total,
             "detector_qe": qe_values,
+            "detector_qe_accounting": detector_qe_accounting_summary(detector_qe),
             "detector_qe_note": "throughput only; detector emissivity is not modeled",
         }
 
@@ -978,12 +1079,51 @@ def build_post_disperser_diffuse_background_data(
             "rates_ph_s_pix": rates,
             "total_rate_ph_s_pix": total_rate,
             "detector_qe": qe_values,
+            "detector_qe_accounting": detector_qe_accounting_summary(detector_qe),
             "pixel_area": image_pixel_area,
             "telescope_area": telescope_area,
             "detector_qe_note": "throughput only; detector emissivity is not modeled",
         }
 
     return {"wave_nm": wave_nm, "channels": channels, "details": Table(rows=details)}
+
+
+def detector_qe_accounting_table(
+    transmission_data: Mapping[str, Any] | None = None,
+    emissivity_data: Mapping[str, Any] | None = None,
+    post_diffuse_data: Mapping[str, Any] | None = None,
+) -> Table:
+    """Return detector-QE accounting rows for notebook validation paths."""
+    datasets = [
+        ("transmission_trace_mapped", transmission_data),
+        ("emissivity_sanity", emissivity_data),
+        ("post_disperser_diffuse", post_diffuse_data),
+    ]
+    rows: list[dict[str, Any]] = []
+    for path_name, data in datasets:
+        if data is None:
+            continue
+        for aperture_id, channel in data["channels"].items():
+            accounting = channel.get("detector_qe_accounting", {})
+            rows.append({
+                "path": path_name,
+                "aperture_id": int(aperture_id),
+                "channel": channel["label"],
+                "qe_model": accounting.get("qe_model", ""),
+                "trace_mapped_qe": accounting.get("trace_mapped_qe", ""),
+                "transmission_plot_qe": accounting.get("transmission_plot_qe", ""),
+                "diffuse_qe": accounting.get("diffuse_qe", ""),
+                "diffuse_position_samples": accounting.get(
+                    "diffuse_position_samples",
+                ),
+                "order_qe_methods": ", ".join(
+                    channel.get("order_detector_qe_methods", []),
+                ),
+                "position_axis": accounting.get("position_axis"),
+                "position_min": accounting.get("position_min"),
+                "position_max": accounting.get("position_max"),
+            })
+    return Table(rows=rows)
 
 
 def post_disperser_diffuse_effect_consistency_table(
@@ -1779,33 +1919,59 @@ def build_transmission_sanity_data(
             if optics_groups
             else np.ones(wave.size)
         )
-        qe_values = evaluate_throughput(detector_qe, wave)
-        pre_disperser_total = dichroic_total * optics_total * qe_values
+        image_plane = None
+        traces = traces_for_aperture.get(aperture_id, [])
+        if traces:
+            image_plane_id = int(traces[0].meta["image_plane_id"])
+            if (
+                hasattr(ztrain, "image_planes")
+                and image_plane_id < len(ztrain.image_planes)
+            ):
+                image_plane = ztrain.image_planes[image_plane_id]
+
+        qe_values = (
+            effective_diffuse_qe(detector_qe, wave, footprint=image_plane)
+            if getattr(detector_qe, "uses_detector_footprint", False)
+            else evaluate_throughput(detector_qe, wave)
+        )
+        pre_disperser_total = dichroic_total * optics_total
 
         orders: OrderedDict[str, dict[str, Any]] = OrderedDict()
-        for trace in traces_for_aperture.get(aperture_id, []):
+        qe_methods: set[str] = set()
+        for trace in traces:
             order_eff = _as_float_array(
                 trace_eff.efficiency_generator(trace.trace_id, wave),
             )
             mask = (wave >= trace.wave_min * u.um) & (wave <= trace.wave_max * u.um)
             order_eff = np.where(mask, order_eff, np.nan)
+            order_qe, qe_method = evaluate_trace_detector_qe(
+                detector_qe, trace, wave, image_plane=image_plane,
+            )
+            qe_methods.add(qe_method)
             orders[trace.trace_id] = {
                 "disperser": order_eff,
-                "total": pre_disperser_total * order_eff,
+                "detector_qe": order_qe,
+                "detector_qe_method": qe_method,
+                "total": pre_disperser_total * order_eff * order_qe,
                 "wave_min": trace.wave_min * u.um,
                 "wave_max": trace.wave_max * u.um,
             }
 
         channels[aperture_id] = {
-            "label": channel_label(
-                aperture_id, traces_for_aperture.get(aperture_id, []),
-            ),
+            "label": channel_label(aperture_id, traces),
             "dichroic_total": dichroic_total,
             "dichroic_components": dichroic_components,
             "optics_groups": optics_groups,
             "optics_group_counts": group_counts,
             "optics_total": optics_total,
             "detector_qe": qe_values,
+            "detector_qe_label": (
+                "detector QE axis average"
+                if getattr(detector_qe, "uses_detector_footprint", False)
+                else "detector QE"
+            ),
+            "detector_qe_accounting": detector_qe_accounting_summary(detector_qe),
+            "order_detector_qe_methods": sorted(qe_methods),
             "pre_disperser_total": pre_disperser_total,
             "orders": orders,
         }
@@ -1828,6 +1994,7 @@ def validate_transmission_sanity_data(data: Mapping[str, Any]) -> None:
         ]
         arrays.extend(channel["optics_groups"].values())
         arrays.extend(order["disperser"] for order in channel["orders"].values())
+        arrays.extend(order["detector_qe"] for order in channel["orders"].values())
         for arr in arrays:
             finite = arr[np.isfinite(arr)]
             if finite.size == 0:

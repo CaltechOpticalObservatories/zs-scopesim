@@ -372,7 +372,8 @@ def test_build_transmission_sanity_data_can_auto_select_enabled_qe():
 
     channel = data["channels"][0]
     np.testing.assert_allclose(channel["detector_qe"], [0.6, 0.6])
-    np.testing.assert_allclose(channel["pre_disperser_total"], [0.096, 0.096])
+    np.testing.assert_allclose(channel["pre_disperser_total"], [0.16, 0.16])
+    assert channel["order_detector_qe_methods"] == ["spectral throughput"]
 
 
 def test_build_transmission_sanity_data_includes_extra_optical_selector():
@@ -399,7 +400,7 @@ def test_build_transmission_sanity_data_includes_extra_optical_selector():
     np.testing.assert_allclose(
         channel["optics_groups"]["ir_blocking_filter"], [0.25, 0.25],
     )
-    np.testing.assert_allclose(channel["pre_disperser_total"], [0.02, 0.02])
+    np.testing.assert_allclose(channel["pre_disperser_total"], [0.04, 0.04])
 
 
 def test_build_emissivity_sanity_data_accepts_non_surface_qe():
@@ -485,6 +486,43 @@ def test_post_disperser_diffuse_data_applies_downstream_extra_selector(monkeypat
 
     spectrum = data["channels"][0]["spectra"]["camera"]
     np.testing.assert_allclose(spectrum.value, [0.25, 0.25])
+
+
+def test_detector_qe_accounting_table_reports_paths(monkeypatch):
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain([
+        FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        ),
+    ])
+    train.image_planes = [None, None, FakeImagePlane(fits.Header())]
+    monkeypatch.setattr(
+        val, "_image_plane_pixel_area", lambda _ztrain, _id: 1 * u.arcsec**2,
+    )
+    monkeypatch.setattr(val, "_telescope_area", lambda _ztrain: 1 * u.m**2)
+
+    transmission = val.build_transmission_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+    emissivity = val.build_emissivity_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+    post_diffuse = val.build_post_disperser_diffuse_background_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    table = val.detector_qe_accounting_table(
+        transmission, emissivity, post_diffuse,
+    )
+
+    assert list(table["path"]) == [
+        "transmission_trace_mapped",
+        "emissivity_sanity",
+        "post_disperser_diffuse",
+    ]
+    assert list(table["qe_model"]) == ["FakeDetectorQE"] * 3
 
 
 def test_auto_qe_selection_rejects_ambiguous_enabled_selectors():

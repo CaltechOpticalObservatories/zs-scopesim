@@ -267,15 +267,20 @@ def plot_transmission_sanity(data: Mapping[str, Any]):
         )
         ax.plot(
             wave, channel["detector_qe"], lw=1.2,
-            color="tab:red", label="detector QE",
+            color="tab:red", label=channel.get("detector_qe_label", "detector QE"),
         )
 
         for idx, (_trace_id, order) in enumerate(channel["orders"].items()):
             order_label = "disperser/order" if idx == 0 else None
+            order_qe_label = "detector QE/order" if idx == 0 else None
             total_label = "total/order" if idx == 0 else None
             ax.plot(
                 wave, order["disperser"], lw=0.7, color="tab:orange",
                 alpha=0.35, label=order_label,
+            )
+            ax.plot(
+                wave, order["detector_qe"], lw=0.7, color="tab:red",
+                alpha=0.25, label=order_qe_label,
             )
             ax.plot(
                 wave, order["total"], lw=1.8, color="black",
