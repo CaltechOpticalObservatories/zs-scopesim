@@ -824,6 +824,37 @@ def test_slit_adc_scene_uses_configured_scopesim_psf_fwhm():
     assert any("active ScopeSim" in note for note in data["notes"])
 
 
+def test_build_slit_width_loss_data_uses_configured_scopesim_psf_fwhm():
+    effect = AOEnhanceablePSF()
+    slit_widths = np.array([0.3, 0.7, 1.2]) * u.arcsec
+
+    data = val.build_slit_width_loss_data(
+        FakeAOTrain(effect),
+        slit_widths=slit_widths,
+        arms={"VIS": (np.array([500, 750]) * u.nm, "!INST.vis_curr_slit")},
+        slit_length=4.0 * u.arcsec,
+        grid_step=0.25 * u.arcsec,
+    )
+
+    arm = data["arms"]["VIS"]
+    assert set(arm["curves"]) == {
+        "no_ao_500nm",
+        "no_ao_750nm",
+        "ao_500nm",
+        "ao_750nm",
+    }
+    for curve in arm["curves"].values():
+        assert curve["loss"].shape == slit_widths.shape
+        assert np.all(curve["loss"] >= 0)
+        assert np.all(curve["loss"] <= 1)
+    assert np.all(
+        arm["curves"]["no_ao_500nm"]["loss"][1:]
+        <= arm["curves"]["no_ao_500nm"]["loss"][:-1]
+    )
+    assert set(effect.seen_fwhm_units) == {u.um}
+    assert set(effect.seen_wave_units) == {u.um}
+
+
 def test_slit_loss_summary_table_computes_throughput():
     table = val.slit_loss_summary_table([
         {"scenario": "adc_on", "source": "source_0", "input_signal": 10, "output_signal": 7},

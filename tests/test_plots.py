@@ -48,6 +48,7 @@ def test_validation_reexports_plot_helpers():
     )
     assert validation.plot_slit_adc_psf_scenes is plots.plot_slit_adc_psf_scenes
     assert validation.plot_slit_loss_by_arm is plots.plot_slit_loss_by_arm
+    assert validation.plot_slit_width_loss is plots.plot_slit_width_loss
     assert validation.plot_slit_pair_geometry is plots.plot_slit_pair_geometry
     assert (
         validation.plot_readout_cross_dispersion_cut
@@ -166,6 +167,38 @@ def test_slit_loss_plot_smoke():
     fig, axes = plots.plot_slit_loss_by_arm(data)
 
     assert axes.shape == (1, 1)
+    fig.clf()
+
+
+def test_slit_width_loss_plot_smoke():
+    slit_widths = np.linspace(0.2, 1.0, 5) * u.arcsec
+    data = {
+        "arms": {
+            "VIS": {
+                "slit_widths_arcsec": slit_widths,
+                "current_slit_width_arcsec": 0.7 * u.arcsec,
+                "curves": {
+                    "no_ao_500nm": {
+                        "label": "no AO, 500 nm",
+                        "loss": np.linspace(0.8, 0.1, slit_widths.size),
+                        "linestyle": "-",
+                        "wavelength_nm": 500.0,
+                    },
+                    "ao_500nm": {
+                        "label": "AO, 500 nm",
+                        "loss": np.linspace(0.2, 0.01, slit_widths.size),
+                        "linestyle": "--",
+                        "wavelength_nm": 500.0,
+                    },
+                },
+            },
+        },
+    }
+
+    fig, axes = plots.plot_slit_width_loss(data)
+
+    assert axes.shape == (1, 1)
+    assert len(axes[0, 0].lines) == 3
     fig.clf()
 
 

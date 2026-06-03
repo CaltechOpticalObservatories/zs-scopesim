@@ -881,6 +881,62 @@ def plot_slit_loss_by_arm(data: Mapping[str, Any]):
     return fig, axes
 
 
+def plot_slit_width_loss(data: Mapping[str, Any]):
+    """Plot centered point-source slit loss as a function of slit width."""
+    import matplotlib.pyplot as plt
+
+    arms = data["arms"]
+    fig, axes = plt.subplots(
+        1,
+        len(arms),
+        figsize=(6.4 * len(arms), 4.8),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    for ax, (arm_name, arm) in zip(axes.flat, arms.items(), strict=True):
+        slit_widths = u.Quantity(arm["slit_widths_arcsec"]).to_value(u.arcsec)
+        wave_values = sorted({
+            float(curve["wavelength_nm"])
+            for curve in arm["curves"].values()
+        })
+        colors = plt.cm.viridis(np.linspace(0.12, 0.88, len(wave_values)))
+        color_map = dict(zip(wave_values, colors, strict=True))
+        for curve in arm["curves"].values():
+            wave_nm = float(curve["wavelength_nm"])
+            ax.plot(
+                slit_widths,
+                curve["loss"],
+                lw=2.4,
+                color=color_map[wave_nm],
+                ls=curve.get("linestyle", "-"),
+                label=curve["label"],
+            )
+
+        current_slit = u.Quantity(
+            arm["current_slit_width_arcsec"],
+        ).to_value(u.arcsec)
+        if np.isfinite(current_slit):
+            ax.axvline(
+                current_slit, color="0.25", lw=1.6, ls=":",
+                label="current slit",
+            )
+        ax.set_title(f"{arm_name} PSF Loss vs Slit Width", pad=8)
+        ax.set_xlabel("Slit width [arcsec]")
+        ax.set_ylabel("Slit loss fraction")
+        ax.set_ylim(0, 1)
+        ax.set_xlim(slit_widths.min(), slit_widths.max())
+        ax.grid(alpha=0.25)
+
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    fig.legend(
+        handles, labels, loc="outside lower center",
+        ncol=min(4, max(1, len(handles))),
+        frameon=False,
+        fontsize="small",
+    )
+    return fig, axes
+
+
 def plot_readout_overview(hdul: Any, titles: list[str] | None = None):
     """Plot detector readout images from a ScopeSim readout result."""
     import matplotlib.pyplot as plt

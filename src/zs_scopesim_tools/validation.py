@@ -21,6 +21,7 @@ from .plots import (
     plot_slit_adc_psf_scenes,
     plot_slit_loss_by_arm,
     plot_slit_pair_geometry,
+    plot_slit_width_loss,
     plot_source,
     plot_transmission_sanity,
 )
@@ -2462,6 +2463,93 @@ def build_slit_loss_data(
         "notes": [
             "Centered point-source loss from a pre-slit Moffat PSF.",
             "This diagnostic exposes slit loss that ScopeSim does not measure directly.",
+        ],
+    }
+
+
+def build_slit_width_loss_data(
+    train_or_cmds: Any,
+    *,
+    slit_widths: u.Quantity | None = None,
+    arms: Mapping[str, tuple[u.Quantity, str]] | None = None,
+    slit_length: u.Quantity = 10.0 * u.arcsec,
+    grid_step: u.Quantity = 0.04 * u.arcsec,
+    beta: float = 4.765,
+) -> dict[str, Any]:
+    """Return centered point-source slit loss over a sweep of slit widths.
+
+    This isolates PSF/slit coupling: the source is centered and no atmospheric
+    dispersion shift is applied. When an optical train is supplied, FWHM values
+    come from the active ScopeSim Moffat-like PSF effect.
+    """
+    cmds = _cmds_from_train_or_cmds(train_or_cmds)
+    slit_widths = (
+        np.linspace(0.15, 2.0, 20) * u.arcsec
+        if slit_widths is None
+        else _quantity_with_default_unit(slit_widths, u.arcsec)
+    ).to(u.arcsec)
+    arms = arms or OrderedDict({
+        "VIS": (
+            np.array([350, 500, 750, 950]) * u.nm,
+            "!INST.vis_curr_slit",
+        ),
+        "NIR": (
+            np.array([1000, 1250, 1650, 2200]) * u.nm,
+            "!INST.nir_curr_slit",
+        ),
+    })
+    seeing = _cmd_quantity(cmds, "!OBS.seeing", 0.6 * u.arcsec, u.arcsec)
+    zenith_angle = _zenith_angle_from_cmds(cmds)
+    psf_modes = _slit_loss_psf_modes(train_or_cmds, beta)
+
+    arm_data: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    for arm_name, (wave_values, slit_key) in arms.items():
+        wave = _quantity_with_default_unit(wave_values, u.nm).to(u.nm)
+        current_slit = _cmd_quantity(cmds, slit_key, np.nan * u.arcsec, u.arcsec)
+        curves: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        for psf_name, psf_spec in psf_modes.items():
+            for wave_value in wave:
+                losses = []
+                one_wave = np.array([wave_value.to_value(u.nm)]) * u.nm
+                zero_shift = np.zeros(1) * u.arcsec
+                for slit_width in slit_widths:
+                    throughput = _slit_throughput_curve(
+                        one_wave,
+                        zero_shift,
+                        seeing=seeing,
+                        zenith_angle=zenith_angle,
+                        slit_width=slit_width,
+                        slit_length=slit_length,
+                        beta=psf_spec["beta"],
+                        grid_step=grid_step,
+                        fwhm_func=psf_spec["fwhm_func"],
+                    )
+                    losses.append(1.0 - float(throughput[0]))
+                wave_nm = wave_value.to_value(u.nm)
+                curves[f"{psf_name}_{wave_nm:.0f}nm"] = {
+                    "label": f"{psf_spec['label']}, {wave_nm:.0f} nm",
+                    "loss": np.asarray(losses, dtype=float),
+                    "throughput": 1.0 - np.asarray(losses, dtype=float),
+                    "linestyle": psf_spec["style"],
+                    "psf_mode": psf_name,
+                    "psf_note": psf_spec["note"],
+                    "wavelength_nm": float(wave_nm),
+                }
+        arm_data[arm_name] = {
+            "slit_widths_arcsec": slit_widths,
+            "current_slit_width_arcsec": current_slit,
+            "wavelengths_nm": wave,
+            "slit_length_arcsec": u.Quantity(slit_length).to(u.arcsec),
+            "curves": curves,
+        }
+
+    return {
+        "arms": arm_data,
+        "seeing_arcsec": seeing,
+        "psf_modes": psf_modes,
+        "notes": [
+            "Centered point-source PSF loss with no atmospheric-dispersion shift.",
+            "Use this to inspect narrow-slit throughput sensitivity by arm.",
         ],
     }
 
