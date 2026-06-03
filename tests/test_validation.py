@@ -261,11 +261,19 @@ class FakePSFEffect:
 class AOEnhanceablePSF:
     include = True
     display_name = "seeing_psf"
-    meta = {"name": display_name}
     alpha = 3.25
 
+    def __init__(self, scale=0.2, *, is_absolute=True):
+        self.scale = scale
+        self.seen_wave_units = []
+        self.meta = {
+            "name": self.display_name,
+            "is_absolute": is_absolute,
+        }
+
     def ao_scale(self, wave):
-        return np.full(wave.size, 0.2) * u.arcsec
+        self.seen_wave_units.append(u.Quantity(wave).unit)
+        return np.full(wave.size, self.scale)
 
 
 def named_effect(effect, name, *, include=True):
@@ -338,20 +346,22 @@ class FakeBudgetTrain(FakeTrainWithImagePlane):
 
 
 class FakeAOOpticsManager:
-    all_effects = [AOEnhanceablePSF()]
+    def __init__(self, effect=None):
+        self.all_effects = [effect or AOEnhanceablePSF()]
 
 
 class FakeAOTrain:
-    cmds = {
-        "!OBS.airmass": 1.3,
-        "!OBS.seeing": 0.6,
-        "!ATMO.temperature": 9.0,
-        "!ATMO.pressure": 0.75,
-        "!ATMO.humidity": 0.15,
-        "!ATMO.x_co2": 450.0,
-        "!INST.vis_curr_slit": 0.7,
-    }
-    optics_manager = FakeAOOpticsManager()
+    def __init__(self, effect=None):
+        self.cmds = {
+            "!OBS.airmass": 1.3,
+            "!OBS.seeing": 0.6,
+            "!ATMO.temperature": 9.0,
+            "!ATMO.pressure": 0.75,
+            "!ATMO.humidity": 0.15,
+            "!ATMO.x_co2": 450.0,
+            "!INST.vis_curr_slit": 0.7,
+        }
+        self.optics_manager = FakeAOOpticsManager(effect)
 
 
 def test_effect_name_handles_objects_without_meta():
@@ -734,8 +744,9 @@ def test_build_slit_loss_data_returns_losses_between_zero_and_one():
 
 
 def test_build_slit_loss_data_includes_ao_mode_when_psf_supports_it():
+    effect = AOEnhanceablePSF()
     data = val.build_slit_loss_data(
-        FakeAOTrain(),
+        FakeAOTrain(effect),
         arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
         n_wave=5,
         slit_length=4.0 * u.arcsec,
@@ -746,6 +757,38 @@ def test_build_slit_loss_data_includes_ao_mode_when_psf_supports_it():
     assert "no_ao_zenith" in curves
     assert "ao_zenith" in curves
     assert curves["ao_zenith"]["linestyle"] == "--"
+    assert np.all(curves["ao_zenith"]["loss"] < curves["no_ao_zenith"]["loss"])
+    assert set(effect.seen_wave_units) == {u.um}
+
+
+def test_build_slit_loss_data_handles_relative_dimensionless_ao_scale():
+    data = val.build_slit_loss_data(
+        FakeAOTrain(AOEnhanceablePSF(scale=0.5, is_absolute=False)),
+        arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
+        n_wave=5,
+        slit_length=4.0 * u.arcsec,
+        grid_step=0.25 * u.arcsec,
+    )
+
+    curves = data["arms"]["VIS"]["curves"]
+    assert "ao_zenith" in curves
+    assert np.isfinite(curves["ao_zenith"]["loss"]).all()
+    assert np.all(curves["ao_zenith"]["loss"] < curves["no_ao_zenith"]["loss"])
+
+
+def test_slit_loss_notebook_call_chain_handles_dimensionless_ao_tables():
+    data = val.build_slit_loss_data(
+        FakeAOTrain(),
+        arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
+        n_wave=5,
+        slit_length=4.0 * u.arcsec,
+        grid_step=0.25 * u.arcsec,
+    )
+    fig, axes = val.plot_slit_loss_by_arm(data)
+
+    assert axes.shape == (1, 1)
+    assert len(axes[0, 0].lines) == 6
+    fig.clf()
 
 
 def test_slit_loss_summary_table_computes_throughput():

@@ -1907,6 +1907,21 @@ def _cmd_quantity(
     return quantity.to(unit)
 
 
+def _quantity_with_default_unit(value: Any, unit: u.UnitBase) -> u.Quantity:
+    quantity = u.Quantity(value)
+    if quantity.unit == u.dimensionless_unscaled:
+        quantity = quantity.value * unit
+    return quantity.to(unit)
+
+
+def _metadata_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def _cmds_from_train_or_cmds(train_or_cmds: Any) -> Any:
     return getattr(train_or_cmds, "cmds", train_or_cmds)
 
@@ -2040,14 +2055,16 @@ def _slit_throughput_curve(
     slit_length: u.Quantity,
     beta: float,
     grid_step: u.Quantity,
-    fwhm_func: Callable[[u.Quantity, u.Quantity], u.Quantity] | None = None,
+    fwhm_func: (
+        Callable[[u.Quantity, u.Quantity, u.Quantity], u.Quantity] | None
+    ) = None,
 ) -> np.ndarray:
     wave = u.Quantity(wave).to(u.nm)
     shifts_arcsec = u.Quantity(shifts).to_value(u.arcsec)
     if fwhm_func is None:
         fwhm = _natural_seeing_fwhm(wave, seeing, zenith_angle)
     else:
-        fwhm = fwhm_func(wave, zenith_angle)
+        fwhm = fwhm_func(wave, zenith_angle, seeing)
     fwhm_values = u.Quantity(fwhm).to_value(u.arcsec)
     width = u.Quantity(slit_width).to_value(u.arcsec)
     length = u.Quantity(slit_length).to_value(u.arcsec)
@@ -2104,8 +2121,25 @@ def _slit_loss_psf_modes(
     if effect is None or not hasattr(effect, "ao_scale"):
         return modes
 
-    def ao_fwhm(wave: u.Quantity, _zenith_angle: u.Quantity) -> u.Quantity:
-        return u.Quantity(effect.ao_scale(wave)).to(u.arcsec)
+    is_absolute = _metadata_bool(
+        getattr(effect, "meta", {}).get("is_absolute"),
+        default=True,
+    )
+
+    def ao_fwhm(
+        wave: u.Quantity,
+        zenith_angle: u.Quantity,
+        seeing: u.Quantity,
+    ) -> u.Quantity:
+        values = effect.ao_scale(u.Quantity(wave).to(u.um))
+        if is_absolute:
+            return _quantity_with_default_unit(values, u.arcsec)
+
+        scale = _as_float_array(values)
+        return (
+            _natural_seeing_fwhm(wave, seeing, zenith_angle)
+            * scale
+        ).to(u.arcsec)
 
     modes["ao"] = {
         "label": "AO",
@@ -2114,6 +2148,8 @@ def _slit_loss_psf_modes(
         "fwhm_func": ao_fwhm,
         "note": (
             "AO design FWHM from active AOEnhanceablePSF. "
+            "Dimensionless absolute AO tables are interpreted as arcsec, "
+            "matching ScopeSim's PSF quantification convention. "
             "This diagnostic curve does not change the optical train."
         ),
     }
