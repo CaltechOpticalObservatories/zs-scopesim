@@ -56,7 +56,7 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
 
     wave = data["wave_nm"].to_value(u.nm)
     fig, axes = plt.subplots(
-        2, 3, figsize=(16, 7.5), sharex=True, constrained_layout=True,
+        2, 3, figsize=(16, 8.2), sharex=True, constrained_layout=True,
     )
     colors = {
         "camera": "tab:cyan",
@@ -81,18 +81,31 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
                 color=colors.get(name, "0.5"),
                 label=f"{name} diffuse",
             )
+        if channel.get("total_spectrum_without_blocking") is not None:
+            ax.plot(
+                wave,
+                _plot_quantity_values(
+                    channel["total_spectrum_without_blocking"],
+                ),
+                lw=2.0,
+                ls="--",
+                color="0.25",
+                alpha=0.85,
+                label="total without ir block",
+            )
         if channel["total_spectrum"] is not None:
             ax.plot(
                 wave,
                 _plot_quantity_values(channel["total_spectrum"]),
-                lw=1.5,
+                lw=2.2,
                 color="black",
-                alpha=0.75,
-                label="total diffuse",
+                alpha=0.95,
+                label="total with ir block",
             )
         ax.set_title(
             f"{channel['label']} (image plane {channel['image_plane_id']}): "
-            f"{channel['total_rate_ph_s_pix']:.3g} ph/s/pix",
+            f"{channel['total_rate_ph_s_pix']:.3g} ph/s/pix"
+            f" ({channel.get('blocking_delta_rate_ph_s_pix', 0.0):.3g} blocked)",
         )
         ax.set_xlim(wave.min(), wave.max())
         ax.grid(alpha=0.2)
@@ -101,16 +114,16 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
         ax.set_xlabel("Wavelength [nm]")
     for ax in axes[:, 0]:
         ax.set_ylabel("Spectral background [PHOTLAM equiv.]")
-    handles, labels = axes.flat[0].get_legend_handles_labels()
+    handles, labels = [], []
+    for ax in axes.flat:
+        ax_handles, ax_labels = ax.get_legend_handles_labels()
+        handles.extend(ax_handles)
+        labels.extend(ax_labels)
     dedup = OrderedDict(zip(labels, handles))
-    fig.suptitle(
-        "Post-disperser diffuse emission is added after dichroic/echelle "
-        "trace mapping; pre-disperser thermal light remains dichroic-filtered.",
-        fontsize=11,
-    )
+    fig.suptitle("Post-Disperser Diffuse Background", fontsize=12)
     fig.legend(
-        dedup.values(), dedup.keys(), loc="outside upper center",
-        ncol=4, frameon=False,
+        dedup.values(), dedup.keys(), loc="outside lower center",
+        ncol=5, frameon=False,
     )
     return fig, axes
 
@@ -137,7 +150,9 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
             list(channel["pre_disperser_terms"].values())
             + list(channel["post_disperser_terms"].values())
             + [channel["pre_disperser_output_equiv"],
-               channel["post_disperser_after_qe"]]
+               channel["post_disperser_after_qe"],
+               channel.get("post_disperser_without_blocking_after_qe",
+                           np.zeros_like(channel["post_disperser_after_qe"]))]
         )
         for curve in curves:
             finite = curve[np.isfinite(curve)]
@@ -165,9 +180,77 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
             label="pre total before trace QE", zorder=8,
         )
         ax.plot(
+            wave,
+            channel.get(
+                "post_disperser_without_blocking_after_qe",
+                channel["post_disperser_after_qe"],
+            ),
+            lw=2.0,
+            ls="--",
+            color="0.25",
+            alpha=0.85,
+            label="post diffuse without ir block",
+            zorder=9,
+        )
+        ax.plot(
             wave, channel["post_disperser_after_qe"], lw=2.4,
             color="black", alpha=0.95,
-            label="post diffuse after downstream+QE", zorder=10,
+            label="post diffuse with ir block+QE", zorder=10,
+        )
+        blocked_delta = channel.get("post_disperser_blocked_delta")
+        if blocked_delta is not None and np.nanmax(np.abs(blocked_delta)) > 0:
+            ax.plot(
+                wave, blocked_delta, lw=1.8, ls="-.",
+                color="tab:brown", alpha=0.9,
+                label="removed by ir block", zorder=9,
+            )
+        extract_curve = channel.get("post_disperser_extract_equiv_rate_ph_s")
+        if extract_curve is not None:
+            rate_ax = ax.twinx()
+            rate_ax.plot(
+                wave,
+                extract_curve,
+                lw=1.2,
+                ls=":",
+                color="tab:orange",
+                alpha=0.8,
+                label="integrated diffuse extraction equiv.",
+            )
+            ax.plot(
+                [], [], lw=1.2, ls=":", color="tab:orange",
+                alpha=0.8, label="integrated diffuse extraction equiv.",
+            )
+            rate_ax.set_yscale("symlog", linthresh=1e-6)
+            rate_ax.tick_params(axis="y", labelsize=7, colors="tab:orange")
+            if aperture_id in (2, 5):
+                rate_ax.set_ylabel("Integrated diffuse [ph/s]", color="tab:orange")
+            peak_rate = float(np.nanmax(extract_curve))
+        else:
+            peak_rate = np.nan
+        peak_lines = []
+        for label, values in (
+            ("pre", channel["pre_disperser_output_equiv"]),
+            ("post", channel["post_disperser_after_qe"]),
+            ("no block", channel.get(
+                "post_disperser_without_blocking_after_qe",
+                channel["post_disperser_after_qe"],
+            )),
+        ):
+            finite = values[np.isfinite(values)]
+            if finite.size:
+                peak_lines.append(f"{label}: {np.nanmax(finite):.2g}")
+        if np.isfinite(peak_rate):
+            peak_lines.append(f"int: {peak_rate:.2g} ph/s")
+        ax.text(
+            0.02,
+            0.04,
+            "peak " + "\n".join(peak_lines),
+            transform=ax.transAxes,
+            fontsize=7,
+            va="bottom",
+            ha="left",
+            bbox={"boxstyle": "round,pad=0.25", "fc": "white",
+                  "ec": "0.75", "alpha": 0.78},
         )
         ax.plot(
             wave, channel["detector_qe"], lw=0.9, ls=":",
@@ -184,7 +267,11 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
     for ax in axes[:, 0]:
         ax.set_ylabel("Thermal emission density [PHOTLAM equiv.] (symlog)")
 
-    handles, labels = axes.flat[0].get_legend_handles_labels()
+    handles, labels = [], []
+    for ax in axes.flat:
+        ax_handles, ax_labels = ax.get_legend_handles_labels()
+        handles.extend(ax_handles)
+        labels.extend(ax_labels)
     dedup = OrderedDict(zip(labels, handles))
     fig.legend(
         dedup.values(), dedup.keys(), loc="outside upper center",
@@ -273,6 +360,16 @@ def plot_transmission_sanity(data: Mapping[str, Any]):
             color="tab:red", alpha=0.9,
             label=channel.get("detector_qe_label", "detector QE"),
         )
+        midpoint_qe = channel.get("detector_qe_midpoint")
+        if midpoint_qe is not None:
+            ax.plot(
+                wave, midpoint_qe, lw=1.4, ls="--",
+                color="tab:red", alpha=0.75,
+                label=channel.get(
+                    "detector_qe_midpoint_label",
+                    "detector QE midpoint",
+                ),
+            )
 
         for idx, (_trace_id, order) in enumerate(channel["orders"].items()):
             order_label = "disperser/order" if idx == 0 else None

@@ -62,6 +62,8 @@ class FakeDetectorQE:
 
 
 class FakeTaperedQuantumEfficiency:
+    uses_detector_footprint = True
+
     def __init__(self):
         self.meta = {
             "name": "fake_tapered_qe",
@@ -371,7 +373,8 @@ def test_build_transmission_sanity_data_can_auto_select_enabled_qe():
     )
 
     channel = data["channels"][0]
-    np.testing.assert_allclose(channel["detector_qe"], [0.6, 0.6])
+    np.testing.assert_allclose(channel["detector_qe"], [0.7, 0.7])
+    np.testing.assert_allclose(channel["detector_qe_midpoint"], [0.6, 0.6])
     np.testing.assert_allclose(channel["pre_disperser_total"], [0.16, 0.16])
     assert channel["order_detector_qe_methods"] == ["spectral throughput"]
 
@@ -429,7 +432,7 @@ def test_build_emissivity_sanity_data_accepts_non_surface_qe():
     assert qe_rows[0]["transmission_source"] == "configured"
 
 
-def test_build_emissivity_sanity_data_applies_downstream_extra_selector():
+def test_build_emissivity_sanity_data_applies_downstream_extra_selector(monkeypatch):
     wave_nm = np.array([350.0, 360.0]) * u.nm
     extra_selector = FakeNamedSelector(
         "ir_blocking_filter_selector",
@@ -445,6 +448,7 @@ def test_build_emissivity_sanity_data_applies_downstream_extra_selector():
         )],
         optical_selectors=[extra_selector],
     )
+    monkeypatch.setattr(val, "_telescope_area", lambda _ztrain: 1 * u.m**2)
 
     data = val.build_emissivity_sanity_data(
         train, wave_nm=wave_nm, qe_selector_name=None,
@@ -453,6 +457,14 @@ def test_build_emissivity_sanity_data_applies_downstream_extra_selector():
     channel = data["channels"][0]
     np.testing.assert_allclose(
         channel["post_disperser_after_qe"], [0.25, 0.25],
+    )
+    np.testing.assert_allclose(
+        channel["post_disperser_without_blocking_after_qe"], [1.0, 1.0],
+    )
+    np.testing.assert_allclose(channel["post_disperser_blocked_delta"], [0.75, 0.75])
+    np.testing.assert_allclose(
+        channel["post_disperser_extract_equiv_rate_ph_s"],
+        [2.5e5, 2.5e5],
     )
     details = data["details"]
     assert "ir_blocking_filter" in set(details["group"])
@@ -487,6 +499,11 @@ def test_post_disperser_diffuse_data_applies_downstream_extra_selector(monkeypat
 
     spectrum = data["channels"][0]["spectra"]["camera"]
     np.testing.assert_allclose(spectrum.value, [0.25, 0.25])
+    unblocked = data["channels"][0]["spectra_without_blocking"]["camera"]
+    np.testing.assert_allclose(unblocked.value, [1.0, 1.0])
+    assert data["channels"][0]["total_rate_without_blocking_ph_s_pix"] > (
+        data["channels"][0]["total_rate_ph_s_pix"]
+    )
 
 
 def test_detector_qe_accounting_table_reports_paths(monkeypatch):

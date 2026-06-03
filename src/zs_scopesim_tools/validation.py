@@ -820,11 +820,17 @@ def build_emissivity_sanity_data(
     positional_qe_by_aperture: Mapping[int, Any] | None = None,
     qe_selector_name: str | None = "detector_qe_selector",
     active_only: bool = True,
+    blocking_component_names: tuple[str, ...] = ("ir_blocking_filter_selector",),
+    diffuse_extraction_pixels: float = 1.0,
 ) -> dict[str, Any]:
     """Build split pre/post-disperser emissivity sanity-check data."""
+    from scopesim.effects.illumination import integrate_spectral_background
+
     wave_nm = wave_nm if wave_nm is not None else np.linspace(300, 2500, 5000) * u.nm
     wave = wave_nm.to(u.um)
     positional_qe_by_aperture = positional_qe_by_aperture or {}
+    blocked_components = set(blocking_component_names)
+    telescope_area = _telescope_area(ztrain)
 
     dichroic_tree = get_effect(ztrain, "dichroic_tree")
     qe_selector = _get_qe_selector(
@@ -841,6 +847,14 @@ def build_emissivity_sanity_data(
     details: list[dict[str, Any]] = []
     for aperture_id in aperture_ids:
         detector_qe = resolve_effect(qe_selector, aperture_id)
+        traces = traces_for_aperture.get(aperture_id, [])
+        image_plane_id = (
+            int(traces[0].meta["image_plane_id"]) if traces else aperture_id
+        )
+        try:
+            image_pixel_area = _image_plane_pixel_area(ztrain, image_plane_id)
+        except (AttributeError, IndexError, KeyError):
+            image_pixel_area = 1.0 * u.arcsec**2
         qe_values = effective_diffuse_qe(
             detector_qe,
             wave,
@@ -854,10 +868,43 @@ def build_emissivity_sanity_data(
         phase_terms, counts, surface_details = optical_surface_emissivity_terms(
             surface_rows, wave, qe_values=qe_values,
         )
+        unblocked_rows = _rows_excluding_components(
+            surface_rows, blocked_components,
+        )
+        unblocked_phase_terms, _unblocked_counts, _unblocked_details = (
+            optical_surface_emissivity_terms(
+                unblocked_rows, wave, qe_values=qe_values,
+            )
+        )
         pre_total = _sum_terms(phase_terms["pre_disperser"], wave.size)
         post_total = _sum_terms(phase_terms["post_disperser"], wave.size)
+        post_unblocked_total = _sum_terms(
+            unblocked_phase_terms["post_disperser"], wave.size,
+        )
+        post_blocked_delta = post_unblocked_total - post_total
+        diffuse_rate_per_pix = integrate_spectral_background(
+            post_total * PHOTLAM,
+            wave,
+            telescope_area=telescope_area,
+            image_pixel_area=image_pixel_area,
+        )
+        diffuse_unblocked_rate_per_pix = integrate_spectral_background(
+            post_unblocked_total * PHOTLAM,
+            wave,
+            telescope_area=telescope_area,
+            image_pixel_area=image_pixel_area,
+        )
+        diffuse_extract_equiv = np.full(
+            wave.size, diffuse_rate_per_pix * diffuse_extraction_pixels,
+            dtype=float,
+        )
+        diffuse_unblocked_extract_equiv = np.full(
+            wave.size,
+            diffuse_unblocked_rate_per_pix * diffuse_extraction_pixels,
+            dtype=float,
+        )
 
-        label = channel_label(aperture_id, traces_for_aperture.get(aperture_id, []))
+        label = channel_label(aperture_id, traces)
         for row in surface_details:
             row["aperture_id"] = aperture_id
             row["channel"] = label
@@ -887,9 +934,29 @@ def build_emissivity_sanity_data(
             "label": label,
             "pre_disperser_terms": phase_terms["pre_disperser"],
             "post_disperser_terms": phase_terms["post_disperser"],
+            "post_disperser_terms_without_blocking": (
+                unblocked_phase_terms["post_disperser"]
+            ),
             "emissivity_group_counts": counts,
             "pre_disperser_output_equiv": pre_total,
             "post_disperser_after_qe": post_total,
+            "post_disperser_without_blocking_after_qe": post_unblocked_total,
+            "post_disperser_blocked_delta": post_blocked_delta,
+            "post_disperser_extract_equiv_rate_ph_s": diffuse_extract_equiv,
+            "post_disperser_extract_equiv_without_blocking_rate_ph_s": (
+                diffuse_unblocked_extract_equiv
+            ),
+            "post_disperser_rate_ph_s_pix": diffuse_rate_per_pix,
+            "post_disperser_without_blocking_rate_ph_s_pix": (
+                diffuse_unblocked_rate_per_pix
+            ),
+            "diffuse_extraction_pixels": float(diffuse_extraction_pixels),
+            "diffuse_extraction_note": (
+                "Integrated post-disperser diffuse background scaled to "
+                f"{diffuse_extraction_pixels:g} image-plane pixel(s) per "
+                "wavelength sample. Adjust diffuse_extraction_pixels to match "
+                "the extraction footprint."
+            ),
             "detector_qe": qe_values,
             "detector_qe_accounting": detector_qe_accounting_summary(detector_qe),
             "detector_qe_note": "throughput only; detector emissivity is not modeled",
@@ -1013,6 +1080,7 @@ def build_post_disperser_diffuse_background_data(
     positional_qe_by_aperture: Mapping[int, Any] | None = None,
     qe_selector_name: str | None = "detector_qe_selector",
     active_only: bool = True,
+    blocking_component_names: tuple[str, ...] = ("ir_blocking_filter_selector",),
 ) -> dict[str, Any]:
     """Build image-plane post-disperser diffuse background data."""
     from scopesim.effects.illumination import integrate_spectral_background
@@ -1020,6 +1088,7 @@ def build_post_disperser_diffuse_background_data(
     wave_nm = wave_nm if wave_nm is not None else np.linspace(300, 2500, 5000) * u.nm
     wave = wave_nm.to(u.um)
     positional_qe_by_aperture = positional_qe_by_aperture or {}
+    blocked_components = set(blocking_component_names)
     telescope_area = _telescope_area(ztrain)
 
     dichroic_tree = get_effect(ztrain, "dichroic_tree")
@@ -1062,6 +1131,16 @@ def build_post_disperser_diffuse_background_data(
             wave,
             qe_values=qe_values,
         )
+        unblocked_rows = _rows_excluding_components(
+            surface_rows, blocked_components,
+        )
+        spectra_unblocked, _surface_details_unblocked = (
+            optical_surface_post_disperser_diffuse_terms(
+                unblocked_rows,
+                wave,
+                qe_values=qe_values,
+            )
+        )
         rates = OrderedDict(
             (name, integrate_spectral_background(
                 spectrum,
@@ -1071,8 +1150,22 @@ def build_post_disperser_diffuse_background_data(
             ))
             for name, spectrum in spectra.items()
         )
+        rates_unblocked = OrderedDict(
+            (name, integrate_spectral_background(
+                spectrum,
+                wave,
+                telescope_area=telescope_area,
+                image_pixel_area=image_pixel_area,
+            ))
+            for name, spectrum in spectra_unblocked.items()
+        )
         total_spectrum = _sum_quantity_terms(spectra)
+        total_spectrum_unblocked = _sum_quantity_terms(spectra_unblocked)
         total_rate = float(np.sum(list(rates.values()))) if rates else 0.0
+        total_rate_unblocked = (
+            float(np.sum(list(rates_unblocked.values())))
+            if rates_unblocked else 0.0
+        )
         label = channel_label(aperture_id, traces)
 
         for row in surface_details:
@@ -1093,9 +1186,14 @@ def build_post_disperser_diffuse_background_data(
                 if traces else np.nan
             ),
             "spectra": spectra,
+            "spectra_without_blocking": spectra_unblocked,
             "total_spectrum": total_spectrum,
+            "total_spectrum_without_blocking": total_spectrum_unblocked,
             "rates_ph_s_pix": rates,
+            "rates_without_blocking_ph_s_pix": rates_unblocked,
             "total_rate_ph_s_pix": total_rate,
+            "total_rate_without_blocking_ph_s_pix": total_rate_unblocked,
+            "blocking_delta_rate_ph_s_pix": total_rate_unblocked - total_rate,
             "detector_qe": qe_values,
             "detector_qe_accounting": detector_qe_accounting_summary(detector_qe),
             "pixel_area": image_pixel_area,
@@ -1497,6 +1595,18 @@ def _sum_quantity_terms(terms: Mapping[str, u.Quantity]) -> u.Quantity | None:
     for values in terms.values():
         total = values if total is None else total + values
     return total
+
+
+def _rows_excluding_components(
+    rows: list[dict[str, Any]],
+    excluded_components: set[str],
+) -> list[dict[str, Any]]:
+    if not excluded_components:
+        return rows
+    return [
+        row for row in rows
+        if str(row["component"]) not in excluded_components
+    ]
 
 
 def _trace_wave_nm(value: Any) -> float:
@@ -1952,6 +2062,7 @@ def build_transmission_sanity_data(
             if getattr(detector_qe, "uses_detector_footprint", False)
             else evaluate_throughput(detector_qe, wave)
         )
+        qe_midpoint_values = evaluate_throughput(detector_qe, wave)
         pre_disperser_total = dichroic_total * optics_total
 
         orders: OrderedDict[str, dict[str, Any]] = OrderedDict()
@@ -1983,10 +2094,16 @@ def build_transmission_sanity_data(
             "optics_group_counts": group_counts,
             "optics_total": optics_total,
             "detector_qe": qe_values,
+            "detector_qe_midpoint": qe_midpoint_values,
             "detector_qe_label": (
                 "detector QE axis average"
                 if getattr(detector_qe, "uses_detector_footprint", False)
                 else "detector QE"
+            ),
+            "detector_qe_midpoint_label": (
+                "detector QE at taper midpoint"
+                if getattr(detector_qe, "uses_detector_footprint", False)
+                else "detector QE midpoint"
             ),
             "detector_qe_accounting": detector_qe_accounting_summary(detector_qe),
             "order_detector_qe_methods": sorted(qe_methods),
@@ -2008,6 +2125,7 @@ def validate_transmission_sanity_data(data: Mapping[str, Any]) -> None:
             channel["dichroic_total"],
             channel["optics_total"],
             channel["detector_qe"],
+            channel["detector_qe_midpoint"],
             channel["pre_disperser_total"],
         ]
         arrays.extend(channel["optics_groups"].values())
