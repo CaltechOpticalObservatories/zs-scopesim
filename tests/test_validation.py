@@ -258,6 +258,16 @@ class FakePSFEffect:
     meta = {"name": display_name, "fwhm": "!OBS.seeing"}
 
 
+class AOEnhanceablePSF:
+    include = True
+    display_name = "seeing_psf"
+    meta = {"name": display_name}
+    alpha = 3.25
+
+    def ao_scale(self, wave):
+        return np.full(wave.size, 0.2) * u.arcsec
+
+
 def named_effect(effect, name, *, include=True):
     effect.include = include
     effect.display_name = name
@@ -325,6 +335,23 @@ class FakeBudgetTrain(FakeTrainWithImagePlane):
     def __init__(self):
         super().__init__()
         self.optics_manager = FakeBudgetOpticsManager()
+
+
+class FakeAOOpticsManager:
+    all_effects = [AOEnhanceablePSF()]
+
+
+class FakeAOTrain:
+    cmds = {
+        "!OBS.airmass": 1.3,
+        "!OBS.seeing": 0.6,
+        "!ATMO.temperature": 9.0,
+        "!ATMO.pressure": 0.75,
+        "!ATMO.humidity": 0.15,
+        "!ATMO.x_co2": 450.0,
+        "!INST.vis_curr_slit": 0.7,
+    }
+    optics_manager = FakeAOOpticsManager()
 
 
 def test_effect_name_handles_objects_without_meta():
@@ -699,11 +726,26 @@ def test_build_slit_loss_data_returns_losses_between_zero_and_one():
     )
 
     curves = data["arms"]["VIS"]["curves"]
-    assert "zenith" in curves
-    assert "elevation_60_ad_only" in curves
+    assert "no_ao_zenith" in curves
+    assert "no_ao_elevation_60_ad_only" in curves
     for curve in curves.values():
         assert np.all(curve["loss"] >= 0)
         assert np.all(curve["loss"] <= 1)
+
+
+def test_build_slit_loss_data_includes_ao_mode_when_psf_supports_it():
+    data = val.build_slit_loss_data(
+        FakeAOTrain(),
+        arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
+        n_wave=5,
+        slit_length=4.0 * u.arcsec,
+        grid_step=0.25 * u.arcsec,
+    )
+
+    curves = data["arms"]["VIS"]["curves"]
+    assert "no_ao_zenith" in curves
+    assert "ao_zenith" in curves
+    assert curves["ao_zenith"]["linestyle"] == "--"
 
 
 def test_slit_loss_summary_table_computes_throughput():

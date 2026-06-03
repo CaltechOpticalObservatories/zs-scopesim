@@ -16,6 +16,7 @@ from .plots import (
     plot_detector_background_budget,
     plot_emissivity_sanity,
     plot_post_disperser_diffuse_background,
+    plot_readout_cross_dispersion_cut,
     plot_readout_overview,
     plot_slit_adc_psf_scenes,
     plot_slit_loss_by_arm,
@@ -2039,10 +2040,15 @@ def _slit_throughput_curve(
     slit_length: u.Quantity,
     beta: float,
     grid_step: u.Quantity,
+    fwhm_func: Callable[[u.Quantity, u.Quantity], u.Quantity] | None = None,
 ) -> np.ndarray:
     wave = u.Quantity(wave).to(u.nm)
     shifts_arcsec = u.Quantity(shifts).to_value(u.arcsec)
-    fwhm_values = _natural_seeing_fwhm(wave, seeing, zenith_angle).to_value(u.arcsec)
+    if fwhm_func is None:
+        fwhm = _natural_seeing_fwhm(wave, seeing, zenith_angle)
+    else:
+        fwhm = fwhm_func(wave, zenith_angle)
+    fwhm_values = u.Quantity(fwhm).to_value(u.arcsec)
     width = u.Quantity(slit_width).to_value(u.arcsec)
     length = u.Quantity(slit_length).to_value(u.arcsec)
     step = u.Quantity(grid_step).to_value(u.arcsec)
@@ -2070,6 +2076,48 @@ def _slit_throughput_curve(
         inside = np.sum(image[slit_mask]) * pixel_area
         throughput[idx] = inside / total if total > 0 else np.nan
     return throughput
+
+
+def _active_ao_enhanceable_psf(train_or_cmds: Any) -> Any | None:
+    if not hasattr(train_or_cmds, "optics_manager"):
+        return None
+    for effect in active_effects(train_or_cmds):
+        if effect.__class__.__name__ == "AOEnhanceablePSF":
+            return effect
+    return None
+
+
+def _slit_loss_psf_modes(
+    train_or_cmds: Any,
+    beta: float,
+) -> OrderedDict[str, dict[str, Any]]:
+    modes: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    modes["no_ao"] = {
+        "label": "no AO",
+        "style": "-",
+        "beta": beta,
+        "fwhm_func": None,
+        "note": "Natural seeing law from current observation settings.",
+    }
+
+    effect = _active_ao_enhanceable_psf(train_or_cmds)
+    if effect is None or not hasattr(effect, "ao_scale"):
+        return modes
+
+    def ao_fwhm(wave: u.Quantity, _zenith_angle: u.Quantity) -> u.Quantity:
+        return u.Quantity(effect.ao_scale(wave)).to(u.arcsec)
+
+    modes["ao"] = {
+        "label": "AO",
+        "style": "--",
+        "beta": float(getattr(effect, "alpha", beta) or beta),
+        "fwhm_func": ao_fwhm,
+        "note": (
+            "AO design FWHM from active AOEnhanceablePSF. "
+            "This diagnostic curve does not change the optical train."
+        ),
+    }
+    return modes
 
 
 def build_slit_adc_psf_scene_data(
@@ -2224,6 +2272,7 @@ def build_slit_loss_data(
         "NIR": (980 * u.nm, 2450 * u.nm, "!INST.nir_curr_slit"),
     })
     seeing = _cmd_quantity(cmds, "!OBS.seeing", 0.6 * u.arcsec, u.arcsec)
+    psf_modes = _slit_loss_psf_modes(train_or_cmds, beta)
     adc_error, adc_note = _adc_zenith_angle_error(
         train_or_cmds, adc_zenith_angle_error,
     )
@@ -2232,18 +2281,21 @@ def build_slit_loss_data(
             "label": "zenith",
             "zenith_angle": 0.0 * u.deg,
             "mode": "ad",
+            "color": "tab:blue",
             "note": "No chromatic displacement at zenith.",
         },
         "elevation_60_ad_only": {
             "label": "60 deg elevation, AD only",
             "zenith_angle": 30.0 * u.deg,
             "mode": "ad",
+            "color": "tab:orange",
             "note": "Full atmospheric dispersion before slit clipping.",
         },
         "elevation_60_adc_residual": {
             "label": "60 deg elevation, ADC residual",
             "zenith_angle": 30.0 * u.deg,
             "mode": "adc",
+            "color": "tab:green",
             "note": adc_note,
         },
     })
@@ -2257,37 +2309,43 @@ def build_slit_loss_data(
         ) * u.nm
         slit_width = _cmd_quantity(cmds, slit_key, 0.7 * u.arcsec, u.arcsec)
         curves: OrderedDict[str, dict[str, Any]] = OrderedDict()
-        for curve_name, spec in curve_specs.items():
-            zenith_angle = spec["zenith_angle"]
-            ad_shift = _atmospheric_refraction_shift(
-                wave, zenith_angle, cmds, wave_ref=wave_ref,
-            )
-            if spec["mode"] == "adc":
-                shifts = ad_shift - _atmospheric_refraction_shift(
-                    wave,
-                    zenith_angle + adc_error,
-                    cmds,
-                    wave_ref=wave_ref,
+        for psf_name, psf_spec in psf_modes.items():
+            for curve_name, spec in curve_specs.items():
+                zenith_angle = spec["zenith_angle"]
+                ad_shift = _atmospheric_refraction_shift(
+                    wave, zenith_angle, cmds, wave_ref=wave_ref,
                 )
-            else:
-                shifts = ad_shift
-            throughput = _slit_throughput_curve(
-                wave,
-                shifts,
-                seeing=seeing,
-                zenith_angle=zenith_angle,
-                slit_width=slit_width,
-                slit_length=slit_length,
-                beta=beta,
-                grid_step=grid_step,
-            )
-            curves[curve_name] = {
-                "label": spec["label"],
-                "throughput": throughput,
-                "loss": 1.0 - throughput,
-                "shift_arcsec": shifts,
-                "note": spec["note"],
-            }
+                if spec["mode"] == "adc":
+                    shifts = ad_shift - _atmospheric_refraction_shift(
+                        wave,
+                        zenith_angle + adc_error,
+                        cmds,
+                        wave_ref=wave_ref,
+                    )
+                else:
+                    shifts = ad_shift
+                throughput = _slit_throughput_curve(
+                    wave,
+                    shifts,
+                    seeing=seeing,
+                    zenith_angle=zenith_angle,
+                    slit_width=slit_width,
+                    slit_length=slit_length,
+                    beta=psf_spec["beta"],
+                    grid_step=grid_step,
+                    fwhm_func=psf_spec["fwhm_func"],
+                )
+                curves[f"{psf_name}_{curve_name}"] = {
+                    "label": f"{psf_spec['label']}, {spec['label']}",
+                    "throughput": throughput,
+                    "loss": 1.0 - throughput,
+                    "shift_arcsec": shifts,
+                    "color": spec["color"],
+                    "linestyle": psf_spec["style"],
+                    "psf_mode": psf_name,
+                    "psf_note": psf_spec["note"],
+                    "note": spec["note"],
+                }
         arm_data[arm_name] = {
             "wave_nm": wave,
             "slit_width_arcsec": slit_width,
@@ -2298,6 +2356,7 @@ def build_slit_loss_data(
     return {
         "arms": arm_data,
         "seeing_arcsec": seeing,
+        "psf_modes": psf_modes,
         "wave_ref_nm": u.Quantity(wave_ref).to(u.nm),
         "adc_zenith_angle_error_deg": adc_error,
         "notes": [

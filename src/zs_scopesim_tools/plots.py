@@ -18,15 +18,36 @@ def _as_float_array(values: Any) -> np.ndarray:
     return np.asarray(values, dtype=float)
 
 
-def _plot_source_spectrum_values(
+def _source_label(source: Any) -> str:
+    meta = getattr(source, "meta", {}) or {}
+    for key in ("name", "object", "description", "function_call"):
+        value = meta.get(key)
+        if value:
+            return str(value)
+    return f"{source.__class__.__name__}@{id(source):x}"
+
+
+def _row_label(source: Any, table: Table, row_index: int) -> str:
+    for key in ("label", "name", "object", "source"):
+        if key in table.colnames:
+            value = table[key][row_index]
+            if value is not None and str(value):
+                return str(value)
+    return f"{_source_label(source)} row {row_index}"
+
+
+def _plot_spectrum_values(
     ax: Any,
     wave: u.Quantity,
-    spectrum: Any,
+    values: Any,
     *,
     label: str,
 ) -> None:
-    values = spectrum(wave)
     ax.plot(wave.to_value(u.um), _as_float_array(values), label=label)
+
+
+def _evaluate_spectrum_values(spectrum: Any, wave: u.Quantity, weight: float = 1.0) -> Any:
+    return spectrum(wave) * weight
 
 
 def _source_field_image_data(field: Any) -> np.ndarray | None:
@@ -55,10 +76,13 @@ def _quantity_column(table: Table, name: str, unit: u.UnitBase) -> u.Quantity:
 
 
 def _plot_table_source_field(
+    source: Any,
     ax_image: Any,
     ax_spectrum: Any,
     field: Any,
     wave: u.Quantity,
+    *,
+    individual: bool,
 ) -> None:
     table = field.field
     x = _quantity_column(table, "x", u.arcsec).to_value(u.arcsec)
@@ -84,6 +108,15 @@ def _plot_table_source_field(
         linewidths=0.8,
         alpha=0.9,
     )
+    if len(table) <= 10:
+        for idx, (xpos, ypos) in enumerate(zip(x, y, strict=True)):
+            ax_image.annotate(
+                _row_label(source, table, idx),
+                (xpos, ypos),
+                xytext=(4, 4),
+                textcoords="offset points",
+                fontsize=8,
+            )
     ax_image.axhline(0, color="0.65", lw=0.8)
     ax_image.axvline(0, color="0.65", lw=0.8)
     ax_image.set_aspect("equal", adjustable="datalim")
@@ -99,16 +132,37 @@ def _plot_table_source_field(
         )
 
     spectra = getattr(field, "spectra", {})
-    for ref in np.unique(refs):
+    if individual:
+        for row_index, ref in enumerate(refs):
+            spectrum = spectra.get(int(ref), spectra.get(ref))
+            if spectrum is None:
+                continue
+            values = _evaluate_spectrum_values(
+                spectrum, wave, weight=float(weights[row_index]),
+            )
+            _plot_spectrum_values(
+                ax_spectrum,
+                wave,
+                values,
+                label=_row_label(source, table, row_index),
+            )
+        return
+
+    total_values = None
+    for row_index, ref in enumerate(refs):
         spectrum = spectra.get(int(ref), spectra.get(ref))
         if spectrum is None:
             continue
-        ref_weight = float(np.sum(weights[refs == ref]))
-        _plot_source_spectrum_values(
+        values = _evaluate_spectrum_values(
+            spectrum, wave, weight=float(weights[row_index]),
+        )
+        total_values = values if total_values is None else total_values + values
+    if total_values is not None:
+        _plot_spectrum_values(
             ax_spectrum,
             wave,
-            spectrum,
-            label=f"ref {ref} x {ref_weight:g}",
+            total_values,
+            label=f"{_source_label(source)} total ({len(table)} points)",
         )
 
 
@@ -136,15 +190,28 @@ def _plot_image_source_field(
     except Exception:
         spectrum = None
     if spectrum is not None:
-        _plot_source_spectrum_values(ax_spectrum, wave, spectrum, label="spectrum")
+        _plot_spectrum_values(
+            ax_spectrum,
+            wave,
+            _evaluate_spectrum_values(spectrum, wave),
+            label="spectrum",
+        )
     else:
         for ref, candidate in getattr(field, "spectra", {}).items():
-            _plot_source_spectrum_values(
-                ax_spectrum, wave, candidate, label=f"ref {ref}",
+            _plot_spectrum_values(
+                ax_spectrum,
+                wave,
+                _evaluate_spectrum_values(candidate, wave),
+                label=f"ref {ref}",
             )
 
 
-def plot_source(source: Any, wave: u.Quantity | None = None):
+def plot_source(
+    source: Any,
+    wave: u.Quantity | None = None,
+    *,
+    individual: bool = False,
+):
     """Plot each source field's spatial profile/positions and spectrum."""
     import matplotlib.pyplot as plt
 
@@ -162,7 +229,10 @@ def plot_source(source: Any, wave: u.Quantity | None = None):
     for idx, field in enumerate(source.fields):
         ax_image, ax_spectrum = axs[idx]
         if _is_table_source_field(field):
-            _plot_table_source_field(ax_image, ax_spectrum, field, wave)
+            _plot_table_source_field(
+                source, ax_image, ax_spectrum, field, wave,
+                individual=individual,
+            )
         else:
             _plot_image_source_field(ax_image, ax_spectrum, field, wave)
         ax_spectrum.set_title("Spectrum")
@@ -766,11 +836,6 @@ def plot_slit_loss_by_arm(data: Mapping[str, Any]):
         squeeze=False,
         constrained_layout=True,
     )
-    colors = {
-        "zenith": "tab:blue",
-        "elevation_60_ad_only": "tab:orange",
-        "elevation_60_adc_residual": "tab:green",
-    }
     for ax, (arm_name, arm) in zip(axes.flat, arms.items(), strict=True):
         wave = u.Quantity(arm["wave_nm"]).to_value(u.nm)
         for curve_name, curve in arm["curves"].items():
@@ -778,7 +843,8 @@ def plot_slit_loss_by_arm(data: Mapping[str, Any]):
                 wave,
                 curve["loss"],
                 lw=2.8,
-                color=colors.get(curve_name, None),
+                color=curve.get("color"),
+                ls=curve.get("linestyle", "-"),
                 label=curve["label"],
             )
         ax.text(
@@ -808,7 +874,8 @@ def plot_slit_loss_by_arm(data: Mapping[str, Any]):
 
     handles, labels = axes.flat[0].get_legend_handles_labels()
     fig.legend(
-        handles, labels, loc="outside lower center", ncol=len(handles),
+        handles, labels, loc="outside lower center",
+        ncol=min(3, max(1, len(handles))),
         frameon=False,
     )
     return fig, axes
@@ -854,6 +921,52 @@ def plot_readout_overview(hdul: Any, titles: list[str] | None = None):
         ax.set_title(title)
         ax.axis("off")
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.025)
+    for ax in axes.flat[len(readouts):]:
+        ax.axis("off")
+    return fig, axes
+
+
+def _readout_image_data(channel_hdul: Any) -> np.ndarray:
+    image_hdu = (
+        channel_hdul
+        if hasattr(channel_hdul, "data")
+        else channel_hdul[1]
+    )
+    return np.asarray(image_hdu.data, dtype=float)
+
+
+def plot_readout_cross_dispersion_cut(
+    hdul: Any,
+    titles: list[str] | None = None,
+    *,
+    central_columns: int = 50,
+):
+    """Plot row profiles from the median of central detector columns."""
+    import matplotlib.pyplot as plt
+
+    readouts = list(hdul)
+    titles = titles or [f"detector {idx}" for idx in range(len(readouts))]
+    ncols = min(3, max(1, len(readouts)))
+    nrows = int(np.ceil(len(readouts) / ncols))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(4.4 * ncols, 3.2 * nrows),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    for ax, title, channel_hdul in zip(axes.flat, titles, readouts, strict=False):
+        data = _readout_image_data(channel_hdul)
+        nx = data.shape[1]
+        ncut = max(1, min(int(central_columns), 50, nx))
+        x0 = nx // 2 - ncut // 2
+        x1 = x0 + ncut
+        profile = np.nanmedian(data[:, x0:x1], axis=1)
+        ax.plot(np.arange(profile.size), profile, lw=1.8, color="tab:blue")
+        ax.set_title(f"{title} central {ncut} cols", pad=8)
+        ax.set_xlabel("Detector row [pix]")
+        ax.set_ylabel("Median counts")
+        ax.grid(alpha=0.25)
     for ax in axes.flat[len(readouts):]:
         ax.axis("off")
     return fig, axes

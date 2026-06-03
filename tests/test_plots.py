@@ -30,6 +30,7 @@ class FakeTableSourceField:
 
 
 class FakeSource:
+    meta = {"name": "fake_source"}
     fields = [FakeTableSourceField()]
 
 
@@ -48,15 +49,33 @@ def test_validation_reexports_plot_helpers():
     assert validation.plot_slit_adc_psf_scenes is plots.plot_slit_adc_psf_scenes
     assert validation.plot_slit_loss_by_arm is plots.plot_slit_loss_by_arm
     assert validation.plot_slit_pair_geometry is plots.plot_slit_pair_geometry
+    assert (
+        validation.plot_readout_cross_dispersion_cut
+        is plots.plot_readout_cross_dispersion_cut
+    )
     assert validation.plot_readout_overview is plots.plot_readout_overview
 
 
-def test_plot_source_handles_table_source_fields():
+def test_plot_source_sums_table_source_fields_by_default():
     fig, axes = plots.plot_source(FakeSource(), wave=np.linspace(0.4, 0.8, 4) * u.um)
 
     assert axes.shape == (1, 2)
     assert len(axes[0, 0].collections) == 1
     assert len(axes[0, 1].lines) == 1
+    assert axes[0, 1].lines[0].get_label() == "fake_source total (2 points)"
+    np.testing.assert_allclose(axes[0, 1].lines[0].get_ydata(), 3.0)
+    fig.clf()
+
+
+def test_plot_source_can_plot_individual_table_source_rows():
+    fig, axes = plots.plot_source(
+        FakeSource(), wave=np.linspace(0.4, 0.8, 4) * u.um,
+        individual=True,
+    )
+
+    assert len(axes[0, 1].lines) == 2
+    labels = [line.get_label() for line in axes[0, 1].lines]
+    assert labels == ["fake_source row 0", "fake_source row 1"]
     fig.clf()
 
 
@@ -127,13 +146,17 @@ def test_slit_loss_plot_smoke():
                 "wave_nm": wave,
                 "slit_width_arcsec": 0.7 * u.arcsec,
                 "curves": {
-                    "zenith": {
-                        "label": "zenith",
+                    "no_ao_zenith": {
+                        "label": "no AO, zenith",
                         "loss": np.linspace(0.1, 0.2, wave.size),
+                        "color": "tab:blue",
+                        "linestyle": "-",
                     },
-                    "elevation_60_ad_only": {
-                        "label": "60 deg elevation, AD only",
+                    "ao_elevation_60_ad_only": {
+                        "label": "AO, 60 deg elevation, AD only",
                         "loss": np.linspace(0.2, 0.4, wave.size),
+                        "color": "tab:orange",
+                        "linestyle": "--",
                     },
                 },
             },
@@ -143,4 +166,19 @@ def test_slit_loss_plot_smoke():
     fig, axes = plots.plot_slit_loss_by_arm(data)
 
     assert axes.shape == (1, 1)
+    fig.clf()
+
+
+def test_readout_cross_dispersion_cut_plot_smoke():
+    class FakeHDU:
+        def __init__(self):
+            self.data = np.arange(100, dtype=float).reshape(10, 10)
+
+    fig, axes = plots.plot_readout_cross_dispersion_cut(
+        [FakeHDU()], titles=["B"], central_columns=80,
+    )
+
+    assert axes.shape == (1, 1)
+    assert "central 10 cols" in axes[0, 0].get_title()
+    assert len(axes[0, 0].lines) == 1
     fig.clf()
