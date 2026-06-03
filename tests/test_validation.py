@@ -56,6 +56,17 @@ class FakeSurfaceList:
         }
 
 
+class FakeADCSurfaceList(FakeSurfaceList):
+    def __init__(self):
+        super().__init__()
+        self.table = Table({
+            "name": ["VIS_ADC_12", "VIS_ADC_34"],
+            "action": ["transmission", "transmission"],
+            "throughput_group": ["preoptics", "preoptics"],
+            "emission_phase": ["pre_disperser", "pre_disperser"],
+        })
+
+
 class FakeDetectorQE:
     meta = {"name": "fake_detector_qe", "filename": "QE_fake.dat"}
     throughput = ConstantCurve(0.5)
@@ -235,6 +246,12 @@ class FakeNamedSelector:
         self.display_name = name
         self.meta = {"name": name, "selector_key": selector_key}
         self.wheel_effects = effects
+
+
+class FakePSFEffect:
+    include = True
+    display_name = "seeing_psf"
+    meta = {"name": display_name, "fwhm": "!OBS.seeing"}
 
 
 def named_effect(effect, name, *, include=True):
@@ -578,6 +595,52 @@ def test_slit_pair_status_table_marks_across_slit_source_outside():
 
     assert list(status["label"]) == ["on", "off"]
     assert list(status["in_slit"]) == [True, False]
+
+
+def test_slit_adc_psf_status_table_reports_context_without_simulating():
+    class FakeSlitPsfTrain:
+        cmds = {
+            "!INST.vis_curr_slit": 0.7,
+            "!INST.nir_curr_slit": 1.25,
+            "!OBS.seeing": 0.6,
+        }
+
+        def __init__(self):
+            self.optics_manager = type("Manager", (), {
+                "all_effects": [
+                    FakeNamedSelector(
+                        "slitwheel_selector",
+                        "aperture_id",
+                        {
+                            0: FakeSelectedEffect(
+                                current_slit="!INST.vis_curr_slit",
+                                filename_format="slits/slit_{:.2f}_as.dat",
+                            ),
+                            3: FakeSelectedEffect(
+                                current_slit="!INST.nir_curr_slit",
+                                filename_format="slits/slit_{:.2f}_as.dat",
+                            ),
+                        },
+                    ),
+                    FakeNamedSelector(
+                        "channel_optics_selector",
+                        "aperture_id",
+                        {0: FakeADCSurfaceList()},
+                    ),
+                    FakePSFEffect(),
+                ],
+            })()
+
+    table = val.slit_adc_psf_status_table(FakeSlitPsfTrain())
+
+    assert "slit" in set(table["category"])
+    assert "adc optics" in set(table["category"])
+    assert "psf" in set(table["category"])
+    assert "atmospheric dispersion" in set(table["category"])
+    assert any("current_slit=0.7" in value for value in table["setting"])
+    assert any("ADC" in value for value in table["setting"])
+    assert any("fwhm=0.6" in value for value in table["setting"])
+    assert any("No active atmospheric-dispersion" in value for value in table["note"])
 
 
 def test_slit_loss_summary_table_computes_throughput():

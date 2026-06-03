@@ -1685,6 +1685,175 @@ def slit_pair_status_table(
     return Table(rows=rows)
 
 
+def slit_adc_psf_status_table(
+    ztrain: Any,
+    *,
+    slit_selector_name: str = "slitwheel_selector",
+) -> Table:
+    """Return compact slit/ADC/PSF settings relevant to source placement.
+
+    This is a notebook-facing context table. It intentionally reports active
+    settings and effect names; it does not attempt to validate the underlying
+    physical model.
+    """
+    rows: list[dict[str, Any]] = []
+    rows.extend(_slit_setting_rows(ztrain, slit_selector_name))
+    rows.extend(_adc_surface_rows(ztrain))
+    rows.extend(_keyword_effect_rows(
+        ztrain,
+        category="atmospheric dispersion",
+        keywords=("adcshift", "atmosphericdispersion", "dispersioncorrection"),
+    ))
+    rows.extend(_keyword_effect_rows(
+        ztrain,
+        category="psf",
+        keywords=("psf", "seeing", "moffat", "diffraction", "aoenhanceable"),
+    ))
+    if not any(row["category"] == "psf" for row in rows):
+        rows.append({
+            "category": "psf",
+            "scope": "global",
+            "name": "none active",
+            "class": "",
+            "setting": "",
+            "note": "No active PSF-like effect found in this optical train.",
+        })
+    if not any(row["category"] == "atmospheric dispersion" for row in rows):
+        rows.append({
+            "category": "atmospheric dispersion",
+            "scope": "global",
+            "name": "none active",
+            "class": "",
+            "setting": "",
+            "note": (
+                "No active atmospheric-dispersion correction effect found. "
+                "ADC-named optical surfaces, if listed, are throughput/emissivity "
+                "surfaces rather than a shift/correction model."
+            ),
+        })
+    return Table(rows=rows)
+
+
+def _slit_setting_rows(ztrain: Any, selector_name: str) -> list[dict[str, Any]]:
+    try:
+        selector = get_effect(ztrain, selector_name)
+    except ValueError:
+        return [{
+            "category": "slit",
+            "scope": "all apertures",
+            "name": selector_name,
+            "class": "",
+            "setting": "",
+            "note": "No active slit selector found.",
+        }]
+
+    groups: OrderedDict[tuple[str, str, str], list[Any]] = OrderedDict()
+    for selector_value, effect in sorted(selector.wheel_effects.items()):
+        current_slit = _resolved_for_display(
+            getattr(effect, "meta", {}).get("current_slit", ""),
+            ztrain.cmds,
+        )
+        filename_format = getattr(effect, "meta", {}).get("filename_format", "")
+        key = (effect.__class__.__name__, str(current_slit), str(filename_format))
+        groups.setdefault(key, []).append(selector_value)
+
+    rows = []
+    for (class_name, current_slit, filename_format), selector_values in groups.items():
+        rows.append({
+            "category": "slit",
+            "scope": _selector_scope(
+                selector.meta.get("selector_key", "selector"),
+                selector_values,
+            ),
+            "name": selector_name,
+            "class": class_name,
+            "setting": f"current_slit={current_slit}",
+            "note": f"filename_format={filename_format}",
+        })
+    return rows
+
+
+def _adc_surface_rows(ztrain: Any) -> list[dict[str, Any]]:
+    rows = []
+    for parent in active_effects(ztrain):
+        if not hasattr(parent, "wheel_effects"):
+            continue
+        selector_key = getattr(parent, "meta", {}).get("selector_key", "selector")
+        grouped: OrderedDict[tuple[str, tuple[str, ...]], list[Any]] = OrderedDict()
+        for selector_value, effect in sorted(parent.wheel_effects.items()):
+            surface_names = tuple(_matching_surface_names(effect, ("ADC",)))
+            if not surface_names:
+                continue
+            key = (effect.__class__.__name__, surface_names)
+            grouped.setdefault(key, []).append(selector_value)
+
+        for (class_name, surface_names), selector_values in grouped.items():
+            rows.append({
+                "category": "adc optics",
+                "scope": _selector_scope(selector_key, selector_values),
+                "name": effect_name(parent),
+                "class": class_name,
+                "setting": ", ".join(surface_names),
+                "note": (
+                    "ADC is represented here as optical surfaces; this row is "
+                    "not an atmospheric-dispersion correction toggle."
+                ),
+            })
+    return rows
+
+
+def _keyword_effect_rows(
+    ztrain: Any,
+    *,
+    category: str,
+    keywords: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    rows = []
+    for effect in active_effects(ztrain):
+        name = effect_name(effect)
+        class_name = effect.__class__.__name__
+        haystack = f"{name} {class_name}".lower()
+        if not any(keyword.lower() in haystack for keyword in keywords):
+            continue
+        rows.append({
+            "category": category,
+            "scope": "global",
+            "name": name,
+            "class": class_name,
+            "setting": _resolved_meta_summary(effect, ztrain.cmds),
+            "note": "",
+        })
+    return rows
+
+
+def _matching_surface_names(effect: Any, patterns: tuple[str, ...]) -> list[str]:
+    if not hasattr(effect, "table"):
+        return []
+    name_col = _real_colname("name", effect.table.colnames)
+    if name_col is None:
+        return []
+    pattern_upper = tuple(pattern.upper() for pattern in patterns)
+    return [
+        str(name)
+        for name in effect.table[name_col]
+        if any(pattern in str(name).upper() for pattern in pattern_upper)
+    ]
+
+
+def _selector_scope(selector_key: str, values: list[Any]) -> str:
+    values_text = ", ".join(str(value) for value in values)
+    return f"{selector_key} {values_text}"
+
+
+def _resolved_for_display(value: Any, cmds: Any) -> Any:
+    from scopesim.utils import from_currsys
+
+    try:
+        return from_currsys(value, cmds=cmds)
+    except Exception:
+        return value
+
+
 def slit_loss_summary_table(rows: list[Mapping[str, Any]]) -> Table:
     """Return slit-throughput summary rows from input/output signal pairs."""
     output_rows = []
@@ -1772,7 +1941,21 @@ def _selector_value_for_detector(selector: Any, detector_row: Any) -> int | None
 def _resolved_meta_summary(effect: Any, cmds: Any) -> str:
     from scopesim.utils import from_currsys
 
-    keys = ("filename", "dit", "ndit", "value", "noise_std", "bias", "binx", "biny")
+    keys = (
+        "filename",
+        "dit",
+        "ndit",
+        "value",
+        "noise_std",
+        "bias",
+        "binx",
+        "biny",
+        "current_slit",
+        "fwhm",
+        "alpha",
+        "strehl",
+        "wavelength",
+    )
     parts = []
     for key in keys:
         if key not in effect.meta:
