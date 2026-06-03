@@ -529,3 +529,189 @@ def plot_slit_pair_geometry(
     ax.set_ylabel("Along slit [arcsec]")
     ax.legend(frameon=False)
     return fig, ax
+
+
+def plot_slit_adc_psf_scenes(data: Mapping[str, Any]):
+    """Plot PSF-convolved slit scenes with AD-only and ADC-residual shifts."""
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    scenarios = data["scenarios"]
+    variants = data["variants"]
+    x = u.Quantity(data["x_arcsec"]).to_value(u.arcsec)
+    y = u.Quantity(data["y_arcsec"]).to_value(u.arcsec)
+    extent = [x.min(), x.max(), y.min(), y.max()]
+    width = u.Quantity(data["slit_width_arcsec"]).to_value(u.arcsec)
+    length = u.Quantity(data["slit_length_arcsec"]).to_value(u.arcsec)
+
+    nrows = len(scenarios)
+    ncols = len(variants)
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(4.6 * ncols, 4.8 * nrows),
+        squeeze=False,
+        constrained_layout=True,
+    )
+
+    for row, (scenario_name, scenario) in enumerate(scenarios.items()):
+        table = scenario["positions"]
+        xpos = u.Quantity(table["x"]).to_value(u.arcsec)
+        ypos = u.Quantity(table["y"]).to_value(u.arcsec)
+        for col, (variant_name, variant) in enumerate(variants.items()):
+            ax = axes[row, col]
+            image = scenario["images"][variant_name]
+            finite = image[np.isfinite(image)]
+            if finite.size:
+                vmax = np.nanpercentile(finite, 99.6)
+                vmin = np.nanpercentile(finite, 5.0)
+            else:
+                vmin, vmax = 0.0, 1.0
+            if vmax <= vmin:
+                vmax = vmin + 1.0
+            im = ax.imshow(
+                image,
+                origin="lower",
+                extent=extent,
+                cmap="magma",
+                vmin=vmin,
+                vmax=vmax,
+                interpolation="nearest",
+            )
+            ax.add_patch(Rectangle(
+                (-0.5 * width, -0.5 * length),
+                width,
+                length,
+                fill=False,
+                lw=2.4,
+                edgecolor="white",
+                label="slit" if row == 0 and col == 0 else None,
+            ))
+            ax.scatter(
+                xpos,
+                ypos,
+                s=54,
+                marker="o",
+                facecolors="none",
+                edgecolors="#7FDBFF",
+                linewidths=1.8,
+                label="source centers" if row == 0 and col == 0 else None,
+            )
+            ax.axvline(0, color="white", lw=0.8, alpha=0.45)
+            ax.axhline(0, color="white", lw=0.8, alpha=0.25)
+            ax.set_aspect("equal", adjustable="box")
+            ax.set_title(f"{scenario_name}\n{variant['label']}", fontsize=10)
+            if row == nrows - 1:
+                ax.set_xlabel("Across slit [arcsec]")
+            if col == 0:
+                ax.set_ylabel("Along slit [arcsec]")
+            if col == ncols - 1:
+                cbar = fig.colorbar(im, ax=ax, fraction=0.045, pad=0.02)
+                cbar.set_label("Relative PSF intensity")
+
+    fig.suptitle(
+        "Slit/AD/PSF Scene Check "
+        f"(airmass {data['airmass']:.2f}, "
+        f"seeing {data['seeing_arcsec'].to_value(u.arcsec):.2f} arcsec)",
+        fontsize=12,
+    )
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    if handles:
+        fig.legend(
+            handles, labels, loc="outside lower center", ncol=len(handles),
+            frameon=False,
+        )
+    return fig, axes
+
+
+def plot_slit_loss_by_arm(data: Mapping[str, Any]):
+    """Plot centered point-source slit loss for each spectrograph arm."""
+    import matplotlib.pyplot as plt
+
+    arms = data["arms"]
+    fig, axes = plt.subplots(
+        1,
+        len(arms),
+        figsize=(6.3 * len(arms), 4.4),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    colors = {
+        "zenith": "tab:blue",
+        "elevation_60_ad_only": "tab:orange",
+        "elevation_60_adc_residual": "tab:green",
+    }
+    for ax, (arm_name, arm) in zip(axes.flat, arms.items(), strict=True):
+        wave = u.Quantity(arm["wave_nm"]).to_value(u.nm)
+        for curve_name, curve in arm["curves"].items():
+            ax.plot(
+                wave,
+                curve["loss"],
+                lw=2.8,
+                color=colors.get(curve_name, None),
+                label=curve["label"],
+            )
+        ax.set_title(
+            f"{arm_name}: {arm['slit_width_arcsec'].to_value(u.arcsec):.2f} arcsec slit"
+        )
+        ax.set_xlabel("Wavelength [nm]")
+        ax.set_ylabel("Slit loss fraction")
+        ax.set_ylim(0, 1)
+        ax.grid(alpha=0.25)
+
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    fig.legend(
+        handles, labels, loc="outside upper center", ncol=len(handles),
+        frameon=False,
+    )
+    fig.suptitle(
+        "Centered Point-Source Slit Loss "
+        f"(seeing {data['seeing_arcsec'].to_value(u.arcsec):.2f} arcsec)",
+        fontsize=12,
+    )
+    return fig, axes
+
+
+def plot_readout_overview(hdul: Any, titles: list[str] | None = None):
+    """Plot detector readout images from a ScopeSim readout result."""
+    import matplotlib.pyplot as plt
+    from astropy.visualization import ZScaleInterval
+
+    readouts = list(hdul)
+    titles = titles or [f"detector {idx}" for idx in range(len(readouts))]
+    ncols = min(3, max(1, len(readouts)))
+    nrows = int(np.ceil(len(readouts) / ncols))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(4.4 * ncols, 3.6 * nrows),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    interval = ZScaleInterval()
+    for ax, title, channel_hdul in zip(axes.flat, titles, readouts, strict=False):
+        image_hdu = (
+            channel_hdul
+            if hasattr(channel_hdul, "data")
+            else channel_hdul[1]
+        )
+        data = np.asarray(image_hdu.data, dtype=float)
+        finite = data[np.isfinite(data)]
+        if finite.size:
+            vmin, vmax = interval.get_limits(data)
+        else:
+            vmin, vmax = 0.0, 1.0
+        im = ax.imshow(
+            data,
+            origin="lower",
+            vmin=vmin,
+            vmax=vmax,
+            cmap="cividis",
+            interpolation="nearest",
+        )
+        ax.set_title(title)
+        ax.axis("off")
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.025)
+    for ax in axes.flat[len(readouts):]:
+        ax.axis("off")
+    return fig, axes

@@ -67,6 +67,10 @@ class FakeADCSurfaceList(FakeSurfaceList):
         })
 
 
+class FakeEffectWithMissingTable:
+    table = None
+
+
 class FakeDetectorQE:
     meta = {"name": "fake_detector_qe", "filename": "QE_fake.dat"}
     throughput = ConstantCurve(0.5)
@@ -625,7 +629,10 @@ def test_slit_adc_psf_status_table_reports_context_without_simulating():
                     FakeNamedSelector(
                         "channel_optics_selector",
                         "aperture_id",
-                        {0: FakeADCSurfaceList()},
+                        {
+                            0: FakeEffectWithMissingTable(),
+                            1: FakeADCSurfaceList(),
+                        },
                     ),
                     FakePSFEffect(),
                 ],
@@ -641,6 +648,62 @@ def test_slit_adc_psf_status_table_reports_context_without_simulating():
     assert any("ADC" in value for value in table["setting"])
     assert any("fwhm=0.6" in value for value in table["setting"])
     assert any("No active atmospheric-dispersion" in value for value in table["note"])
+
+
+def _slit_adc_cmds():
+    return {
+        "!OBS.airmass": 1.3,
+        "!OBS.seeing": 0.6,
+        "!ATMO.temperature": 9.0,
+        "!ATMO.pressure": 0.75,
+        "!ATMO.humidity": 0.15,
+        "!ATMO.x_co2": 450.0,
+        "!INST.vis_curr_slit": 0.7,
+        "!INST.nir_curr_slit": 0.7,
+    }
+
+
+def test_build_slit_adc_psf_scene_data_uses_physical_scene_images():
+    source = Table({
+        "x": [0.0, 0.0],
+        "y": [-1.0, 1.0],
+        "weight": [1.0, 0.5],
+        "label": ["a", "b"],
+    }, units=[u.arcsec, u.arcsec, None, None])
+
+    data = val.build_slit_adc_psf_scene_data(
+        _slit_adc_cmds(),
+        {"along": source},
+        slit_width=0.7 * u.arcsec,
+        slit_length=4.0 * u.arcsec,
+        wave_nm=np.linspace(400, 700, 5) * u.nm,
+        grid_step=0.2 * u.arcsec,
+    )
+
+    assert list(data["variants"]) == ["ad_only", "adc_residual"]
+    assert "along" in data["scenarios"]
+    images = data["scenarios"]["along"]["images"]
+    assert images["ad_only"].shape == images["adc_residual"].shape
+    assert np.isfinite(images["ad_only"]).all()
+    assert np.nanmax(images["ad_only"]) > 0
+    assert any("before slit clipping" in note for note in data["notes"])
+
+
+def test_build_slit_loss_data_returns_losses_between_zero_and_one():
+    data = val.build_slit_loss_data(
+        _slit_adc_cmds(),
+        arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
+        n_wave=5,
+        slit_length=4.0 * u.arcsec,
+        grid_step=0.25 * u.arcsec,
+    )
+
+    curves = data["arms"]["VIS"]["curves"]
+    assert "zenith" in curves
+    assert "elevation_60_ad_only" in curves
+    for curve in curves.values():
+        assert np.all(curve["loss"] >= 0)
+        assert np.all(curve["loss"] <= 1)
 
 
 def test_slit_loss_summary_table_computes_throughput():

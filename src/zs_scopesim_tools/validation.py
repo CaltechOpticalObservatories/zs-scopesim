@@ -16,6 +16,9 @@ from .plots import (
     plot_detector_background_budget,
     plot_emissivity_sanity,
     plot_post_disperser_diffuse_background,
+    plot_readout_overview,
+    plot_slit_adc_psf_scenes,
+    plot_slit_loss_by_arm,
     plot_slit_pair_geometry,
     plot_source,
     plot_transmission_sanity,
@@ -178,7 +181,8 @@ def _qe_detail_summary(effect: Any) -> dict[str, Any]:
 
 
 def _is_surface_list_effect(effect: Any) -> bool:
-    return hasattr(effect, "surfaces") and hasattr(effect, "table")
+    table = getattr(effect, "table", None)
+    return hasattr(effect, "surfaces") and hasattr(table, "colnames")
 
 
 def _is_surface_effect(effect: Any) -> bool:
@@ -1827,15 +1831,16 @@ def _keyword_effect_rows(
 
 
 def _matching_surface_names(effect: Any, patterns: tuple[str, ...]) -> list[str]:
-    if not hasattr(effect, "table"):
+    table = getattr(effect, "table", None)
+    if not hasattr(table, "colnames"):
         return []
-    name_col = _real_colname("name", effect.table.colnames)
+    name_col = _real_colname("name", table.colnames)
     if name_col is None:
         return []
     pattern_upper = tuple(pattern.upper() for pattern in patterns)
     return [
         str(name)
-        for name in effect.table[name_col]
+        for name in table[name_col]
         if any(pattern in str(name).upper() for pattern in pattern_upper)
     ]
 
@@ -1868,6 +1873,438 @@ def slit_loss_summary_table(rows: list[Mapping[str, Any]]) -> Table:
         output["throughput"] = throughput
         output_rows.append(output)
     return Table(rows=output_rows)
+
+
+def _cmd_value(cmds: Any, key: str, default: Any) -> Any:
+    value = _resolved_for_display(key, cmds)
+    if isinstance(value, str) and value == key:
+        return default
+    return value
+
+
+def _cmd_float(cmds: Any, key: str, default: float) -> float:
+    value = _cmd_value(cmds, key, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _cmd_quantity(
+    cmds: Any,
+    key: str,
+    default: u.Quantity,
+    unit: u.UnitBase,
+) -> u.Quantity:
+    value = _cmd_value(cmds, key, default)
+    try:
+        quantity = u.Quantity(value)
+        if quantity.unit == u.dimensionless_unscaled:
+            quantity = quantity.value * unit
+    except Exception:
+        quantity = u.Quantity(value, unit)
+    return quantity.to(unit)
+
+
+def _cmds_from_train_or_cmds(train_or_cmds: Any) -> Any:
+    return getattr(train_or_cmds, "cmds", train_or_cmds)
+
+
+def _zenith_angle_from_airmass(airmass: float) -> u.Quantity:
+    airmass = max(float(airmass), 1.0)
+    return np.arccos(np.clip(1.0 / airmass, 0.0, 1.0)) * u.rad
+
+
+def _zenith_angle_from_cmds(cmds: Any) -> u.Quantity:
+    return _zenith_angle_from_airmass(_cmd_float(cmds, "!OBS.airmass", 1.0))
+
+
+def _natural_seeing_fwhm(
+    wave: u.Quantity,
+    seeing: u.Quantity,
+    zenith_angle: u.Quantity,
+    *,
+    pivot: u.Quantity = 500 * u.nm,
+) -> u.Quantity:
+    z_rad = u.Quantity(zenith_angle).to_value(u.rad)
+    return (
+        u.Quantity(seeing).to(u.arcsec)
+        * (u.Quantity(wave).to(u.nm) / u.Quantity(pivot).to(u.nm)) ** -0.2
+        / np.cos(z_rad) ** 0.6
+    ).to(u.arcsec)
+
+
+def _atmospheric_refraction_shift(
+    wave: u.Quantity,
+    zenith_angle: u.Quantity,
+    cmds: Any,
+    *,
+    wave_ref: u.Quantity = 500 * u.nm,
+) -> u.Quantity:
+    from scopesim.effects.atmo_dispersion import refractive_index
+
+    temperature = _cmd_quantity(
+        cmds, "!ATMO.temperature", 9.0 * u.deg_C, u.deg_C,
+    )
+    pressure = _cmd_quantity(cmds, "!ATMO.pressure", 0.75 * u.bar, u.bar)
+    humidity = _cmd_float(cmds, "!ATMO.humidity", 0.15)
+    x_co2 = _cmd_float(cmds, "!ATMO.x_co2", 450.0)
+    wave_um = u.Quantity(wave).to(u.um)
+    ref_um = u.Quantity(wave_ref).to(u.um)
+    delta_n = (
+        refractive_index(wave_um, temperature, pressure, humidity, x_co2)
+        - refractive_index(ref_um, temperature, pressure, humidity, x_co2)
+    )
+    shift = 206265 * delta_n * np.tan(u.Quantity(zenith_angle).to_value(u.rad))
+    return (shift * u.arcsec).to(u.arcsec)
+
+
+def _adc_zenith_angle_error(train_or_cmds: Any, default: u.Quantity) -> tuple[u.Quantity, str]:
+    if not hasattr(train_or_cmds, "optics_manager"):
+        return u.Quantity(default).to(u.deg), "diagnostic ADC residual"
+
+    for effect in active_effects(train_or_cmds):
+        class_name = effect.__class__.__name__.lower()
+        if class_name != "adcshift":
+            continue
+        value = getattr(effect, "meta", {}).get("zenith_angle_error")
+        if value is None:
+            continue
+        return u.Quantity(float(_resolved_for_display(value, train_or_cmds.cmds)), u.deg), (
+            f"active {effect_name(effect)} zenith-angle residual"
+        )
+
+    return u.Quantity(default).to(u.deg), (
+        "diagnostic ADC residual; no active ADCShift effect found"
+    )
+
+
+def _moffat_image(
+    x_grid: np.ndarray,
+    y_grid: np.ndarray,
+    *,
+    x0: float,
+    y0: float,
+    fwhm: float,
+    beta: float,
+) -> np.ndarray:
+    gamma = 0.5 * fwhm / np.sqrt(2 ** (1.0 / beta) - 1.0)
+    amplitude = (beta - 1.0) / (np.pi * gamma**2)
+    radius2 = (x_grid - x0) ** 2 + (y_grid - y0) ** 2
+    return amplitude * (1.0 + radius2 / gamma**2) ** -beta
+
+
+def _scene_image(
+    positions: Table,
+    wave: u.Quantity,
+    shifts: u.Quantity,
+    x_grid: np.ndarray,
+    y_grid: np.ndarray,
+    *,
+    seeing: u.Quantity,
+    zenith_angle: u.Quantity,
+    beta: float,
+) -> np.ndarray:
+    x = u.Quantity(positions["x"]).to_value(u.arcsec)
+    y = u.Quantity(positions["y"]).to_value(u.arcsec)
+    weights = (
+        np.asarray(positions["weight"], dtype=float)
+        if "weight" in positions.colnames
+        else np.ones(len(positions), dtype=float)
+    )
+    fwhm_values = _natural_seeing_fwhm(wave, seeing, zenith_angle).to_value(u.arcsec)
+    shift_values = u.Quantity(shifts).to_value(u.arcsec)
+
+    image = np.zeros_like(x_grid, dtype=float)
+    for shift, fwhm in zip(shift_values, fwhm_values, strict=True):
+        for xpos, ypos, weight in zip(x, y, weights, strict=True):
+            image += weight * _moffat_image(
+                x_grid,
+                y_grid,
+                x0=xpos + shift,
+                y0=ypos,
+                fwhm=float(fwhm),
+                beta=beta,
+            )
+    return image / max(wave.size, 1)
+
+
+def _slit_throughput_curve(
+    wave: u.Quantity,
+    shifts: u.Quantity,
+    *,
+    seeing: u.Quantity,
+    zenith_angle: u.Quantity,
+    slit_width: u.Quantity,
+    slit_length: u.Quantity,
+    beta: float,
+    grid_step: u.Quantity,
+) -> np.ndarray:
+    wave = u.Quantity(wave).to(u.nm)
+    shifts_arcsec = u.Quantity(shifts).to_value(u.arcsec)
+    fwhm_values = _natural_seeing_fwhm(wave, seeing, zenith_angle).to_value(u.arcsec)
+    width = u.Quantity(slit_width).to_value(u.arcsec)
+    length = u.Quantity(slit_length).to_value(u.arcsec)
+    step = u.Quantity(grid_step).to_value(u.arcsec)
+
+    max_fwhm = float(np.nanmax(fwhm_values))
+    max_shift = float(np.nanmax(np.abs(shifts_arcsec)))
+    x_extent = max(4.0, width + 8 * max_fwhm + 2 * max_shift)
+    y_extent = max(length + 8 * max_fwhm, 1.2 * length)
+    x = np.arange(-0.5 * x_extent, 0.5 * x_extent + step, step)
+    y = np.arange(-0.5 * y_extent, 0.5 * y_extent + step, step)
+    x_grid, y_grid = np.meshgrid(x, y)
+    slit_mask = (
+        (np.abs(x_grid) <= 0.5 * width)
+        & (np.abs(y_grid) <= 0.5 * length)
+    )
+    pixel_area = step**2
+
+    throughput = np.empty(wave.size, dtype=float)
+    for idx, (shift, fwhm) in enumerate(zip(shifts_arcsec, fwhm_values, strict=True)):
+        image = _moffat_image(
+            x_grid, y_grid, x0=float(shift), y0=0.0,
+            fwhm=float(fwhm), beta=beta,
+        )
+        total = np.sum(image) * pixel_area
+        inside = np.sum(image[slit_mask]) * pixel_area
+        throughput[idx] = inside / total if total > 0 else np.nan
+    return throughput
+
+
+def build_slit_adc_psf_scene_data(
+    train_or_cmds: Any,
+    sources: Mapping[str, Any],
+    *,
+    slit_width: u.Quantity,
+    slit_length: u.Quantity = 10.0 * u.arcsec,
+    wave_nm: u.Quantity | None = None,
+    wave_ref: u.Quantity = 500.0 * u.nm,
+    adc_zenith_angle_error: u.Quantity = 0.9 * u.deg,
+    grid_step: u.Quantity = 0.035 * u.arcsec,
+    beta: float = 4.765,
+) -> dict[str, Any]:
+    """Build PSF/AD slit-scene images for notebook validation.
+
+    The scene images deliberately convolve the point-source scene and apply
+    chromatic atmospheric shifts before slit clipping. ScopeSim applies PSF
+    convolution later in the detector path, so this helper is a validation
+    diagnostic rather than a replacement for the simulated detector image.
+    """
+    cmds = _cmds_from_train_or_cmds(train_or_cmds)
+    wave = (
+        np.linspace(310, 980, 41) * u.nm
+        if wave_nm is None
+        else u.Quantity(wave_nm).to(u.nm)
+    )
+    seeing = _cmd_quantity(cmds, "!OBS.seeing", 0.6 * u.arcsec, u.arcsec)
+    zenith_angle = _zenith_angle_from_cmds(cmds)
+    slit_width = u.Quantity(slit_width).to(u.arcsec)
+    slit_length = u.Quantity(slit_length).to(u.arcsec)
+    adc_error, adc_note = _adc_zenith_angle_error(
+        train_or_cmds, adc_zenith_angle_error,
+    )
+
+    ad_shift = _atmospheric_refraction_shift(
+        wave, zenith_angle, cmds, wave_ref=wave_ref,
+    )
+    adc_shift = ad_shift - _atmospheric_refraction_shift(
+        wave, zenith_angle + adc_error, cmds, wave_ref=wave_ref,
+    )
+    variants: OrderedDict[str, dict[str, Any]] = OrderedDict({
+        "ad_only": {
+            "label": "AD only",
+            "shift_arcsec": ad_shift,
+            "note": "Full atmospheric dispersion relative to wave_ref.",
+        },
+        "adc_residual": {
+            "label": "ADC residual",
+            "shift_arcsec": adc_shift,
+            "note": adc_note,
+        },
+    })
+
+    source_tables = OrderedDict(
+        (name, source_position_table(source))
+        for name, source in sources.items()
+    )
+    all_x = np.concatenate([
+        u.Quantity(table["x"]).to_value(u.arcsec)
+        for table in source_tables.values()
+    ])
+    all_y = np.concatenate([
+        u.Quantity(table["y"]).to_value(u.arcsec)
+        for table in source_tables.values()
+    ])
+    max_shift = max(
+        float(np.nanmax(np.abs(variant["shift_arcsec"].to_value(u.arcsec))))
+        for variant in variants.values()
+    )
+    max_fwhm = float(np.nanmax(
+        _natural_seeing_fwhm(wave, seeing, zenith_angle).to_value(u.arcsec),
+    ))
+    width = slit_width.to_value(u.arcsec)
+    length = slit_length.to_value(u.arcsec)
+    x_extent = max(
+        3.5,
+        width + 2 * max_shift + 6 * max_fwhm,
+        float(np.ptp(all_x)) + 2 * max_shift + 4 * max_fwhm,
+    )
+    y_extent = max(
+        1.12 * length,
+        float(np.ptp(all_y)) + 6 * max_fwhm,
+    )
+    step = grid_step.to_value(u.arcsec)
+    x = np.arange(-0.5 * x_extent, 0.5 * x_extent + step, step)
+    y = np.arange(-0.5 * y_extent, 0.5 * y_extent + step, step)
+    x_grid, y_grid = np.meshgrid(x, y)
+
+    scenarios: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    for name, table in source_tables.items():
+        status = slit_pair_status_table(
+            table, slit_width=slit_width, slit_length=slit_length,
+        )
+        images = OrderedDict(
+            (
+                key,
+                _scene_image(
+                    table,
+                    wave,
+                    variant["shift_arcsec"],
+                    x_grid,
+                    y_grid,
+                    seeing=seeing,
+                    zenith_angle=zenith_angle,
+                    beta=beta,
+                ),
+            )
+            for key, variant in variants.items()
+        )
+        scenarios[name] = {
+            "positions": table,
+            "status": status,
+            "images": images,
+        }
+
+    return {
+        "wave_nm": wave,
+        "wave_ref_nm": u.Quantity(wave_ref).to(u.nm),
+        "seeing_arcsec": seeing,
+        "zenith_angle_deg": zenith_angle.to(u.deg),
+        "airmass": _cmd_float(cmds, "!OBS.airmass", 1.0),
+        "slit_width_arcsec": slit_width,
+        "slit_length_arcsec": slit_length,
+        "x_arcsec": x * u.arcsec,
+        "y_arcsec": y * u.arcsec,
+        "variants": variants,
+        "scenarios": scenarios,
+        "notes": [
+            "Images show PSF convolution and chromatic shift before slit clipping.",
+            "ScopeSim detector images apply the PSF after aperture clipping.",
+            "The residual ADC curve follows the ADCShift zenith-angle-error convention.",
+        ],
+    }
+
+
+def build_slit_loss_data(
+    train_or_cmds: Any,
+    *,
+    arms: Mapping[str, tuple[u.Quantity, u.Quantity, str]] | None = None,
+    n_wave: int = 180,
+    slit_length: u.Quantity = 10.0 * u.arcsec,
+    wave_ref: u.Quantity = 500.0 * u.nm,
+    adc_zenith_angle_error: u.Quantity = 0.9 * u.deg,
+    grid_step: u.Quantity = 0.04 * u.arcsec,
+    beta: float = 4.765,
+) -> dict[str, Any]:
+    """Return centered point-source slit-loss curves by arm."""
+    cmds = _cmds_from_train_or_cmds(train_or_cmds)
+    arms = arms or OrderedDict({
+        "VIS": (310 * u.nm, 980 * u.nm, "!INST.vis_curr_slit"),
+        "NIR": (980 * u.nm, 2450 * u.nm, "!INST.nir_curr_slit"),
+    })
+    seeing = _cmd_quantity(cmds, "!OBS.seeing", 0.6 * u.arcsec, u.arcsec)
+    adc_error, adc_note = _adc_zenith_angle_error(
+        train_or_cmds, adc_zenith_angle_error,
+    )
+    curve_specs = OrderedDict({
+        "zenith": {
+            "label": "zenith",
+            "zenith_angle": 0.0 * u.deg,
+            "mode": "ad",
+            "note": "No chromatic displacement at zenith.",
+        },
+        "elevation_60_ad_only": {
+            "label": "60 deg elevation, AD only",
+            "zenith_angle": 30.0 * u.deg,
+            "mode": "ad",
+            "note": "Full atmospheric dispersion before slit clipping.",
+        },
+        "elevation_60_adc_residual": {
+            "label": "60 deg elevation, ADC residual",
+            "zenith_angle": 30.0 * u.deg,
+            "mode": "adc",
+            "note": adc_note,
+        },
+    })
+
+    arm_data: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    for arm_name, (wave_min, wave_max, slit_key) in arms.items():
+        wave = np.linspace(
+            u.Quantity(wave_min).to_value(u.nm),
+            u.Quantity(wave_max).to_value(u.nm),
+            n_wave,
+        ) * u.nm
+        slit_width = _cmd_quantity(cmds, slit_key, 0.7 * u.arcsec, u.arcsec)
+        curves: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        for curve_name, spec in curve_specs.items():
+            zenith_angle = spec["zenith_angle"]
+            ad_shift = _atmospheric_refraction_shift(
+                wave, zenith_angle, cmds, wave_ref=wave_ref,
+            )
+            if spec["mode"] == "adc":
+                shifts = ad_shift - _atmospheric_refraction_shift(
+                    wave,
+                    zenith_angle + adc_error,
+                    cmds,
+                    wave_ref=wave_ref,
+                )
+            else:
+                shifts = ad_shift
+            throughput = _slit_throughput_curve(
+                wave,
+                shifts,
+                seeing=seeing,
+                zenith_angle=zenith_angle,
+                slit_width=slit_width,
+                slit_length=slit_length,
+                beta=beta,
+                grid_step=grid_step,
+            )
+            curves[curve_name] = {
+                "label": spec["label"],
+                "throughput": throughput,
+                "loss": 1.0 - throughput,
+                "shift_arcsec": shifts,
+                "note": spec["note"],
+            }
+        arm_data[arm_name] = {
+            "wave_nm": wave,
+            "slit_width_arcsec": slit_width,
+            "slit_length_arcsec": u.Quantity(slit_length).to(u.arcsec),
+            "curves": curves,
+        }
+
+    return {
+        "arms": arm_data,
+        "seeing_arcsec": seeing,
+        "wave_ref_nm": u.Quantity(wave_ref).to(u.nm),
+        "adc_zenith_angle_error_deg": adc_error,
+        "notes": [
+            "Centered point-source loss from a pre-slit Moffat PSF.",
+            "This diagnostic exposes slit loss that ScopeSim does not measure directly.",
+        ],
+    }
 
 
 def _sum_terms(terms: Mapping[str, np.ndarray], size: int) -> np.ndarray:
