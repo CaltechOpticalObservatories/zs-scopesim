@@ -1950,6 +1950,49 @@ def _natural_seeing_fwhm(
     ).to(u.arcsec)
 
 
+def _diagnostic_fallback_psf_fwhm(
+    wave: u.Quantity,
+    zenith_angle: u.Quantity,
+    seeing: u.Quantity,
+) -> u.Quantity:
+    return _natural_seeing_fwhm(wave, seeing, zenith_angle)
+
+
+def _active_moffat_psf(train_or_cmds: Any) -> Any | None:
+    if not hasattr(train_or_cmds, "optics_manager"):
+        return None
+    for effect in active_effects(train_or_cmds):
+        if effect.__class__.__name__ in {"AOEnhanceablePSF", "MoffatPSF"}:
+            if callable(getattr(effect, "fwhm", None)):
+                return effect
+    return None
+
+
+def _scopesim_psf_fwhm_func(effect: Any) -> Callable[
+    [u.Quantity, u.Quantity, u.Quantity], u.Quantity
+]:
+    def fwhm(
+        wave: u.Quantity,
+        _zenith_angle: u.Quantity,
+        _seeing: u.Quantity,
+    ) -> u.Quantity:
+        return _quantity_with_default_unit(
+            effect.fwhm(u.Quantity(wave).to(u.um)),
+            u.arcsec,
+        )
+
+    return fwhm
+
+
+def _configured_psf_fwhm_func(
+    train_or_cmds: Any,
+) -> tuple[Callable[[u.Quantity, u.Quantity, u.Quantity], u.Quantity], Any | None]:
+    effect = _active_moffat_psf(train_or_cmds)
+    if effect is None:
+        return _diagnostic_fallback_psf_fwhm, None
+    return _scopesim_psf_fwhm_func(effect), effect
+
+
 def _atmospheric_refraction_shift(
     wave: u.Quantity,
     zenith_angle: u.Quantity,
@@ -2020,6 +2063,7 @@ def _scene_image(
     seeing: u.Quantity,
     zenith_angle: u.Quantity,
     beta: float,
+    fwhm_func: Callable[[u.Quantity, u.Quantity, u.Quantity], u.Quantity],
 ) -> np.ndarray:
     x = u.Quantity(positions["x"]).to_value(u.arcsec)
     y = u.Quantity(positions["y"]).to_value(u.arcsec)
@@ -2028,7 +2072,7 @@ def _scene_image(
         if "weight" in positions.colnames
         else np.ones(len(positions), dtype=float)
     )
-    fwhm_values = _natural_seeing_fwhm(wave, seeing, zenith_angle).to_value(u.arcsec)
+    fwhm_values = fwhm_func(wave, zenith_angle, seeing).to_value(u.arcsec)
     shift_values = u.Quantity(shifts).to_value(u.arcsec)
 
     image = np.zeros_like(x_grid, dtype=float)
@@ -2108,13 +2152,26 @@ def _slit_loss_psf_modes(
     train_or_cmds: Any,
     beta: float,
 ) -> OrderedDict[str, dict[str, Any]]:
+    base_fwhm_func, psf_effect = _configured_psf_fwhm_func(train_or_cmds)
+    base_beta = float(getattr(psf_effect, "alpha", beta) or beta)
+    if psf_effect is None:
+        base_note = (
+            "Fallback diagnostic seeing law; no active ScopeSim Moffat-like "
+            "PSF effect was available."
+        )
+    else:
+        base_note = (
+            f"FWHM from active ScopeSim {effect_name(psf_effect)} "
+            f"({psf_effect.__class__.__name__})."
+        )
+
     modes: OrderedDict[str, dict[str, Any]] = OrderedDict()
     modes["no_ao"] = {
         "label": "no AO",
         "style": "-",
-        "beta": beta,
-        "fwhm_func": None,
-        "note": "Natural seeing law from current observation settings.",
+        "beta": base_beta,
+        "fwhm_func": base_fwhm_func,
+        "note": base_note,
     }
 
     effect = _active_ao_enhanceable_psf(train_or_cmds)
@@ -2136,10 +2193,7 @@ def _slit_loss_psf_modes(
             return _quantity_with_default_unit(values, u.arcsec)
 
         scale = _as_float_array(values)
-        return (
-            _natural_seeing_fwhm(wave, seeing, zenith_angle)
-            * scale
-        ).to(u.arcsec)
+        return (base_fwhm_func(wave, zenith_angle, seeing) * scale).to(u.arcsec)
 
     modes["ao"] = {
         "label": "AO",
@@ -2185,6 +2239,7 @@ def build_slit_adc_psf_scene_data(
     zenith_angle = _zenith_angle_from_cmds(cmds)
     slit_width = u.Quantity(slit_width).to(u.arcsec)
     slit_length = u.Quantity(slit_length).to(u.arcsec)
+    fwhm_func, psf_effect = _configured_psf_fwhm_func(train_or_cmds)
     adc_error, adc_note = _adc_zenith_angle_error(
         train_or_cmds, adc_zenith_angle_error,
     )
@@ -2225,7 +2280,7 @@ def build_slit_adc_psf_scene_data(
         for variant in variants.values()
     )
     max_fwhm = float(np.nanmax(
-        _natural_seeing_fwhm(wave, seeing, zenith_angle).to_value(u.arcsec),
+        fwhm_func(wave, zenith_angle, seeing).to_value(u.arcsec),
     ))
     width = slit_width.to_value(u.arcsec)
     length = slit_length.to_value(u.arcsec)
@@ -2260,6 +2315,7 @@ def build_slit_adc_psf_scene_data(
                     seeing=seeing,
                     zenith_angle=zenith_angle,
                     beta=beta,
+                    fwhm_func=fwhm_func,
                 ),
             )
             for key, variant in variants.items()
@@ -2286,6 +2342,14 @@ def build_slit_adc_psf_scene_data(
             "Images show PSF convolution and chromatic shift before slit clipping.",
             "ScopeSim detector images apply the PSF after aperture clipping.",
             "The residual ADC curve follows the ADCShift zenith-angle-error convention.",
+            (
+                f"PSF FWHM comes from active ScopeSim {effect_name(psf_effect)}."
+                if psf_effect is not None
+                else (
+                    "PSF FWHM uses a fallback diagnostic seeing law because no "
+                    "active ScopeSim Moffat-like PSF effect was available."
+                )
+            ),
         ],
     }
 

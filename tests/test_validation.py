@@ -263,13 +263,19 @@ class AOEnhanceablePSF:
     display_name = "seeing_psf"
     alpha = 3.25
 
-    def __init__(self, scale=0.2, *, is_absolute=True):
+    def __init__(self, scale=0.2, *, is_absolute=True, fwhm=0.6):
         self.scale = scale
+        self.fwhm_arcsec = fwhm
         self.seen_wave_units = []
+        self.seen_fwhm_units = []
         self.meta = {
             "name": self.display_name,
             "is_absolute": is_absolute,
         }
+
+    def fwhm(self, wave):
+        self.seen_fwhm_units.append(u.Quantity(wave).unit)
+        return np.full(wave.size, self.fwhm_arcsec) * u.arcsec
 
     def ao_scale(self, wave):
         self.seen_wave_units.append(u.Quantity(wave).unit)
@@ -759,11 +765,13 @@ def test_build_slit_loss_data_includes_ao_mode_when_psf_supports_it():
     assert curves["ao_zenith"]["linestyle"] == "--"
     assert np.all(curves["ao_zenith"]["loss"] < curves["no_ao_zenith"]["loss"])
     assert set(effect.seen_wave_units) == {u.um}
+    assert set(effect.seen_fwhm_units) == {u.um}
 
 
 def test_build_slit_loss_data_handles_relative_dimensionless_ao_scale():
+    effect = AOEnhanceablePSF(scale=0.5, is_absolute=False)
     data = val.build_slit_loss_data(
-        FakeAOTrain(AOEnhanceablePSF(scale=0.5, is_absolute=False)),
+        FakeAOTrain(effect),
         arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
         n_wave=5,
         slit_length=4.0 * u.arcsec,
@@ -774,6 +782,8 @@ def test_build_slit_loss_data_handles_relative_dimensionless_ao_scale():
     assert "ao_zenith" in curves
     assert np.isfinite(curves["ao_zenith"]["loss"]).all()
     assert np.all(curves["ao_zenith"]["loss"] < curves["no_ao_zenith"]["loss"])
+    assert set(effect.seen_wave_units) == {u.um}
+    assert set(effect.seen_fwhm_units) == {u.um}
 
 
 def test_slit_loss_notebook_call_chain_handles_dimensionless_ao_tables():
@@ -789,6 +799,29 @@ def test_slit_loss_notebook_call_chain_handles_dimensionless_ao_tables():
     assert axes.shape == (1, 1)
     assert len(axes[0, 0].lines) == 6
     fig.clf()
+
+
+def test_slit_adc_scene_uses_configured_scopesim_psf_fwhm():
+    effect = AOEnhanceablePSF()
+    source = Table({
+        "x": [0.0],
+        "y": [0.0],
+        "weight": [1.0],
+        "label": ["center"],
+    }, units=[u.arcsec, u.arcsec, None, None])
+
+    data = val.build_slit_adc_psf_scene_data(
+        FakeAOTrain(effect),
+        {"center": source},
+        slit_width=0.7 * u.arcsec,
+        slit_length=4.0 * u.arcsec,
+        wave_nm=np.linspace(400, 700, 5) * u.nm,
+        grid_step=0.25 * u.arcsec,
+    )
+
+    assert "center" in data["scenarios"]
+    assert set(effect.seen_fwhm_units) == {u.um}
+    assert any("active ScopeSim" in note for note in data["notes"])
 
 
 def test_slit_loss_summary_table_computes_throughput():
