@@ -106,13 +106,26 @@ def warning_prevent_sync_alt_ra_dec(cmd: Any) -> None:
     cmd["!OBS.dec"] = str(icrs_target.dec.to("deg"))
 
 
-def ignore_pydev_co_lnotab_warning() -> None:
+def ignore_warnings() -> None:
     """Hide PyCharm debugger's Python 3.14 co_lnotab deprecation warning."""
     warnings.filterwarnings(
         "ignore",
         message="co_lnotab is deprecated, use co_lines instead.",
         category=DeprecationWarning,
         module=r".*pydevd_collect_try_except_info",
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=r"metadata \{'args': \(None,\)\} was set from the constructor.*",
+        category=DeprecationWarning,
+        module=r"bqscales\.traits",
+    )
+
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Passing unrecognized arguments to super\(DataGrid\)\.__init__\(display_length=-1\).*",
+        category=DeprecationWarning,
+        module=r"traitlets\.traitlets",
     )
 
 
