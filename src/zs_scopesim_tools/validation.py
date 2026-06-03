@@ -1779,6 +1779,32 @@ def _slit_setting_rows(ztrain: Any, selector_name: str) -> list[dict[str, Any]]:
     return rows
 
 
+def _slit_selector_widths_for_key(
+    ztrain: Any,
+    slit_key: str,
+    *,
+    selector_name: str = "slitwheel_selector",
+) -> u.Quantity:
+    if not hasattr(ztrain, "optics_manager"):
+        return np.array([]) * u.arcsec
+    try:
+        selector = get_effect(ztrain, selector_name)
+    except ValueError:
+        return np.array([]) * u.arcsec
+
+    values: list[float] = []
+    for effect in selector.wheel_effects.values():
+        meta = getattr(effect, "meta", {}) or {}
+        if meta.get("current_slit") != slit_key:
+            continue
+        for name in meta.get("slit_names", ()):
+            try:
+                values.append(float(name))
+            except (TypeError, ValueError):
+                continue
+    return np.array(sorted(set(values)), dtype=float) * u.arcsec
+
+
 def _adc_surface_rows(ztrain: Any) -> list[dict[str, Any]]:
     rows = []
     for parent in active_effects(ztrain):
@@ -2538,6 +2564,9 @@ def build_slit_width_loss_data(
         arm_data[arm_name] = {
             "slit_widths_arcsec": slit_widths,
             "current_slit_width_arcsec": current_slit,
+            "selector_slit_widths_arcsec": _slit_selector_widths_for_key(
+                train_or_cmds, slit_key,
+            ),
             "wavelengths_nm": wave,
             "slit_length_arcsec": u.Quantity(slit_length).to(u.arcsec),
             "curves": curves,
@@ -2777,6 +2806,136 @@ def detector_background_budget_table(
         })
 
     return Table(rows=rows)
+
+
+def science_truth_crosscheck_table(
+    ztrain: Any,
+    *,
+    post_diffuse_data: Mapping[str, Any] | None = None,
+    detector_budget: Table | None = None,
+    extraction_pixels: float = 1.0,
+    spectral_resolution: float | None = None,
+) -> Table:
+    """Return compact physical sanity anchors for notebook inspection.
+
+    This table intentionally reuses already-built validation products. It does
+    not add a second simulation path; it presents standard-reference quantities
+    that make detector/background scales easier to audit by eye.
+    """
+    if detector_budget is None:
+        detector_budget = detector_background_budget_table(
+            ztrain, post_diffuse_data=post_diffuse_data,
+        )
+    if spectral_resolution is None:
+        spectral_resolution = _resolved_cmd_float(
+            ztrain.cmds, "!SIM.spectral.spectral_resolution",
+        )
+
+    post_channels = _post_diffuse_channels_by_image_plane(post_diffuse_data)
+    rows: list[dict[str, Any]] = []
+    for budget in detector_budget:
+        image_plane_id = int(budget["image_plane_id"])
+        channel_data = post_channels.get(image_plane_id, {})
+        pixel_area = u.Quantity(
+            channel_data.get("pixel_area", np.nan * u.arcsec**2),
+        ).to(u.arcsec**2)
+        pixel_area_value = pixel_area.to_value(u.arcsec**2)
+        diffuse_rate = float(budget["post_diffuse_rate_ph_s_pix"])
+        exposure_time = float(budget["exposure_time_s"])
+        wavelength_mid = _channel_mid_wavelength_nm(channel_data)
+        resolution_element = (
+            wavelength_mid / spectral_resolution
+            if np.isfinite(wavelength_mid) and np.isfinite(spectral_resolution)
+            and spectral_resolution > 0
+            else np.nan
+        )
+        diffuse_rate_arcsec2 = (
+            diffuse_rate / pixel_area_value
+            if np.isfinite(pixel_area_value) and pixel_area_value > 0
+            else np.nan
+        )
+        extraction_rate = diffuse_rate * float(extraction_pixels)
+        extraction_counts = extraction_rate * exposure_time
+        status = str(budget["saturation_status"])
+        rows.append({
+            "detector_id": int(budget["detector_id"]),
+            "image_plane_id": image_plane_id,
+            "channel": str(budget["channel"]),
+            "detector": str(budget["detector"]),
+            "current_slit_arcsec": _current_slit_arcsec(
+                ztrain, str(budget["channel"]),
+            ),
+            "wavelength_mid_nm": wavelength_mid,
+            "spectral_resolution_R": float(spectral_resolution),
+            "resolution_element_nm": resolution_element,
+            "pixel_area_arcsec2": pixel_area_value,
+            "post_diffuse_ph_s_pix": diffuse_rate,
+            "post_diffuse_ph_s_arcsec2": diffuse_rate_arcsec2,
+            "extraction_pixels": float(extraction_pixels),
+            "post_diffuse_ph_s_extraction": extraction_rate,
+            "post_diffuse_e_extraction": extraction_counts,
+            "additive_signal_e_pix": float(budget["additive_signal_e_pix"]),
+            "full_well_e": float(budget["full_well_e"]),
+            "signal_fraction_of_full_well": float(
+                budget["signal_fraction_of_full_well"],
+            ),
+            "saturation_status": status,
+            "note": _science_truth_note(status),
+        })
+    return Table(rows=rows)
+
+
+def _post_diffuse_channels_by_image_plane(
+    post_diffuse_data: Mapping[str, Any] | None,
+) -> dict[int, Mapping[str, Any]]:
+    if post_diffuse_data is None:
+        return {}
+    return {
+        int(channel["image_plane_id"]): channel
+        for channel in post_diffuse_data.get("channels", {}).values()
+    }
+
+
+def _channel_mid_wavelength_nm(channel_data: Mapping[str, Any]) -> float:
+    wave_min = float(channel_data.get("trace_wave_min_nm", np.nan))
+    wave_max = float(channel_data.get("trace_wave_max_nm", np.nan))
+    if np.isfinite(wave_min) and np.isfinite(wave_max):
+        return 0.5 * (wave_min + wave_max)
+    return np.nan
+
+
+def _current_slit_arcsec(ztrain: Any, channel: str) -> float:
+    key = "!INST.vis_curr_slit" if channel.upper() in {"B", "G", "R"} else (
+        "!INST.nir_curr_slit"
+    )
+    return _resolved_cmd_float(ztrain.cmds, key)
+
+
+def _resolved_cmd_float(cmds: Any, key: str, default: float = np.nan) -> float:
+    from scopesim.utils import from_currsys
+
+    try:
+        value = from_currsys(key, cmds)
+    except Exception:
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _science_truth_note(status: str) -> str:
+    prefix = (
+        "Diffuse rate is integrated image-plane background; "
+        "resolution_element_nm is an anchor, not a spectral bin for this term."
+    )
+    if status == "saturated":
+        return (
+            f"{prefix} Additive detector signal exceeds configured full well."
+        )
+    if status == "near_saturation":
+        return f"{prefix} Additive detector signal is near full well."
+    return prefix
 
 
 def _selected_detector_effect(

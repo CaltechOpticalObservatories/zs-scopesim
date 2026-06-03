@@ -141,3 +141,53 @@ def test_two_point_source_builds_slit_frame_table(monkeypatch):
     np.testing.assert_allclose(captured["table"]["x"], [0, 2])
     np.testing.assert_allclose(captured["table"]["y"], [0, 0], atol=1e-12)
     assert captured["table"].meta["frame"] == "slit"
+
+
+def test_field_angle_demo_sources_names_slit_frame_scenarios(monkeypatch):
+    captured = []
+
+    class FakeSource:
+        def __init__(self, *, spectra, table):
+            self.spectra = spectra
+            self.table = table
+            self.meta = {}
+            captured.append(self)
+
+    import sys
+    import types
+
+    scopesim_module = types.ModuleType("scopesim")
+    source_pkg = types.ModuleType("scopesim.source")
+    source_module = types.ModuleType("scopesim.source.source")
+    templates_module = types.ModuleType("scopesim.source.source_templates")
+    source_module.Source = FakeSource
+    templates_module.ab_spectrum = lambda mag: f"ab:{mag}"
+    source_pkg.source = source_module
+    source_pkg.source_templates = templates_module
+    scopesim_module.source = source_pkg
+    monkeypatch.setitem(sys.modules, "scopesim", scopesim_module)
+    monkeypatch.setitem(sys.modules, "scopesim.source", source_pkg)
+    monkeypatch.setitem(sys.modules, "scopesim.source.source", source_module)
+    monkeypatch.setitem(
+        sys.modules, "scopesim.source.source_templates", templates_module)
+
+    scenarios = sources.field_angle_demo_sources(
+        along_separation=5 * u.arcsec,
+        across_separation=0.9 * u.arcsec,
+        along_mag=15,
+        across_mag=17,
+    )
+
+    assert list(scenarios) == ["along_slit_centered", "across_slit_one_off"]
+    along = scenarios["along_slit_centered"]
+    across = scenarios["across_slit_one_off"]
+    assert along.meta["name"] == "along_slit_centered"
+    assert across.meta["name"] == "across_slit_one_off"
+    assert along.meta["function_call"] == "field_angle_demo_sources"
+    assert across.meta["workflow_note"].startswith("Set the sky scene angle")
+    assert captured[0].spectra == ["ab:15"]
+    assert captured[1].spectra == ["ab:17"]
+    np.testing.assert_allclose(along.table["x"], [0.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(along.table["y"], [-2.5, 2.5])
+    np.testing.assert_allclose(across.table["x"], [0.0, 0.9])
+    np.testing.assert_allclose(across.table["y"], [0.0, 0.0], atol=1e-12)

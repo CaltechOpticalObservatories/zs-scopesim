@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import pathlib
+from collections import OrderedDict
 from collections.abc import Sequence
 from typing import Any
 
@@ -259,3 +260,62 @@ def two_point_source(
         "angle_on_slit_unit": "deg",
     })
     return source
+
+
+def field_angle_demo_sources(
+    *,
+    along_separation: u.Quantity = 5.0 * u.arcsec,
+    across_separation: u.Quantity = 0.9 * u.arcsec,
+    along_mag: float = 15.0,
+    across_mag: float = 17.0,
+    spectrum: Any | None = None,
+) -> OrderedDict[str, Any]:
+    """Return the two source scenes used for field-angle/slit validation.
+
+    The user-facing workflow is to choose the sky scene and derotation angle so
+    the desired apparent pair angle lands on the slit. These sources represent
+    that apparent slit-frame geometry directly: one pair lies along the slit and
+    one lies across it with the second source off the slit.
+    """
+    scenarios = OrderedDict([
+        (
+            "along_slit_centered",
+            two_point_source(
+                separation=along_separation,
+                angle_on_slit=0 * u.deg,
+                centered=True,
+                mag=along_mag,
+                spectrum=spectrum,
+            ),
+        ),
+        (
+            "across_slit_one_off",
+            two_point_source(
+                separation=across_separation,
+                angle_on_slit=90 * u.deg,
+                centered=False,
+                mag=across_mag,
+                spectrum=spectrum,
+            ),
+        ),
+    ])
+    descriptions = {
+        "along_slit_centered": (
+            "Pair centered on the slit and separated along the slit."
+        ),
+        "across_slit_one_off": (
+            "Pair separated across the slit with the second source off slit."
+        ),
+    }
+    for name, source in scenarios.items():
+        source.meta.update({
+            "name": name,
+            "scenario": name,
+            "function_call": "field_angle_demo_sources",
+            "description": descriptions[name],
+            "workflow_note": (
+                "Set the sky scene angle and derotation angle so this apparent "
+                "slit-frame source angle is reached."
+            ),
+        })
+    return scenarios

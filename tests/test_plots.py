@@ -105,6 +105,34 @@ def test_detector_background_budget_plot_handles_saturation_annotation():
     fig.clf()
 
 
+def test_post_disperser_diffuse_plot_annotates_ir_blocking():
+    wave = np.array([300.0, 400.0]) * u.nm
+    channels = {}
+    for idx, label in enumerate(["B", "G", "R", "YJ", "H", "K"]):
+        channels[idx] = {
+            "label": label,
+            "image_plane_id": idx,
+            "trace_wave_min_nm": 300.0,
+            "trace_wave_max_nm": 400.0,
+            "spectra": {"camera": np.ones(2)},
+            "total_spectrum": np.full(2, 2.0),
+            "total_spectrum_without_blocking": np.full(2, 3.0),
+            "total_rate_ph_s_pix": 2.0,
+            "total_rate_without_blocking_ph_s_pix": 3.0,
+            "blocking_delta_rate_ph_s_pix": 1.0,
+        }
+
+    fig, axes = plots.plot_post_disperser_diffuse_background({
+        "wave_nm": wave,
+        "channels": channels,
+    })
+
+    assert "IR block removes 1" in axes.flat[0].texts[0].get_text()
+    assert "unblocked diffuse" in axes.flat[0].texts[0].get_text()
+    assert "Image Plane 0" in axes.flat[0].get_title()
+    fig.clf()
+
+
 def test_slit_adc_psf_scene_plot_smoke():
     data = {
         "airmass": 1.3,
@@ -177,6 +205,7 @@ def test_slit_width_loss_plot_smoke():
             "VIS": {
                 "slit_widths_arcsec": slit_widths,
                 "current_slit_width_arcsec": 0.7 * u.arcsec,
+                "selector_slit_widths_arcsec": [0.3, 0.7] * u.arcsec,
                 "curves": {
                     "no_ao_500nm": {
                         "label": "no AO, 500 nm",
@@ -199,6 +228,7 @@ def test_slit_width_loss_plot_smoke():
 
     assert axes.shape == (1, 1)
     assert len(axes[0, 0].lines) == 3
+    assert len(axes[0, 0].collections) == 2
     fig.clf()
 
 

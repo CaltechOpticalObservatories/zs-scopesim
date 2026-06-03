@@ -302,10 +302,37 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
                 alpha=0.95,
                 label="total with ir block",
             )
+        blocked_rate = float(channel.get("blocking_delta_rate_ph_s_pix", 0.0))
+        unblocked_rate = float(
+            channel.get("total_rate_without_blocking_ph_s_pix", np.nan),
+        )
+        if np.isfinite(unblocked_rate) and unblocked_rate > 0:
+            blocked_fraction = blocked_rate / unblocked_rate
+            blocked_text = (
+                f"IR block removes {blocked_rate:.2g} ph/s/pix\n"
+                f"({blocked_fraction:.1%} of unblocked diffuse)"
+            )
+        else:
+            blocked_text = f"IR block removes {blocked_rate:.2g} ph/s/pix"
+        ax.text(
+            0.02,
+            0.96,
+            blocked_text,
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=9,
+            bbox={
+                "boxstyle": "round,pad=0.22",
+                "fc": "white",
+                "ec": "0.75",
+                "alpha": 0.78,
+            },
+        )
         ax.set_title(
-            f"{channel['label']} (image plane {channel['image_plane_id']}): "
-            f"{channel['total_rate_ph_s_pix']:.3g} ph/s/pix"
-            f" ({channel.get('blocking_delta_rate_ph_s_pix', 0.0):.3g} blocked)",
+            f"{channel['label']} Image Plane {channel['image_plane_id']}: "
+            f"{channel['total_rate_ph_s_pix']:.3g} ph/s/pix",
+            pad=8,
         )
         ax.set_xlim(wave.min(), wave.max())
         ax.grid(alpha=0.2)
@@ -903,14 +930,33 @@ def plot_slit_width_loss(data: Mapping[str, Any]):
         color_map = dict(zip(wave_values, colors, strict=True))
         for curve in arm["curves"].values():
             wave_nm = float(curve["wavelength_nm"])
+            color = color_map[wave_nm]
             ax.plot(
                 slit_widths,
                 curve["loss"],
                 lw=2.4,
-                color=color_map[wave_nm],
+                color=color,
                 ls=curve.get("linestyle", "-"),
                 label=curve["label"],
             )
+            selector_slits = u.Quantity(
+                arm.get("selector_slit_widths_arcsec", []),
+            ).to_value(u.arcsec)
+            selector_slits = selector_slits[
+                (selector_slits >= slit_widths.min())
+                & (selector_slits <= slit_widths.max())
+            ]
+            if selector_slits.size:
+                ax.scatter(
+                    selector_slits,
+                    np.interp(selector_slits, slit_widths, curve["loss"]),
+                    s=34,
+                    marker="o",
+                    facecolor="white",
+                    edgecolor=color,
+                    linewidth=1.2,
+                    zorder=4,
+                )
 
         current_slit = u.Quantity(
             arm["current_slit_width_arcsec"],

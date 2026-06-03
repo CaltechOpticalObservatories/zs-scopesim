@@ -84,7 +84,8 @@ class FakeTaperedQuantumEfficiency:
             "name": "fake_tapered_qe",
             "center_wave_min": 0.3,
             "center_wave_max": 0.4,
-            "fwhm": 0.06,
+            "flat_width": 0.06,
+            "transition_width": 0.18,
             "peak": 0.95,
         }
         self.footprints = []
@@ -353,7 +354,23 @@ class FakeBudgetTrain(FakeTrainWithImagePlane):
 
 class FakeAOOpticsManager:
     def __init__(self, effect=None):
-        self.all_effects = [effect or AOEnhanceablePSF()]
+        self.all_effects = [
+            FakeNamedSelector(
+                "slitwheel_selector",
+                "aperture_id",
+                {
+                    0: FakeSelectedEffect(
+                        current_slit="!INST.vis_curr_slit",
+                        slit_names=[1.25, 0.7, 0.5, 0.33],
+                    ),
+                    3: FakeSelectedEffect(
+                        current_slit="!INST.nir_curr_slit",
+                        slit_names=[1.25, 0.7, 0.5, 0.33],
+                    ),
+                },
+            ),
+            effect or AOEnhanceablePSF(),
+        ]
 
 
 class FakeAOTrain:
@@ -837,6 +854,10 @@ def test_build_slit_width_loss_data_uses_configured_scopesim_psf_fwhm():
     )
 
     arm = data["arms"]["VIS"]
+    np.testing.assert_allclose(
+        arm["selector_slit_widths_arcsec"].to_value(u.arcsec),
+        [0.33, 0.5, 0.7, 1.25],
+    )
     assert set(arm["curves"]) == {
         "no_ao_500nm",
         "no_ao_750nm",
@@ -1068,3 +1089,42 @@ def test_detector_background_budget_table_flags_saturation():
 
     np.testing.assert_allclose(table["signal_fraction_of_full_well"], [1.26])
     assert list(table["saturation_status"]) == ["saturated"]
+
+
+def test_science_truth_crosscheck_table_reports_physical_anchors():
+    diffuse_data = {
+        "channels": {
+            0: {
+                "image_plane_id": 0,
+                "total_rate_ph_s_pix": 2.0,
+                "pixel_area": 0.25 * u.arcsec**2,
+                "trace_wave_min_nm": 300.0,
+                "trace_wave_max_nm": 500.0,
+            },
+        },
+    }
+    ztrain = FakeBudgetTrain()
+    ztrain.cmds = {
+        "!DET.full_well": 100.0,
+        "!SIM.spectral.spectral_resolution": 40000.0,
+        "!INST.vis_curr_slit": 0.7,
+    }
+    budget = val.detector_background_budget_table(
+        ztrain, post_diffuse_data=diffuse_data,
+    )
+
+    table = val.science_truth_crosscheck_table(
+        ztrain,
+        post_diffuse_data=diffuse_data,
+        detector_budget=budget,
+        extraction_pixels=4.0,
+    )
+
+    assert list(table["channel"]) == ["B"]
+    np.testing.assert_allclose(table["current_slit_arcsec"], [0.7])
+    np.testing.assert_allclose(table["wavelength_mid_nm"], [400.0])
+    np.testing.assert_allclose(table["resolution_element_nm"], [0.01])
+    np.testing.assert_allclose(table["post_diffuse_ph_s_arcsec2"], [8.0])
+    np.testing.assert_allclose(table["post_diffuse_ph_s_extraction"], [8.0])
+    np.testing.assert_allclose(table["post_diffuse_e_extraction"], [240.0])
+    assert "integrated image-plane background" in table["note"][0]
