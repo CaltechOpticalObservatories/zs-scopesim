@@ -8,6 +8,31 @@ from zs_scopesim_tools import plots
 from zs_scopesim_tools import validation
 
 
+class FakeSpectrum:
+    def __init__(self, scale=1.0):
+        self.scale = scale
+
+    def __call__(self, wave):
+        return np.full(wave.size, self.scale)
+
+
+class FakeTableSourceField:
+    def __init__(self):
+        self.field = Table({
+            "x": [0.0, 1.0],
+            "y": [0.0, -1.0],
+            "ref": [0, 0],
+            "weight": [1.0, 0.5],
+        })
+        self.field["x"].unit = u.arcsec
+        self.field["y"].unit = u.arcsec
+        self.spectra = {0: FakeSpectrum(2.0)}
+
+
+class FakeSource:
+    fields = [FakeTableSourceField()]
+
+
 def test_validation_reexports_plot_helpers():
     assert validation.plot_source is plots.plot_source
     assert validation.plot_transmission_sanity is plots.plot_transmission_sanity
@@ -24,6 +49,15 @@ def test_validation_reexports_plot_helpers():
     assert validation.plot_slit_loss_by_arm is plots.plot_slit_loss_by_arm
     assert validation.plot_slit_pair_geometry is plots.plot_slit_pair_geometry
     assert validation.plot_readout_overview is plots.plot_readout_overview
+
+
+def test_plot_source_handles_table_source_fields():
+    fig, axes = plots.plot_source(FakeSource(), wave=np.linspace(0.4, 0.8, 4) * u.um)
+
+    assert axes.shape == (1, 2)
+    assert len(axes[0, 0].collections) == 1
+    assert len(axes[0, 1].lines) == 1
+    fig.clf()
 
 
 def test_detector_background_budget_plot_handles_saturation_annotation():

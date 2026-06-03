@@ -18,8 +18,134 @@ def _as_float_array(values: Any) -> np.ndarray:
     return np.asarray(values, dtype=float)
 
 
+def _plot_source_spectrum_values(
+    ax: Any,
+    wave: u.Quantity,
+    spectrum: Any,
+    *,
+    label: str,
+) -> None:
+    values = spectrum(wave)
+    ax.plot(wave.to_value(u.um), _as_float_array(values), label=label)
+
+
+def _source_field_image_data(field: Any) -> np.ndarray | None:
+    if hasattr(field, "data"):
+        return np.asarray(field.data)
+    source_field = getattr(field, "field", None)
+    data = getattr(source_field, "data", None)
+    if data is None:
+        return None
+    data = np.asarray(data)
+    return data if data.ndim >= 2 else None
+
+
+def _is_table_source_field(field: Any) -> bool:
+    table = getattr(field, "field", None)
+    return isinstance(table, Table) and {"x", "y"}.issubset(table.colnames)
+
+
+def _quantity_column(table: Table, name: str, unit: u.UnitBase) -> u.Quantity:
+    values = table[name]
+    quantity = getattr(values, "quantity", values)
+    quantity = u.Quantity(quantity)
+    if quantity.unit == u.dimensionless_unscaled:
+        quantity = quantity.value * unit
+    return quantity.to(unit)
+
+
+def _plot_table_source_field(
+    ax_image: Any,
+    ax_spectrum: Any,
+    field: Any,
+    wave: u.Quantity,
+) -> None:
+    table = field.field
+    x = _quantity_column(table, "x", u.arcsec).to_value(u.arcsec)
+    y = _quantity_column(table, "y", u.arcsec).to_value(u.arcsec)
+    refs = (
+        np.asarray(table["ref"], dtype=int)
+        if "ref" in table.colnames
+        else np.zeros(len(table), dtype=int)
+    )
+    weights = (
+        np.asarray(table["weight"], dtype=float)
+        if "weight" in table.colnames
+        else np.ones(len(table), dtype=float)
+    )
+    sizes = 36 + 84 * weights / max(np.nanmax(weights), 1.0)
+    scatter = ax_image.scatter(
+        x,
+        y,
+        c=refs,
+        s=sizes,
+        cmap="tab10",
+        edgecolors="black",
+        linewidths=0.8,
+        alpha=0.9,
+    )
+    ax_image.axhline(0, color="0.65", lw=0.8)
+    ax_image.axvline(0, color="0.65", lw=0.8)
+    ax_image.set_aspect("equal", adjustable="datalim")
+    ax_image.set_xlabel("x [arcsec]")
+    ax_image.set_ylabel("y [arcsec]")
+    ax_image.set_title("Source Positions")
+    if len(np.unique(refs)) > 1:
+        ax_image.legend(
+            *scatter.legend_elements(prop="colors", fmt="{x:.0f}"),
+            title="ref",
+            frameon=False,
+            loc="best",
+        )
+
+    spectra = getattr(field, "spectra", {})
+    for ref in np.unique(refs):
+        spectrum = spectra.get(int(ref), spectra.get(ref))
+        if spectrum is None:
+            continue
+        ref_weight = float(np.sum(weights[refs == ref]))
+        _plot_source_spectrum_values(
+            ax_spectrum,
+            wave,
+            spectrum,
+            label=f"ref {ref} x {ref_weight:g}",
+        )
+
+
+def _plot_image_source_field(
+    ax_image: Any,
+    ax_spectrum: Any,
+    field: Any,
+    wave: u.Quantity,
+) -> None:
+    data = _source_field_image_data(field)
+    if data is None:
+        ax_image.text(
+            0.5, 0.5, "No spatial image", ha="center", va="center",
+            transform=ax_image.transAxes,
+        )
+        ax_image.set_axis_off()
+    else:
+        if data.ndim > 2:
+            data = np.nanmean(data, axis=0)
+        ax_image.imshow(data, origin="lower", cmap="viridis")
+        ax_image.set_title("Spatial Profile")
+
+    try:
+        spectrum = field.spectrum
+    except Exception:
+        spectrum = None
+    if spectrum is not None:
+        _plot_source_spectrum_values(ax_spectrum, wave, spectrum, label="spectrum")
+    else:
+        for ref, candidate in getattr(field, "spectra", {}).items():
+            _plot_source_spectrum_values(
+                ax_spectrum, wave, candidate, label=f"ref {ref}",
+            )
+
+
 def plot_source(source: Any, wave: u.Quantity | None = None):
-    """Plot each source field's spatial profile and spectrum."""
+    """Plot each source field's spatial profile/positions and spectrum."""
     import matplotlib.pyplot as plt
 
     wave = wave if wave is not None else np.linspace(0.3, 2.5, 1001) * u.um
@@ -35,11 +161,15 @@ def plot_source(source: Any, wave: u.Quantity | None = None):
         axs = np.array([axs])
     for idx, field in enumerate(source.fields):
         ax_image, ax_spectrum = axs[idx]
-        ax_image.imshow(field.data, origin="lower", cmap="viridis")
-        ax_spectrum.plot(wave, field.spectrum(wave))
-        if idx == 0:
-            ax_image.set_title("Spatial Profile")
-            ax_spectrum.set_title("Spectrum")
+        if _is_table_source_field(field):
+            _plot_table_source_field(ax_image, ax_spectrum, field, wave)
+        else:
+            _plot_image_source_field(ax_image, ax_spectrum, field, wave)
+        ax_spectrum.set_title("Spectrum")
+        ax_spectrum.set_xlabel("Wavelength [um]")
+        ax_spectrum.grid(alpha=0.2)
+        if ax_spectrum.get_legend_handles_labels()[0]:
+            ax_spectrum.legend(frameon=False)
     return fig, axs
 
 
@@ -632,7 +762,7 @@ def plot_slit_loss_by_arm(data: Mapping[str, Any]):
     fig, axes = plt.subplots(
         1,
         len(arms),
-        figsize=(6.3 * len(arms), 4.4),
+        figsize=(6.4 * len(arms), 4.8),
         squeeze=False,
         constrained_layout=True,
     )
@@ -651,8 +781,25 @@ def plot_slit_loss_by_arm(data: Mapping[str, Any]):
                 color=colors.get(curve_name, None),
                 label=curve["label"],
             )
+        ax.text(
+            0.02,
+            0.96,
+            f"slit {arm['slit_width_arcsec'].to_value(u.arcsec):.2f} arcsec\n"
+            f"seeing {data['seeing_arcsec'].to_value(u.arcsec):.2f} arcsec",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=9,
+            bbox={
+                "boxstyle": "round,pad=0.22",
+                "fc": "white",
+                "ec": "0.75",
+                "alpha": 0.78,
+            },
+        )
         ax.set_title(
-            f"{arm_name}: {arm['slit_width_arcsec'].to_value(u.arcsec):.2f} arcsec slit"
+            f"{arm_name} Slit Loss",
+            pad=8,
         )
         ax.set_xlabel("Wavelength [nm]")
         ax.set_ylabel("Slit loss fraction")
@@ -661,13 +808,8 @@ def plot_slit_loss_by_arm(data: Mapping[str, Any]):
 
     handles, labels = axes.flat[0].get_legend_handles_labels()
     fig.legend(
-        handles, labels, loc="outside upper center", ncol=len(handles),
+        handles, labels, loc="outside lower center", ncol=len(handles),
         frameon=False,
-    )
-    fig.suptitle(
-        "Centered Point-Source Slit Loss "
-        f"(seeing {data['seeing_arcsec'].to_value(u.arcsec):.2f} arcsec)",
-        fontsize=12,
     )
     return fig, axes
 
