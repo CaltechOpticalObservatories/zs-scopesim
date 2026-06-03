@@ -143,29 +143,31 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
             finite = curve[np.isfinite(curve)]
             if finite.size:
                 ymax = max(ymax, float(np.nanmax(finite)))
-    ymax = max(0.05, min(1.5, ymax * 1.08))
+    ymax = max(1e-3, ymax * 1.08)
 
     for ax, (aperture_id, channel) in zip(axes.flat, data["channels"].items()):
         for name, values in channel["pre_disperser_terms"].items():
             ax.plot(
-                wave, values, lw=1.0, ls="--",
+                wave, values, lw=1.0, ls="--", alpha=0.75,
                 color=group_colors.get(name, "0.5"),
                 label=f"pre {name}",
             )
         for name, values in channel["post_disperser_terms"].items():
             ax.plot(
-                wave, values, lw=1.0, ls="-",
+                wave, values, lw=1.1, ls="-", alpha=0.7,
                 color=group_colors.get(name, "0.5"),
                 label=f"post {name}",
             )
 
         ax.plot(
-            wave, channel["pre_disperser_output_equiv"], lw=1.6,
-            color="tab:purple", alpha=0.75, label="pre total",
+            wave, channel["pre_disperser_output_equiv"], lw=2.0,
+            color="tab:purple", alpha=0.9,
+            label="pre total before trace QE", zorder=8,
         )
         ax.plot(
-            wave, channel["post_disperser_after_qe"], lw=1.8,
-            color="black", alpha=0.75, label="post total after QE",
+            wave, channel["post_disperser_after_qe"], lw=2.4,
+            color="black", alpha=0.95,
+            label="post diffuse after downstream+QE", zorder=10,
         )
         ax.plot(
             wave, channel["detector_qe"], lw=0.9, ls=":",
@@ -173,13 +175,14 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
         )
         ax.set_title(f"{channel['label']} (aperture {aperture_id})")
         ax.set_xlim(wave.min(), wave.max())
+        ax.set_yscale("symlog", linthresh=1e-4)
         ax.set_ylim(0, ymax)
         ax.grid(alpha=0.2)
 
     for ax in axes[-1, :]:
         ax.set_xlabel("Wavelength [nm]")
     for ax in axes[:, 0]:
-        ax.set_ylabel("Dimensionless response")
+        ax.set_ylabel("Thermal emission density [PHOTLAM equiv.] (symlog)")
 
     handles, labels = axes.flat[0].get_legend_handles_labels()
     dedup = OrderedDict(zip(labels, handles))
@@ -266,21 +269,22 @@ def plot_transmission_sanity(data: Mapping[str, Any]):
             color="tab:purple", label="dichroics",
         )
         ax.plot(
-            wave, channel["detector_qe"], lw=1.2,
-            color="tab:red", label=channel.get("detector_qe_label", "detector QE"),
+            wave, channel["detector_qe"], lw=1.8, ls=":",
+            color="tab:red", alpha=0.9,
+            label=channel.get("detector_qe_label", "detector QE"),
         )
 
         for idx, (_trace_id, order) in enumerate(channel["orders"].items()):
             order_label = "disperser/order" if idx == 0 else None
-            order_qe_label = "detector QE/order" if idx == 0 else None
+            order_qe_label = "QE at order trace" if idx == 0 else None
             total_label = "total/order" if idx == 0 else None
             ax.plot(
                 wave, order["disperser"], lw=0.7, color="tab:orange",
                 alpha=0.35, label=order_label,
             )
             ax.plot(
-                wave, order["detector_qe"], lw=0.7, color="tab:red",
-                alpha=0.25, label=order_qe_label,
+                wave, order["detector_qe"], lw=1.0, color="tab:pink",
+                alpha=0.35, label=order_qe_label,
             )
             ax.plot(
                 wave, order["total"], lw=1.8, color="black",

@@ -520,11 +520,12 @@ def surface_list_emissivity_terms(
     groups: Mapping[str, tuple[str, ...]] | None = None,
     qe_values: np.ndarray | None = None,
 ) -> tuple[dict[str, OrderedDict[str, np.ndarray]], dict[str, int], list[dict[str, Any]]]:
-    """Return grouped emissivity terms split by optical phase.
+    """Return grouped thermal-emission terms split by optical phase.
 
-    The per-surface base contribution follows ``SurfaceList.combine_emissions``:
-    a surface emissivity term is weighted by the downstream action throughputs
-    that ScopeSim applies after that surface's own emission is added.
+    The per-surface base contribution follows ScopeSim's thermal-emission
+    path: a surface emission-density term is weighted by the downstream action
+    throughputs that ScopeSim applies after that surface's own emission is
+    added.
 
     For ``post_disperser`` terms, ``after_qe`` also applies the detector QE
     because this diffuse light is injected at the image plane instead of being
@@ -542,12 +543,22 @@ def surface_list_emissivity_terms(
     return optical_surface_emissivity_terms(rows, wave, qe_values=qe_values)
 
 
+def _emission_density_plot_values(values: u.Quantity | None) -> np.ndarray | None:
+    """Return thermal emission density in PHOTLAM-equivalent plot units."""
+    if values is None:
+        return None
+    try:
+        return values.to_value(PHOTLAM)
+    except Exception:
+        return _as_float_array(values)
+
+
 def optical_surface_emissivity_terms(
     rows: list[dict[str, Any]],
     wave: u.Quantity,
     qe_values: np.ndarray | None = None,
 ) -> tuple[dict[str, OrderedDict[str, np.ndarray]], dict[str, int], list[dict[str, Any]]]:
-    """Return grouped emissivity terms from flattened optical surface rows."""
+    """Return grouped thermal-emission terms from flattened optical rows."""
     downstream = [np.ones(wave.size, dtype=float) for _ in range(len(rows) + 1)]
     for idx in range(len(rows) - 1, -1, -1):
         downstream[idx] = downstream[idx + 1] * rows[idx]["action_values"]
@@ -576,10 +587,14 @@ def optical_surface_emissivity_terms(
             })
             continue
 
-        contribution = row["emissivity"] * downstream[idx + 1]
-        contribution = np.nan_to_num(
-            contribution, nan=0.0, posinf=0.0, neginf=0.0,
-        )
+        emission_values = _emission_density_plot_values(row["emission_values"])
+        if emission_values is None:
+            contribution = np.zeros(wave.size, dtype=float)
+        else:
+            contribution = emission_values * downstream[idx + 1]
+            contribution = np.nan_to_num(
+                contribution, nan=0.0, posinf=0.0, neginf=0.0,
+            )
         after_qe = contribution
         qe_applied = False
         if row["emission_phase"] == "post_disperser" and qe_values is not None:
@@ -611,6 +626,9 @@ def optical_surface_emissivity_terms(
             "reflection_source": row["ter_sources"]["reflection"],
             "qe_applied": qe_applied,
             "peak_output_emissivity": (
+                float(np.nanmax(contribution)) if contribution.size else np.nan
+            ),
+            "peak_output_thermal_emission": (
                 float(np.nanmax(contribution)) if contribution.size else np.nan
             ),
             "peak_after_qe": float(np.nanmax(after_qe)) if after_qe.size else np.nan,

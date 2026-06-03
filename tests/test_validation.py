@@ -420,7 +420,7 @@ def test_build_emissivity_sanity_data_accepts_non_surface_qe():
     channel = data["channels"][0]
     np.testing.assert_allclose(channel["detector_qe"], [0.7, 0.7])
     np.testing.assert_allclose(
-        channel["post_disperser_after_qe"], [0.14, 0.14],
+        channel["post_disperser_after_qe"], [1.4, 1.4],
     )
     details = data["details"]
     qe_rows = details[np.asarray(details["group"], dtype=str) == "detector_qe"]
@@ -452,7 +452,7 @@ def test_build_emissivity_sanity_data_applies_downstream_extra_selector():
 
     channel = data["channels"][0]
     np.testing.assert_allclose(
-        channel["post_disperser_after_qe"], [0.025, 0.025],
+        channel["post_disperser_after_qe"], [0.25, 0.25],
     )
     details = data["details"]
     assert "ir_blocking_filter" in set(details["group"])
@@ -460,6 +460,7 @@ def test_build_emissivity_sanity_data_applies_downstream_extra_selector():
         np.asarray(details["group"], dtype=str) == "ir_blocking_filter"
     ]
     assert filter_rows[0]["emission_phase"] == "post_disperser"
+    assert filter_rows[0]["peak_output_thermal_emission"] == 0.0
 
 
 def test_post_disperser_diffuse_data_applies_downstream_extra_selector(monkeypatch):
@@ -580,11 +581,11 @@ def test_surface_list_emissivity_terms_splits_phases_and_applies_qe():
 
     np.testing.assert_allclose(
         terms["pre_disperser"]["preoptics"],
-        np.full(wave.size, 0.08),
+        np.full(wave.size, 80.0),
     )
     np.testing.assert_allclose(
         terms["post_disperser"]["camera"],
-        np.full(wave.size, 0.1),
+        np.full(wave.size, 1.0),
     )
     assert counts["pre_disperser:preoptics"] == 1
     assert counts["post_disperser:camera"] == 1
