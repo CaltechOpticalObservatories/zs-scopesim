@@ -759,14 +759,37 @@ def test_detector_background_budget_table_combines_detector_terms():
         },
     }
 
-    table = val.detector_background_budget_table(
-        FakeBudgetTrain(), post_diffuse_data=diffuse_data,
-    )
+    ztrain = FakeBudgetTrain()
+    ztrain.cmds = {"!DET.full_well": 100.0}
+
+    table = val.detector_background_budget_table(ztrain, post_diffuse_data=diffuse_data)
 
     assert list(table["channel"]) == ["B"]
     np.testing.assert_allclose(table["exposure_time_s"], [30.0])
     np.testing.assert_allclose(table["post_diffuse_e_pix"], [60.0])
     np.testing.assert_allclose(table["dark_current_e_pix"], [3.0])
+    np.testing.assert_allclose(table["additive_signal_e_pix"], [63.0])
+    np.testing.assert_allclose(table["full_well_e"], [100.0])
+    np.testing.assert_allclose(table["signal_fraction_of_full_well"], [0.63])
+    assert list(table["saturation_status"]) == ["ok"]
     np.testing.assert_allclose(table["read_noise_e_rms"], [5.0 * np.sqrt(3)])
     expected_total_noise = np.sqrt(60.0 + 3.0 + 75.0)
     np.testing.assert_allclose(table["total_noise_e_rms"], [expected_total_noise])
+
+
+def test_detector_background_budget_table_flags_saturation():
+    diffuse_data = {
+        "channels": {
+            0: {
+                "image_plane_id": 0,
+                "total_rate_ph_s_pix": 2.0,
+            },
+        },
+    }
+    ztrain = FakeBudgetTrain()
+    ztrain.cmds = {"!DET.full_well": 50.0}
+
+    table = val.detector_background_budget_table(ztrain, post_diffuse_data=diffuse_data)
+
+    np.testing.assert_allclose(table["signal_fraction_of_full_well"], [1.26])
+    assert list(table["saturation_status"]) == ["saturated"]

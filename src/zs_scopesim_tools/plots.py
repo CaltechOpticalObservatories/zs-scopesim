@@ -294,14 +294,97 @@ def plot_detector_background_budget(table: Table):
     diffuse = np.asarray(table["post_diffuse_e_pix"], dtype=float)
     dark = np.asarray(table["dark_current_e_pix"], dtype=float)
     bias = np.asarray(table["bias_e_pix"], dtype=float)
+    if "additive_signal_e_pix" in table.colnames:
+        additive_signal = np.asarray(table["additive_signal_e_pix"], dtype=float)
+    else:
+        additive_signal = diffuse + dark
     signal_ax.bar(x, diffuse, width=0.7, label="post-disperser diffuse")
     signal_ax.bar(x, dark, width=0.7, bottom=diffuse, label="dark current")
     signal_ax.plot(x, bias, "o", color="black", label="bias offset")
+    if "full_well_e" in table.colnames:
+        full_well = np.asarray(table["full_well_e"], dtype=float)
+        first_full_well = True
+        for xi, well_depth in zip(x, full_well, strict=True):
+            if not np.isfinite(well_depth) or well_depth <= 0:
+                continue
+            signal_ax.hlines(
+                well_depth, xi - 0.36, xi + 0.36,
+                colors="tab:red", linewidth=2.5,
+                label="full well" if first_full_well else None,
+            )
+            first_full_well = False
     signal_ax.set_yscale("symlog", linthresh=1.0)
     signal_ax.set_xticks(x, channels)
     signal_ax.set_ylabel("Detector signal [e-/pix]")
     signal_ax.set_title("Additive Signal")
     signal_ax.grid(axis="y", alpha=0.2)
+    if "saturation_status" in table.colnames:
+        statuses = [str(value) for value in table["saturation_status"]]
+    elif "full_well_e" in table.colnames:
+        statuses = []
+        full_well = np.asarray(table["full_well_e"], dtype=float)
+        for signal, well_depth in zip(additive_signal, full_well, strict=True):
+            if not np.isfinite(well_depth) or well_depth <= 0:
+                statuses.append("unknown")
+            elif signal >= well_depth:
+                statuses.append("saturated")
+            elif signal >= 0.8 * well_depth:
+                statuses.append("near_saturation")
+            else:
+                statuses.append("ok")
+    else:
+        statuses = ["unknown"] * len(channels)
+    for tick, status in zip(signal_ax.get_xticklabels(), statuses, strict=True):
+        if status == "saturated":
+            tick.set_color("tab:red")
+            tick.set_fontweight("bold")
+        elif status == "near_saturation":
+            tick.set_color("tab:orange")
+
+    if "signal_fraction_of_full_well" in table.colnames:
+        well_fractions = np.asarray(table["signal_fraction_of_full_well"], dtype=float)
+    elif "full_well_e" in table.colnames:
+        full_well = np.asarray(table["full_well_e"], dtype=float)
+        well_fractions = np.full(len(additive_signal), np.nan)
+        valid = np.isfinite(full_well) & (full_well > 0)
+        well_fractions[valid] = additive_signal[valid] / full_well[valid]
+    else:
+        well_fractions = np.full(len(additive_signal), np.nan)
+
+    saturated = [
+        channel for channel, status in zip(channels, statuses, strict=True)
+        if status == "saturated"
+    ]
+    near_saturated = [
+        channel for channel, status in zip(channels, statuses, strict=True)
+        if status == "near_saturation"
+    ]
+    if saturated:
+        saturated_fractions = np.asarray([
+            fraction for fraction, status
+            in zip(well_fractions, statuses, strict=True)
+            if status == "saturated"
+        ])
+        finite_saturated = saturated_fractions[np.isfinite(saturated_fractions)]
+        max_fraction = (
+            np.nanmax(finite_saturated) if finite_saturated.size else np.nan
+        )
+        signal_ax.text(
+            0.02, 0.98,
+            f"SATURATED: {', '.join(saturated)} exceed full well "
+            f"(max {max_fraction:.2g}x)",
+            transform=signal_ax.transAxes, va="top", ha="left",
+            color="tab:red", fontsize="small", fontweight="bold",
+            bbox={"facecolor": "white", "edgecolor": "tab:red", "alpha": 0.85},
+        )
+    elif near_saturated:
+        signal_ax.text(
+            0.02, 0.98,
+            f"Near full well: {', '.join(near_saturated)}",
+            transform=signal_ax.transAxes, va="top", ha="left",
+            color="tab:orange", fontsize="small",
+            bbox={"facecolor": "white", "edgecolor": "tab:orange", "alpha": 0.85},
+        )
     signal_ax.legend(frameon=False, fontsize="small")
 
     width = 0.2

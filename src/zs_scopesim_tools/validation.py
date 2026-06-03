@@ -1871,6 +1871,14 @@ def detector_background_budget_table(
 
         diffuse_counts = diffuse_rate * exposure_time
         dark_counts = dark_rate * exposure_time
+        additive_signal = diffuse_counts + dark_counts
+        full_well = _resolved_detector_cmd_value(
+            ztrain.cmds, "!DET.full_well", detector_id, default=np.nan,
+        )
+        if np.isfinite(full_well) and full_well > 0:
+            full_well_fraction = additive_signal / full_well
+        else:
+            full_well_fraction = np.nan
         diffuse_noise = np.sqrt(max(diffuse_counts, 0.0))
         dark_noise = np.sqrt(max(dark_counts, 0.0))
         read_noise_total = read_noise_single * np.sqrt(read_ndit)
@@ -1890,7 +1898,11 @@ def detector_background_budget_table(
             "post_diffuse_e_pix": diffuse_counts,
             "dark_current_e_s_pix": dark_rate,
             "dark_current_e_pix": dark_counts,
+            "additive_signal_e_pix": additive_signal,
             "bias_e_pix": bias_level,
+            "full_well_e": full_well,
+            "signal_fraction_of_full_well": full_well_fraction,
+            "saturation_status": _saturation_status(full_well_fraction),
             "read_noise_e_rms": read_noise_total,
             "diffuse_shot_noise_e_rms": diffuse_noise,
             "dark_shot_noise_e_rms": dark_noise,
@@ -1934,6 +1946,49 @@ def _resolved_detector_meta(
     if isinstance(value, Mapping):
         value = from_currsys(value[detector_id], cmds)
     return float(value)
+
+
+def _resolved_detector_cmd_value(
+    cmds: Any,
+    key: str,
+    detector_id: int,
+    *,
+    default: float = np.nan,
+) -> float:
+    from scopesim.utils import from_currsys
+
+    try:
+        value = from_currsys(key, cmds)
+    except Exception:
+        return float(default)
+
+    if isinstance(value, Mapping):
+        if detector_id in value:
+            value = value[detector_id]
+        elif str(detector_id) in value:
+            value = value[str(detector_id)]
+        else:
+            return float(default)
+        value = from_currsys(value, cmds)
+    elif (
+        isinstance(value, (list, tuple, np.ndarray))
+        and not hasattr(value, "unit")
+    ):
+        if len(value) <= detector_id:
+            return float(default)
+        value = from_currsys(value[detector_id], cmds)
+
+    return float(value)
+
+
+def _saturation_status(full_well_fraction: float) -> str:
+    if not np.isfinite(full_well_fraction):
+        return "unknown"
+    if full_well_fraction >= 1.0:
+        return "saturated"
+    if full_well_fraction >= 0.8:
+        return "near_saturation"
+    return "ok"
 
 
 def _post_diffuse_rate_for_image_plane(
