@@ -1037,6 +1037,78 @@ def _readout_image_data(channel_hdul: Any) -> np.ndarray:
     return np.asarray(image_hdu.data, dtype=float)
 
 
+def plot_readout_delta_overview(
+    signal_hdul: Any,
+    reference_hdul: Any,
+    titles: list[str] | None = None,
+    *,
+    percentile: float = 99.5,
+):
+    """Plot source-minus-reference detector readout images."""
+    import matplotlib.pyplot as plt
+
+    signal_readouts = list(signal_hdul)
+    reference_readouts = list(reference_hdul)
+    if len(signal_readouts) != len(reference_readouts):
+        raise ValueError(
+            "signal_hdul and reference_hdul contain different readout counts: "
+            f"{len(signal_readouts)} != {len(reference_readouts)}"
+        )
+    titles = titles or [f"detector {idx}" for idx in range(len(signal_readouts))]
+    ncols = min(3, max(1, len(signal_readouts)))
+    nrows = int(np.ceil(len(signal_readouts) / ncols))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(4.4 * ncols, 3.6 * nrows),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    for ax, title, signal, reference in zip(
+        axes.flat, titles, signal_readouts, reference_readouts, strict=False,
+    ):
+        delta = _readout_image_data(signal) - _readout_image_data(reference)
+        finite = delta[np.isfinite(delta)]
+        if finite.size:
+            vmax = np.nanpercentile(np.abs(finite), percentile)
+            if not np.isfinite(vmax) or vmax <= 0:
+                vmax = np.nanmax(np.abs(finite))
+            if not np.isfinite(vmax) or vmax <= 0:
+                vmax = 1.0
+        else:
+            vmax = 1.0
+        im = ax.imshow(
+            delta,
+            origin="lower",
+            vmin=-vmax,
+            vmax=vmax,
+            cmap="coolwarm",
+            interpolation="nearest",
+        )
+        max_abs = np.nanmax(np.abs(finite)) if finite.size else 0.0
+        ax.set_title(f"{title} Source - Empty", pad=8)
+        ax.text(
+            0.02,
+            0.96,
+            f"max |delta| {max_abs:.3g}",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=9,
+            bbox={
+                "boxstyle": "round,pad=0.22",
+                "fc": "white",
+                "ec": "0.75",
+                "alpha": 0.78,
+            },
+        )
+        ax.axis("off")
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.025)
+    for ax in axes.flat[len(signal_readouts):]:
+        ax.axis("off")
+    return fig, axes
+
+
 def plot_readout_cross_dispersion_cut(
     hdul: Any,
     titles: list[str] | None = None,

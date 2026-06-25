@@ -102,6 +102,11 @@ def test_slit_frame_offsets_can_anchor_first_source_on_axis():
     np.testing.assert_allclose(y.to_value(u.arcsec), [0.0, 0.0], atol=1e-12)
 
 
+def test_angle_from_cmds_reads_pupil_angle_with_default():
+    assert sources.angle_from_cmds({"!OBS.pupil_angle": 37.5}) == 37.5 * u.deg
+    assert sources.angle_from_cmds({}, default=3 * u.deg) == 3 * u.deg
+
+
 def test_two_point_source_builds_slit_frame_table(monkeypatch):
     captured = {}
 
@@ -174,6 +179,7 @@ def test_field_angle_demo_sources_names_slit_frame_scenarios(monkeypatch):
     scenarios = sources.field_angle_demo_sources(
         along_separation=5 * u.arcsec,
         across_separation=0.9 * u.arcsec,
+        angle_on_slit=30 * u.deg,
         along_mag=15,
         across_mag=17,
     )
@@ -184,10 +190,19 @@ def test_field_angle_demo_sources_names_slit_frame_scenarios(monkeypatch):
     assert along.meta["name"] == "along_slit_centered"
     assert across.meta["name"] == "across_slit_one_off"
     assert along.meta["function_call"] == "field_angle_demo_sources"
-    assert across.meta["workflow_note"].startswith("Set the sky scene angle")
+    assert along.meta["scene_angle_on_slit"] == 30
+    assert across.meta["workflow_note"].startswith("Set !OBS.pupil_angle")
     assert captured[0].spectra == ["ab:15"]
     assert captured[1].spectra == ["ab:17"]
-    np.testing.assert_allclose(along.table["x"], [0.0, 0.0], atol=1e-12)
-    np.testing.assert_allclose(along.table["y"], [-2.5, 2.5])
-    np.testing.assert_allclose(across.table["x"], [0.0, 0.9])
-    np.testing.assert_allclose(across.table["y"], [0.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(along.table["x"], [-1.25, 1.25])
+    np.testing.assert_allclose(
+        along.table["y"], [-2.5 * np.cos(np.deg2rad(30)),
+                           2.5 * np.cos(np.deg2rad(30))],
+    )
+    np.testing.assert_allclose(
+        across.table["x"], [0.0, 0.9 * np.sin(np.deg2rad(120))],
+    )
+    np.testing.assert_allclose(
+        across.table["y"], [0.0, 0.9 * np.cos(np.deg2rad(120))],
+        atol=1e-12,
+    )

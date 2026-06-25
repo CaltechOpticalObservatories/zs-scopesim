@@ -16,6 +16,7 @@ from .plots import (
     plot_detector_background_budget,
     plot_emissivity_sanity,
     plot_post_disperser_diffuse_background,
+    plot_readout_delta_overview,
     plot_readout_cross_dispersion_cut,
     plot_readout_overview,
     plot_slit_adc_psf_scenes,
@@ -1076,7 +1077,11 @@ def _image_plane_pixel_area(ztrain: Any, image_plane_id: int) -> u.Quantity:
 def _telescope_area(ztrain: Any) -> u.Quantity:
     from scopesim.utils import from_currsys, quantify
 
-    return quantify(from_currsys("!TEL.area", ztrain.cmds), u.m**2)
+    value = from_currsys("!TEL.area", ztrain.cmds)
+    try:
+        return u.Quantity(value, u.m**2).to(u.m**2)
+    except Exception:
+        return quantify(value, u.m**2).to(u.m**2)
 
 
 def build_post_disperser_diffuse_background_data(
@@ -2510,7 +2515,7 @@ def build_slit_width_loss_data(
     """
     cmds = _cmds_from_train_or_cmds(train_or_cmds)
     slit_widths = (
-        np.linspace(0.15, 2.0, 20) * u.arcsec
+        np.linspace(0.25, 2.0, 20) * u.arcsec
         if slit_widths is None
         else _quantity_with_default_unit(slit_widths, u.arcsec)
     ).to(u.arcsec)
@@ -2883,6 +2888,220 @@ def science_truth_crosscheck_table(
             "note": _science_truth_note(status),
         })
     return Table(rows=rows)
+
+
+def source_photon_crosscheck_table(
+    source: Any,
+    ztrain: Any,
+    transmission_data: Mapping[str, Any],
+    *,
+    detector_budget: Table | None = None,
+    spectral_resolution: float | None = None,
+) -> Table:
+    """Return source photon anchors per resolution element by channel.
+
+    The source term is integrated over one ``lambda / R`` interval at each
+    channel midpoint and multiplied by a representative order throughput from
+    the transmission sanity data. It is intended as a scale check, not an
+    extracted-spectrum model.
+    """
+    if spectral_resolution is None:
+        spectral_resolution = _resolved_cmd_float(
+            ztrain.cmds, "!SIM.spectral.spectral_resolution",
+        )
+    telescope_area = _telescope_area(ztrain)
+    budget_by_channel = _budget_by_channel(detector_budget)
+
+    rows: list[dict[str, Any]] = []
+    for aperture_id, channel in transmission_data["channels"].items():
+        wave_mid_nm = _transmission_channel_mid_wavelength_nm(
+            transmission_data, channel,
+        )
+        resolution_element_nm = (
+            wave_mid_nm / spectral_resolution
+            if np.isfinite(wave_mid_nm) and np.isfinite(spectral_resolution)
+            and spectral_resolution > 0
+            else np.nan
+        )
+        if np.isfinite(resolution_element_nm):
+            wave_min = (wave_mid_nm - 0.5 * resolution_element_nm) * u.nm
+            wave_max = (wave_mid_nm + 0.5 * resolution_element_nm) * u.nm
+            source_rate = _source_photons_in_range(
+                source, wave_min, wave_max, telescope_area,
+            )
+        else:
+            source_rate = np.nan
+
+        throughput = _representative_channel_throughput(
+            transmission_data, channel, wave_mid_nm,
+        )
+        detector_rate = source_rate * throughput
+        budget = budget_by_channel.get(str(channel["label"]))
+        exposure_time = (
+            float(budget["exposure_time_s"]) if budget is not None else np.nan
+        )
+        rows.append({
+            "aperture_id": int(aperture_id),
+            "channel": str(channel["label"]),
+            "wavelength_mid_nm": wave_mid_nm,
+            "spectral_resolution_R": float(spectral_resolution),
+            "resolution_element_nm": resolution_element_nm,
+            "source_ph_s_resel_at_telescope": source_rate,
+            "representative_order_throughput": throughput,
+            "source_ph_s_resel_at_detector": detector_rate,
+            "exposure_time_s": exposure_time,
+            "source_e_resel": detector_rate * exposure_time,
+            "note": (
+                "Back-of-envelope source scale at channel midpoint; detector "
+                "image visibility still depends on trace mapping, slit loss, "
+                "PSF, extraction aperture, and background."
+            ),
+        })
+    return Table(rows=rows)
+
+
+def readout_delta_summary_table(
+    signal_hdul: Any,
+    reference_hdul: Any,
+    titles: list[str] | None = None,
+) -> Table:
+    """Summarize source-minus-reference detector readout differences."""
+    signal_readouts = list(signal_hdul)
+    reference_readouts = list(reference_hdul)
+    if len(signal_readouts) != len(reference_readouts):
+        raise ValueError(
+            "signal_hdul and reference_hdul contain different readout counts: "
+            f"{len(signal_readouts)} != {len(reference_readouts)}"
+        )
+    titles = titles or [f"detector {idx}" for idx in range(len(signal_readouts))]
+    rows = []
+    for idx, (title, signal, reference) in enumerate(
+        zip(titles, signal_readouts, reference_readouts, strict=False),
+    ):
+        delta = _readout_array(signal) - _readout_array(reference)
+        finite = delta[np.isfinite(delta)]
+        rows.append({
+            "readout_id": idx,
+            "channel": str(title),
+            "shape": "x".join(str(value) for value in delta.shape),
+            "sum_delta_e": float(np.nansum(delta)),
+            "positive_delta_e": float(np.nansum(np.clip(delta, 0, None))),
+            "negative_delta_e": float(np.nansum(np.clip(delta, None, 0))),
+            "max_delta_e": float(np.nanmax(finite)) if finite.size else np.nan,
+            "min_delta_e": float(np.nanmin(finite)) if finite.size else np.nan,
+            "max_abs_delta_e": (
+                float(np.nanmax(np.abs(finite))) if finite.size else np.nan
+            ),
+            "nonzero_pixels": int(np.count_nonzero(delta)),
+        })
+    return Table(rows=rows)
+
+
+def _budget_by_channel(detector_budget: Table | None) -> dict[str, Any]:
+    if detector_budget is None:
+        return {}
+    return {str(row["channel"]): row for row in detector_budget}
+
+
+def _transmission_channel_mid_wavelength_nm(
+    transmission_data: Mapping[str, Any],
+    channel: Mapping[str, Any],
+) -> float:
+    wave = u.Quantity(transmission_data["wave_nm"]).to_value(u.nm)
+    finite_ranges = []
+    for order in channel["orders"].values():
+        values = np.asarray(order["total"], dtype=float)
+        finite = np.isfinite(values)
+        if np.any(finite):
+            finite_ranges.append((np.nanmin(wave[finite]), np.nanmax(wave[finite])))
+    if finite_ranges:
+        return 0.5 * (
+            min(range_[0] for range_ in finite_ranges)
+            + max(range_[1] for range_ in finite_ranges)
+        )
+    return np.nan
+
+
+def _representative_channel_throughput(
+    transmission_data: Mapping[str, Any],
+    channel: Mapping[str, Any],
+    wave_mid_nm: float,
+) -> float:
+    if not np.isfinite(wave_mid_nm):
+        return np.nan
+    wave = u.Quantity(transmission_data["wave_nm"]).to_value(u.nm)
+    values = []
+    for order in channel["orders"].values():
+        total = np.asarray(order["total"], dtype=float)
+        finite = np.isfinite(total)
+        if not np.any(finite):
+            continue
+        if (
+            wave_mid_nm < np.nanmin(wave[finite])
+            or wave_mid_nm > np.nanmax(wave[finite])
+        ):
+            continue
+        values.append(float(np.interp(wave_mid_nm, wave[finite], total[finite])))
+    return float(np.nanmax(values)) if values else np.nan
+
+
+def _source_photons_in_range(
+    source: Any,
+    wave_min: u.Quantity,
+    wave_max: u.Quantity,
+    telescope_area: u.Quantity,
+) -> float:
+    from scopesim.source.source_utils import photons_in_range
+
+    total = 0.0
+    for spectrum, weight in _source_spectrum_weights(source):
+        photons = photons_in_range(
+            [spectrum],
+            wave_min.to(u.um),
+            wave_max.to(u.um),
+            area=telescope_area,
+        )[0]
+        total += float(photons.to_value(u.ph / u.s)) * weight
+    return total
+
+
+def _source_spectrum_weights(source: Any) -> list[tuple[Any, float]]:
+    weighted: list[tuple[Any, float]] = []
+    for field in getattr(source, "fields", []):
+        spectra = getattr(field, "spectra", {}) or {}
+        table = getattr(field, "field", None)
+        if hasattr(table, "colnames") and "ref" in table.colnames:
+            refs = np.asarray(table["ref"], dtype=int)
+            weights = (
+                np.asarray(table["weight"], dtype=float)
+                if "weight" in table.colnames
+                else np.ones(len(table), dtype=float)
+            )
+            for ref in np.unique(refs):
+                spectrum = spectra.get(int(ref), spectra.get(ref))
+                if spectrum is None:
+                    continue
+                weighted.append((
+                    spectrum,
+                    float(np.sum(weights[refs == ref])),
+                ))
+            continue
+
+        spectrum = getattr(field, "spectrum", None)
+        if spectrum is not None:
+            data = getattr(field, "data", None)
+            weight = float(np.nansum(data)) if data is not None else 1.0
+            weighted.append((spectrum, weight))
+    return weighted
+
+
+def _readout_array(channel_hdul: Any) -> np.ndarray:
+    image_hdu = (
+        channel_hdul
+        if hasattr(channel_hdul, "data")
+        else channel_hdul[1]
+    )
+    return np.asarray(image_hdu.data, dtype=float)
 
 
 def _post_diffuse_channels_by_image_plane(

@@ -199,6 +199,21 @@ def slit_frame_offsets(
     )
 
 
+def angle_from_cmds(
+    cmds: Any,
+    key: str = "!OBS.pupil_angle",
+    default: u.Quantity = 0.0 * u.deg,
+) -> u.Quantity:
+    """Return an angle setting from a ScopeSim command object."""
+    from scopesim.utils import from_currsys
+
+    try:
+        value = from_currsys(key, cmds)
+    except Exception:
+        value = default
+    return u.Quantity(value, u.deg).to(u.deg)
+
+
 def two_point_source(
     *,
     separation: u.Quantity = 1.0 * u.arcsec,
@@ -266,23 +281,25 @@ def field_angle_demo_sources(
     *,
     along_separation: u.Quantity = 5.0 * u.arcsec,
     across_separation: u.Quantity = 0.9 * u.arcsec,
+    angle_on_slit: u.Quantity = 0.0 * u.deg,
     along_mag: float = 15.0,
     across_mag: float = 17.0,
     spectrum: Any | None = None,
 ) -> OrderedDict[str, Any]:
     """Return the two source scenes used for field-angle/slit validation.
 
-    The user-facing workflow is to choose the sky scene and derotation angle so
-    the desired apparent pair angle lands on the slit. These sources represent
-    that apparent slit-frame geometry directly: one pair lies along the slit and
-    one lies across it with the second source off the slit.
+    The user-facing workflow is to change a ``!`` setting such as
+    ``!OBS.pupil_angle`` and rerun the notebook cell. ``angle_on_slit`` is that
+    apparent source-pair angle in the slit frame: 0 deg places the main pair
+    along the slit, and nonzero angles move the pair across the slit.
     """
+    angle_on_slit = u.Quantity(angle_on_slit, u.deg).to(u.deg)
     scenarios = OrderedDict([
         (
             "along_slit_centered",
             two_point_source(
                 separation=along_separation,
-                angle_on_slit=0 * u.deg,
+                angle_on_slit=angle_on_slit,
                 centered=True,
                 mag=along_mag,
                 spectrum=spectrum,
@@ -292,7 +309,7 @@ def field_angle_demo_sources(
             "across_slit_one_off",
             two_point_source(
                 separation=across_separation,
-                angle_on_slit=90 * u.deg,
+                angle_on_slit=angle_on_slit + 90 * u.deg,
                 centered=False,
                 mag=across_mag,
                 spectrum=spectrum,
@@ -313,9 +330,11 @@ def field_angle_demo_sources(
             "scenario": name,
             "function_call": "field_angle_demo_sources",
             "description": descriptions[name],
+            "scene_angle_on_slit": angle_on_slit.to_value(u.deg),
+            "scene_angle_on_slit_unit": "deg",
             "workflow_note": (
-                "Set the sky scene angle and derotation angle so this apparent "
-                "slit-frame source angle is reached."
+                "Set !OBS.pupil_angle or the equivalent derotation setting, "
+                "then rebuild this source scene and rerun observe/readout."
             ),
         })
     return scenarios

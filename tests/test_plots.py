@@ -54,6 +54,7 @@ def test_validation_reexports_plot_helpers():
         validation.plot_readout_cross_dispersion_cut
         is plots.plot_readout_cross_dispersion_cut
     )
+    assert validation.plot_readout_delta_overview is plots.plot_readout_delta_overview
     assert validation.plot_readout_overview is plots.plot_readout_overview
 
 
@@ -244,4 +245,19 @@ def test_readout_cross_dispersion_cut_plot_smoke():
     assert axes.shape == (1, 1)
     assert "central 10 cols" in axes[0, 0].get_title()
     assert len(axes[0, 0].lines) == 1
+    fig.clf()
+
+
+def test_readout_delta_overview_plot_smoke():
+    class FakeHDU:
+        def __init__(self, value):
+            self.data = np.full((4, 4), value, dtype=float)
+
+    fig, axes = plots.plot_readout_delta_overview(
+        [FakeHDU(3.0)], [FakeHDU(1.0)], titles=["B"],
+    )
+
+    assert axes.shape == (1, 1)
+    assert "Source - Empty" in axes[0, 0].get_title()
+    assert "max |delta| 2" in axes[0, 0].texts[0].get_text()
     fig.clf()

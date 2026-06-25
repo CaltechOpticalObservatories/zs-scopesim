@@ -4,6 +4,7 @@ import numpy as np
 from astropy import units as u
 from astropy.io import fits
 from astropy.table import Table
+from synphot import Empirical1D, SourceSpectrum
 from synphot.units import PHOTLAM
 
 from zs_scopesim_tools import validation as val
@@ -1128,3 +1129,84 @@ def test_science_truth_crosscheck_table_reports_physical_anchors():
     np.testing.assert_allclose(table["post_diffuse_ph_s_extraction"], [8.0])
     np.testing.assert_allclose(table["post_diffuse_e_extraction"], [240.0])
     assert "integrated image-plane background" in table["note"][0]
+
+
+def test_readout_delta_summary_table_reports_source_minus_reference():
+    class FakeHDU:
+        def __init__(self, data):
+            self.data = np.asarray(data, dtype=float)
+
+    table = val.readout_delta_summary_table(
+        [FakeHDU([[2.0, 3.0], [4.0, 5.0]])],
+        [FakeHDU([[1.0, 1.0], [1.0, 1.0]])],
+        titles=["B"],
+    )
+
+    assert list(table["channel"]) == ["B"]
+    assert list(table["shape"]) == ["2x2"]
+    np.testing.assert_allclose(table["sum_delta_e"], [10.0])
+    np.testing.assert_allclose(table["max_abs_delta_e"], [4.0])
+    assert list(table["nonzero_pixels"]) == [4]
+
+
+def test_source_photon_crosscheck_table_uses_resolution_element_and_throughput():
+    class FakeField:
+        def __init__(self, spectrum):
+            self.field = Table({
+                "x": [0.0, 1.0],
+                "y": [0.0, 0.0],
+                "ref": [0, 0],
+                "weight": [1.0, 2.0],
+            })
+            self.spectra = {0: spectrum}
+
+    class FakeSource:
+        def __init__(self, spectrum):
+            self.fields = [FakeField(spectrum)]
+
+    spectrum = SourceSpectrum(
+        Empirical1D,
+        points=[3900.0, 4100.0],
+        lookup_table=[1.0, 1.0],
+    )
+    source = FakeSource(spectrum)
+    ztrain = FakeBudgetTrain()
+    ztrain.cmds = {
+        "!TEL.area": "1 m2",
+        "!SIM.spectral.spectral_resolution": 40000.0,
+    }
+    transmission = {
+        "wave_nm": np.array([399.99, 400.0, 400.01]) * u.nm,
+        "channels": {
+            0: {
+                "label": "B",
+                "orders": {
+                    "B_1": {
+                        "total": np.array([0.5, 0.5, 0.5]),
+                    },
+                },
+            },
+        },
+    }
+    budget = Table({
+        "channel": ["B"],
+        "exposure_time_s": [10.0],
+    })
+
+    table = val.source_photon_crosscheck_table(
+        source,
+        ztrain,
+        transmission,
+        detector_budget=budget,
+    )
+
+    assert list(table["channel"]) == ["B"]
+    np.testing.assert_allclose(table["resolution_element_nm"], [0.01])
+    # 1 PHOTLAM over 0.1 A, 1 m2 telescope, summed weight 3, throughput 0.5.
+    np.testing.assert_allclose(
+        table["source_ph_s_resel_at_telescope"], [3000.0],
+    )
+    np.testing.assert_allclose(
+        table["source_ph_s_resel_at_detector"], [1500.0],
+    )
+    np.testing.assert_allclose(table["source_e_resel"], [15000.0])
