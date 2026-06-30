@@ -4,5 +4,6 @@
     <mapping directory="" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../ScopeSim" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../irdb" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/zshooter-exptime" vcs="Git" />
   </component>
 </project>

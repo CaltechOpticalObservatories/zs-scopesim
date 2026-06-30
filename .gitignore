@@ -196,3 +196,10 @@ cmake-build-*/
 
 # PyPI configuration file
 .pypirc
+/dev_notebooks/spec_echellogram.png
+/dev_notebooks/zspec_B.fits
+/dev_notebooks/zspec_G.fits
+/dev_notebooks/zspec_H.fits
+/dev_notebooks/zspec_K.fits
+/dev_notebooks/zspec_R.fits
+/dev_notebooks/zspec_YJ.fits
