@@ -90,16 +90,16 @@ def test_numeric_wave_step_is_interpreted_as_angstrom(tmp_path, monkeypatch):
 def test_slit_frame_offsets_uses_zero_degrees_along_slit():
     x, y = sources.slit_frame_offsets(2 * u.arcsec, 0 * u.deg)
 
-    np.testing.assert_allclose(x.to_value(u.arcsec), [0.0, 0.0], atol=1e-12)
-    np.testing.assert_allclose(y.to_value(u.arcsec), [-1.0, 1.0])
+    np.testing.assert_allclose(x.to_value(u.arcsec), [-1.0, 1.0])
+    np.testing.assert_allclose(y.to_value(u.arcsec), [0.0, 0.0], atol=1e-12)
 
 
 def test_slit_frame_offsets_can_anchor_first_source_on_axis():
     x, y = sources.slit_frame_offsets(
         2 * u.arcsec, 90 * u.deg, centered=False)
 
-    np.testing.assert_allclose(x.to_value(u.arcsec), [0.0, 2.0])
-    np.testing.assert_allclose(y.to_value(u.arcsec), [0.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(x.to_value(u.arcsec), [0.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(y.to_value(u.arcsec), [0.0, 2.0])
 
 
 def test_angle_from_cmds_reads_pupil_angle_with_default():
@@ -143,8 +143,8 @@ def test_two_point_source_builds_slit_frame_table(monkeypatch):
 
     assert source.meta["angle_on_slit"] == 90
     assert captured["spectra"] == ["ab:19"]
-    np.testing.assert_allclose(captured["table"]["x"], [0, 2])
-    np.testing.assert_allclose(captured["table"]["y"], [0, 0], atol=1e-12)
+    np.testing.assert_allclose(captured["table"]["x"], [0, 0], atol=1e-12)
+    np.testing.assert_allclose(captured["table"]["y"], [0, 2])
     assert captured["table"].meta["frame"] == "slit"
 
 
@@ -191,18 +191,20 @@ def test_field_angle_demo_sources_names_slit_frame_scenarios(monkeypatch):
     assert across.meta["name"] == "across_slit_one_off"
     assert along.meta["function_call"] == "field_angle_demo_sources"
     assert along.meta["scene_angle_on_slit"] == 30
-    assert across.meta["workflow_note"].startswith("Set !OBS.pupil_angle")
+    assert across.meta["workflow_note"].startswith("Set angle_on_slit")
     assert captured[0].spectra == ["ab:15"]
     assert captured[1].spectra == ["ab:17"]
-    np.testing.assert_allclose(along.table["x"], [-1.25, 1.25])
     np.testing.assert_allclose(
-        along.table["y"], [-2.5 * np.cos(np.deg2rad(30)),
+        along.table["x"], [-2.5 * np.cos(np.deg2rad(30)),
                            2.5 * np.cos(np.deg2rad(30))],
     )
     np.testing.assert_allclose(
-        across.table["x"], [0.0, 0.9 * np.sin(np.deg2rad(120))],
+        along.table["y"], [-1.25, 1.25],
     )
     np.testing.assert_allclose(
-        across.table["y"], [0.0, 0.9 * np.cos(np.deg2rad(120))],
+        across.table["x"], [0.0, 0.9 * np.cos(np.deg2rad(120))],
+    )
+    np.testing.assert_allclose(
+        across.table["y"], [0.0, 0.9 * np.sin(np.deg2rad(120))],
         atol=1e-12,
     )

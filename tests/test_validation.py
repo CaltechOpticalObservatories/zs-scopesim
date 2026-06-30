@@ -648,8 +648,8 @@ def test_auto_qe_selection_rejects_ambiguous_enabled_selectors():
 
 def test_slit_pair_status_table_marks_across_slit_source_outside():
     table = Table({
-        "x": [0.0, 1.0],
-        "y": [0.0, 0.0],
+        "x": [0.0, 0.0],
+        "y": [0.0, 1.0],
         "label": ["on", "off"],
     })
     table["x"].unit = u.arcsec

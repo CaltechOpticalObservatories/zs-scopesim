@@ -34,6 +34,10 @@ class FakeSource:
     fields = [FakeTableSourceField()]
 
 
+class EmptySource:
+    fields = []
+
+
 def test_validation_reexports_plot_helpers():
     assert validation.plot_source is plots.plot_source
     assert validation.plot_transmission_sanity is plots.plot_transmission_sanity
@@ -78,6 +82,24 @@ def test_plot_source_can_plot_individual_table_source_rows():
     assert len(axes[0, 1].lines) == 2
     labels = [line.get_label() for line in axes[0, 1].lines]
     assert labels == ["fake_source row 0", "fake_source row 1"]
+    fig.clf()
+
+
+def test_plot_source_reports_empty_source_fields():
+    with np.testing.assert_raises_regex(ValueError, "Source contains no fields"):
+        plots.plot_source(EmptySource())
+
+
+def test_plot_source_accepts_log_spectrum_options():
+    fig, axes = plots.plot_source(
+        FakeSource(),
+        wave=np.linspace(0.4, 0.8, 4) * u.um,
+        spectrum_yscale="log",
+        spectrum_linewidth=0.7,
+    )
+
+    assert axes[0, 1].get_yscale() == "log"
+    assert axes[0, 1].lines[0].get_linewidth() == 0.7
     fig.clf()
 
 
@@ -260,4 +282,30 @@ def test_readout_delta_overview_plot_smoke():
     assert axes.shape == (1, 1)
     assert "Source - Empty" in axes[0, 0].get_title()
     assert "max |delta| 2" in axes[0, 0].texts[0].get_text()
+    fig.clf()
+
+
+def test_readout_overview_uses_fractional_clip_as_quantile():
+    class FakeHDU:
+        data = np.arange(100, dtype=float).reshape(10, 10)
+
+    fig, axes = plots.plot_readout_overview([FakeHDU()], titles=["B"], clip=0.5)
+
+    assert axes[0, 0].images[0].get_clim() == (0.0, 49.5)
+    fig.clf()
+
+
+def test_readout_delta_overview_uses_absolute_clip_symmetrically():
+    class FakeHDU:
+        def __init__(self, data):
+            self.data = np.asarray(data, dtype=float)
+
+    fig, axes = plots.plot_readout_delta_overview(
+        [FakeHDU([[10, -10], [3, -3]])],
+        [FakeHDU([[0, 0], [0, 0]])],
+        titles=["B"],
+        clip=5,
+    )
+
+    assert axes[0, 0].images[0].get_clim() == (-5.0, 5.0)
     fig.clf()

@@ -177,17 +177,18 @@ def slit_frame_offsets(
 ) -> tuple[u.Quantity, u.Quantity]:
     """Return two source offsets in the slit frame.
 
-    The slit-frame convention is ``x`` across the slit and ``y`` along the
-    slit. ``angle_on_slit=0 deg`` therefore separates the pair along the slit;
-    ``angle_on_slit=90 deg`` separates the pair across the slit.
+    The slit-frame convention follows ScopeSim source coordinates and the
+    ZShooter slit files: ``x`` is along the slit length and ``y`` is across the
+    slit width. ``angle_on_slit=0 deg`` therefore separates the pair along the
+    slit; ``angle_on_slit=90 deg`` separates the pair across the slit.
 
     If ``centered`` is True, the pair is centered on ``(0, 0)``. If False,
     source 0 is placed at ``(0, 0)`` and source 1 receives the full offset.
     """
     sep = u.Quantity(separation).to(u.arcsec)
     angle = u.Quantity(angle_on_slit).to(u.rad)
-    dx = sep * np.sin(angle)
-    dy = sep * np.cos(angle)
+    dx = sep * np.cos(angle)
+    dy = sep * np.sin(angle)
     if centered:
         return (
             u.Quantity([-0.5 * dx.value, 0.5 * dx.value], dx.unit),
@@ -226,9 +227,9 @@ def two_point_source(
 ):
     """Build a two-point-source scene for slit-loss/ADC validation.
 
-    ``angle_on_slit`` is the desired apparent pair angle on the slit after the
-    user has set the scene/derotation geometry. The helper itself only builds
-    the source positions in that slit frame.
+    ``angle_on_slit`` is the desired apparent pair angle in the slit frame. The
+    helper itself only builds source positions; it does not inspect or apply
+    instrument derotation settings.
     """
     from scopesim.source.source import Source
     from scopesim.source.source_templates import ab_spectrum
@@ -265,8 +266,8 @@ def two_point_source(
         "separation_unit": "arcsec",
         "centered": centered,
         "frame": "slit",
-        "x_convention": "across slit",
-        "y_convention": "along slit",
+        "x_convention": "along slit",
+        "y_convention": "across slit",
     })
     source = Source(spectra=[spectrum], table=table)
     source.meta.update({
@@ -288,10 +289,9 @@ def field_angle_demo_sources(
 ) -> OrderedDict[str, Any]:
     """Return the two source scenes used for field-angle/slit validation.
 
-    The user-facing workflow is to change a ``!`` setting such as
-    ``!OBS.pupil_angle`` and rerun the notebook cell. ``angle_on_slit`` is that
-    apparent source-pair angle in the slit frame: 0 deg places the main pair
-    along the slit, and nonzero angles move the pair across the slit.
+    ``angle_on_slit`` is the explicit apparent source-pair angle in the slit
+    frame: 0 deg places the main pair along the slit, and nonzero angles move
+    the pair across the slit.
     """
     angle_on_slit = u.Quantity(angle_on_slit, u.deg).to(u.deg)
     scenarios = OrderedDict([
@@ -333,8 +333,8 @@ def field_angle_demo_sources(
             "scene_angle_on_slit": angle_on_slit.to_value(u.deg),
             "scene_angle_on_slit_unit": "deg",
             "workflow_note": (
-                "Set !OBS.pupil_angle or the equivalent derotation setting, "
-                "then rebuild this source scene and rerun observe/readout."
+                "Set angle_on_slit explicitly in the slit frame, then rebuild "
+                "this source scene and rerun observe/readout."
             ),
         })
     return scenarios

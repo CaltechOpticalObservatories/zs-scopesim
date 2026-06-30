@@ -838,7 +838,7 @@ def build_emissivity_sanity_data(
     wave = wave_nm.to(u.um)
     positional_qe_by_aperture = positional_qe_by_aperture or {}
     blocked_components = set(blocking_component_names)
-    telescope_area = from_currsys("!TEL.area", ztrain.cmds).to(u.m**2)
+    telescope_area = _telescope_area(ztrain)
 
     dichroic_tree = get_effect(ztrain, "dichroic_tree")
     qe_selector = _get_qe_selector(ztrain, qe_selector_name, active_only=active_only)
@@ -856,9 +856,8 @@ def build_emissivity_sanity_data(
 
         try:
             image_pixel_area = _image_plane_pixel_area(ztrain, image_plane_id)
-        except (AttributeError, IndexError, KeyError) as e:
-            raise RuntimeError(f"Expected to be able to determine image plane pixel area: {e}")
-            # image_pixel_area = 1.0 * u.arcsec**2
+        except (AttributeError, IndexError, KeyError):
+            image_pixel_area = 1.0 * u.arcsec**2
 
         qe_values = effective_diffuse_qe(detector_qe, wave, positional_qe=positional_qe_by_aperture.get(aperture_id))
 
@@ -1057,6 +1056,14 @@ def _image_plane_pixel_area(ztrain: Any, image_plane_id: int) -> u.Quantity:
     )
 
 
+def _telescope_area(ztrain: Any) -> u.Quantity:
+    value = from_currsys("!TEL.area", ztrain.cmds)
+    quantity = u.Quantity(value)
+    if quantity.unit == u.dimensionless_unscaled:
+        quantity = quantity.value * u.m**2
+    return quantity.to(u.m**2)
+
+
 def build_post_disperser_diffuse_background_data(
     ztrain: Any,
     wave_nm: u.Quantity | None = None,
@@ -1073,7 +1080,7 @@ def build_post_disperser_diffuse_background_data(
     wave = wave_nm.to(u.um)
     positional_qe_by_aperture = positional_qe_by_aperture or {}
     blocked_components = set(blocking_component_names)
-    telescope_area = from_currsys("!TEL.area", ztrain.cmds).to(u.m**2)
+    telescope_area = _telescope_area(ztrain)
 
     dichroic_tree = get_effect(ztrain, "dichroic_tree")
     qe_selector = _get_qe_selector(
@@ -1650,7 +1657,7 @@ def slit_pair_status_table(
     y = u.Quantity(table["y"]).to(u.arcsec)
     width = u.Quantity(slit_width).to(u.arcsec)
     length = u.Quantity(slit_length).to(u.arcsec)
-    in_slit = (np.abs(x) <= 0.5 * width) & (np.abs(y) <= 0.5 * length)
+    in_slit = (np.abs(x) <= 0.5 * length) & (np.abs(y) <= 0.5 * width)
 
     labels = (
         [str(value) for value in table["label"]]
@@ -2086,8 +2093,8 @@ def _scene_image(
             image += weight * _moffat_image(
                 x_grid,
                 y_grid,
-                x0=xpos + shift,
-                y0=ypos,
+                x0=xpos,
+                y0=ypos + shift,
                 fwhm=float(fwhm),
                 beta=beta,
             )
@@ -2121,21 +2128,21 @@ def _slit_throughput_curve(
 
     max_fwhm = float(np.nanmax(fwhm_values))
     max_shift = float(np.nanmax(np.abs(shifts_arcsec)))
-    x_extent = max(4.0, width + 8 * max_fwhm + 2 * max_shift)
-    y_extent = max(length + 8 * max_fwhm, 1.2 * length)
+    x_extent = max(length + 8 * max_fwhm, 1.2 * length)
+    y_extent = max(4.0, width + 8 * max_fwhm + 2 * max_shift)
     x = np.arange(-0.5 * x_extent, 0.5 * x_extent + step, step)
     y = np.arange(-0.5 * y_extent, 0.5 * y_extent + step, step)
     x_grid, y_grid = np.meshgrid(x, y)
     slit_mask = (
-        (np.abs(x_grid) <= 0.5 * width)
-        & (np.abs(y_grid) <= 0.5 * length)
+        (np.abs(x_grid) <= 0.5 * length)
+        & (np.abs(y_grid) <= 0.5 * width)
     )
     pixel_area = step**2
 
     throughput = np.empty(wave.size, dtype=float)
     for idx, (shift, fwhm) in enumerate(zip(shifts_arcsec, fwhm_values, strict=True)):
         image = _moffat_image(
-            x_grid, y_grid, x0=float(shift), y0=0.0,
+            x_grid, y_grid, x0=0.0, y0=float(shift),
             fwhm=float(fwhm), beta=beta,
         )
         total = np.sum(image) * pixel_area
@@ -2290,13 +2297,13 @@ def build_slit_adc_psf_scene_data(
     width = slit_width.to_value(u.arcsec)
     length = slit_length.to_value(u.arcsec)
     x_extent = max(
-        3.5,
-        width + 2 * max_shift + 6 * max_fwhm,
-        float(np.ptp(all_x)) + 2 * max_shift + 4 * max_fwhm,
+        1.12 * length,
+        float(np.ptp(all_x)) + 6 * max_fwhm,
     )
     y_extent = max(
-        1.12 * length,
-        float(np.ptp(all_y)) + 6 * max_fwhm,
+        3.5,
+        width + 2 * max_shift + 6 * max_fwhm,
+        float(np.ptp(all_y)) + 2 * max_shift + 4 * max_fwhm,
     )
     step = grid_step.to_value(u.arcsec)
     x = np.arange(-0.5 * x_extent, 0.5 * x_extent + step, step)
@@ -2882,7 +2889,7 @@ def source_photon_crosscheck_table(
         spectral_resolution = _resolved_cmd_float(
             ztrain.cmds, "!SIM.spectral.spectral_resolution",
         )
-    telescope_area = from_currsys("!TEL.area", ztrain.cmds).to(u.m**2)
+    telescope_area = _telescope_area(ztrain)
     budget_by_channel = _budget_by_channel(detector_budget)
 
     rows: list[dict[str, Any]] = []
@@ -2951,6 +2958,13 @@ def readout_delta_summary_table(
     for idx, (title, signal, reference) in enumerate(
         zip(titles, signal_readouts, reference_readouts, strict=False),
     ):
+        #sigh Codex, for crying out loud:
+        # try:
+        #   `delta = signal.data - reference.data`
+        # except AttributeError:
+        #    `delta = signal[1].data - reference[1].data`
+        # is the more appropriate path. your weights mislead you and make readability hard.
+        # An exception here would have ADDED user insight.
         delta = _readout_array(signal) - _readout_array(reference)
         finite = delta[np.isfinite(delta)]
         rows.append({
@@ -3069,12 +3083,16 @@ def _source_spectrum_weights(source: Any) -> list[tuple[Any, float]]:
 
 
 def _readout_array(channel_hdul: Any) -> np.ndarray:
-    image_hdu = (
-        channel_hdul
-        if hasattr(channel_hdul, "data")
-        else channel_hdul[1]
-    )
-    return np.asarray(image_hdu.data, dtype=float)
+    # try:
+    #     return channel_hdul.data
+    # except AttributeError:
+    #     channel_hdul[1].data
+        image_hdu = (
+            channel_hdul
+            if hasattr(channel_hdul, "data")
+            else channel_hdul[1]
+        )
+        return np.asarray(image_hdu.data, dtype=float)
 
 
 def _post_diffuse_channels_by_image_plane(

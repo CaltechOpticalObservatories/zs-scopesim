@@ -42,8 +42,18 @@ def _plot_spectrum_values(
     values: Any,
     *,
     label: str,
+    linewidth: float = 1.5,
+    alpha: float = 1.0,
+    linestyle: str = "-",
 ) -> None:
-    ax.plot(wave.to_value(u.um), _as_float_array(values), label=label)
+    ax.plot(
+        wave.to_value(u.um),
+        _as_float_array(values),
+        label=label,
+        lw=linewidth,
+        alpha=alpha,
+        ls=linestyle,
+    )
 
 
 def _evaluate_spectrum_values(spectrum: Any, wave: u.Quantity, weight: float = 1.0) -> Any:
@@ -83,6 +93,9 @@ def _plot_table_source_field(
     wave: u.Quantity,
     *,
     individual: bool,
+    spectrum_linewidth: float,
+    spectrum_alpha: float,
+    spectrum_linestyle: str,
 ) -> None:
     table = field.field
     x = _quantity_column(table, "x", u.arcsec).to_value(u.arcsec)
@@ -98,6 +111,8 @@ def _plot_table_source_field(
         else np.ones(len(table), dtype=float)
     )
     sizes = 36 + 84 * weights / max(np.nanmax(weights), 1.0)
+    ax_image.axhline(0, color="0.65", lw=0.8, zorder=0)
+    ax_image.axvline(0, color="0.65", lw=0.8, zorder=0)
     scatter = ax_image.scatter(
         x,
         y,
@@ -107,6 +122,7 @@ def _plot_table_source_field(
         edgecolors="black",
         linewidths=0.8,
         alpha=0.9,
+        zorder=3,
     )
     if len(table) <= 10:
         for idx, (xpos, ypos) in enumerate(zip(x, y, strict=True)):
@@ -116,9 +132,8 @@ def _plot_table_source_field(
                 xytext=(4, 4),
                 textcoords="offset points",
                 fontsize=8,
+                zorder=4,
             )
-    ax_image.axhline(0, color="0.65", lw=0.8)
-    ax_image.axvline(0, color="0.65", lw=0.8)
     ax_image.set_aspect("equal", adjustable="datalim")
     ax_image.set_xlabel("x [arcsec]")
     ax_image.set_ylabel("y [arcsec]")
@@ -145,6 +160,9 @@ def _plot_table_source_field(
                 wave,
                 values,
                 label=_row_label(source, table, row_index),
+                linewidth=spectrum_linewidth,
+                alpha=spectrum_alpha,
+                linestyle=spectrum_linestyle,
             )
         return
 
@@ -163,6 +181,9 @@ def _plot_table_source_field(
             wave,
             total_values,
             label=f"{_source_label(source)} total ({len(table)} points)",
+            linewidth=spectrum_linewidth,
+            alpha=spectrum_alpha,
+            linestyle=spectrum_linestyle,
         )
 
 
@@ -171,6 +192,10 @@ def _plot_image_source_field(
     ax_spectrum: Any,
     field: Any,
     wave: u.Quantity,
+    *,
+    spectrum_linewidth: float,
+    spectrum_alpha: float,
+    spectrum_linestyle: str,
 ) -> None:
     data = _source_field_image_data(field)
     if data is None:
@@ -195,6 +220,9 @@ def _plot_image_source_field(
             wave,
             _evaluate_spectrum_values(spectrum, wave),
             label="spectrum",
+            linewidth=spectrum_linewidth,
+            alpha=spectrum_alpha,
+            linestyle=spectrum_linestyle,
         )
     else:
         for ref, candidate in getattr(field, "spectra", {}).items():
@@ -203,6 +231,9 @@ def _plot_image_source_field(
                 wave,
                 _evaluate_spectrum_values(candidate, wave),
                 label=f"ref {ref}",
+                linewidth=spectrum_linewidth,
+                alpha=spectrum_alpha,
+                linestyle=spectrum_linestyle,
             )
 
 
@@ -211,12 +242,22 @@ def plot_source(
     wave: u.Quantity | None = None,
     *,
     individual: bool = False,
+    spectrum_yscale: str = "linear",
+    spectrum_linewidth: float = 1.5,
+    spectrum_alpha: float = 1.0,
+    spectrum_linestyle: str = "-",
 ):
     """Plot each source field's spatial profile/positions and spectrum."""
     import matplotlib.pyplot as plt
 
     wave = wave if wave is not None else np.linspace(0.3, 2.5, 1001) * u.um
     num_fields = len(source.fields)
+    if num_fields == 0:
+        raise ValueError(
+            "Source contains no fields. For point sources built with "
+            "scopesim.source.source.Source, pass x=[...], y=[...], and ref=[...] "
+            "arrays so ScopeSim creates a table-backed source field."
+        )
     fig, axs = plt.subplots(
         figsize=(6, 2 * num_fields),
         nrows=num_fields,
@@ -232,11 +273,23 @@ def plot_source(
             _plot_table_source_field(
                 source, ax_image, ax_spectrum, field, wave,
                 individual=individual,
+                spectrum_linewidth=spectrum_linewidth,
+                spectrum_alpha=spectrum_alpha,
+                spectrum_linestyle=spectrum_linestyle,
             )
         else:
-            _plot_image_source_field(ax_image, ax_spectrum, field, wave)
+            _plot_image_source_field(
+                ax_image,
+                ax_spectrum,
+                field,
+                wave,
+                spectrum_linewidth=spectrum_linewidth,
+                spectrum_alpha=spectrum_alpha,
+                spectrum_linestyle=spectrum_linestyle,
+            )
         ax_spectrum.set_title("Spectrum")
         ax_spectrum.set_xlabel("Wavelength [um]")
+        ax_spectrum.set_yscale(spectrum_yscale)
         ax_spectrum.grid(alpha=0.2)
         if ax_spectrum.get_legend_handles_labels()[0]:
             ax_spectrum.legend(frameon=False)
@@ -733,9 +786,9 @@ def plot_slit_pair_geometry(
 
     fig, ax = plt.subplots(figsize=(5, 5), constrained_layout=True)
     ax.add_patch(Rectangle(
-        (-0.5 * width, -0.5 * length),
-        width,
+        (-0.5 * length, -0.5 * width),
         length,
+        width,
         fill=False,
         lw=1.6,
         color="black",
@@ -747,13 +800,13 @@ def plot_slit_pair_geometry(
                     textcoords="offset points")
     ax.axhline(0, color="0.7", lw=0.8)
     ax.axvline(0, color="0.7", lw=0.8)
-    pad = max(width, np.ptp(x) if x.size > 1 else width, 0.25) * 0.7
-    ax.set_xlim(min(-width, x.min()) - pad, max(width, x.max()) + pad)
-    ax.set_ylim(min(-0.5 * length, y.min()) - pad,
-                max(0.5 * length, y.max()) + pad)
+    pad = max(width, np.ptp(y) if y.size > 1 else width, 0.25) * 0.7
+    ax.set_xlim(min(-0.5 * length, x.min()) - pad,
+                max(0.5 * length, x.max()) + pad)
+    ax.set_ylim(min(-width, y.min()) - pad, max(width, y.max()) + pad)
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel("Across slit [arcsec]")
-    ax.set_ylabel("Along slit [arcsec]")
+    ax.set_xlabel("Along slit [arcsec]")
+    ax.set_ylabel("Across slit [arcsec]")
     ax.legend(frameon=False)
     return fig, ax
 
@@ -806,9 +859,9 @@ def plot_slit_adc_psf_scenes(data: Mapping[str, Any]):
                 interpolation="nearest",
             )
             ax.add_patch(Rectangle(
-                (-0.5 * width, -0.5 * length),
-                width,
+                (-0.5 * length, -0.5 * width),
                 length,
+                width,
                 fill=False,
                 lw=2.4,
                 edgecolor="white",
@@ -829,9 +882,9 @@ def plot_slit_adc_psf_scenes(data: Mapping[str, Any]):
             ax.set_aspect("equal", adjustable="box")
             ax.set_title(f"{scenario_name}\n{variant['label']}", fontsize=10)
             if row == nrows - 1:
-                ax.set_xlabel("Across slit [arcsec]")
+                ax.set_xlabel("Along slit [arcsec]")
             if col == 0:
-                ax.set_ylabel("Along slit [arcsec]")
+                ax.set_ylabel("Across slit [arcsec]")
             if col == ncols - 1:
                 cbar = fig.colorbar(im, ax=ax, fraction=0.045, pad=0.02)
                 cbar.set_label("Relative PSF intensity")
@@ -983,51 +1036,6 @@ def plot_slit_width_loss(data: Mapping[str, Any]):
     return fig, axes
 
 
-def plot_readout_overview(hdul: Any, titles: list[str] | None = None):
-    """Plot detector readout images from a ScopeSim readout result."""
-    import matplotlib.pyplot as plt
-    from astropy.visualization import ZScaleInterval
-
-    readouts = list(hdul)
-    titles = titles or [f"detector {idx}" for idx in range(len(readouts))]
-    ncols = min(3, max(1, len(readouts)))
-    nrows = int(np.ceil(len(readouts) / ncols))
-    fig, axes = plt.subplots(
-        nrows,
-        ncols,
-        figsize=(4.4 * ncols, 3.6 * nrows),
-        squeeze=False,
-        constrained_layout=True,
-    )
-    interval = ZScaleInterval()
-    for ax, title, channel_hdul in zip(axes.flat, titles, readouts, strict=False):
-        image_hdu = (
-            channel_hdul
-            if hasattr(channel_hdul, "data")
-            else channel_hdul[1]
-        )
-        data = np.asarray(image_hdu.data, dtype=float)
-        finite = data[np.isfinite(data)]
-        if finite.size:
-            vmin, vmax = interval.get_limits(data)
-        else:
-            vmin, vmax = 0.0, 1.0
-        im = ax.imshow(
-            data,
-            origin="lower",
-            vmin=vmin,
-            vmax=vmax,
-            cmap="cividis",
-            interpolation="nearest",
-        )
-        ax.set_title(title)
-        ax.axis("off")
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.025)
-    for ax in axes.flat[len(readouts):]:
-        ax.axis("off")
-    return fig, axes
-
-
 def _readout_image_data(channel_hdul: Any) -> np.ndarray:
     image_hdu = (
         channel_hdul
@@ -1037,16 +1045,160 @@ def _readout_image_data(channel_hdul: Any) -> np.ndarray:
     return np.asarray(image_hdu.data, dtype=float)
 
 
+def _clip_fraction_label(clip: float) -> str:
+    return f"p{100.0 * clip:.4g}"
+
+
+def _readout_display_limits(
+    data: np.ndarray,
+    clip: float | None,
+    *,
+    symmetric: bool,
+) -> tuple[float, float, str]:
+    finite = data[np.isfinite(data)]
+    if finite.size == 0:
+        return (-1.0, 1.0, "no finite data") if symmetric else (0.0, 1.0, "no finite data")
+
+    if clip is None:
+        if symmetric:
+            limit = float(np.nanmax(np.abs(finite)))
+            if not np.isfinite(limit) or limit <= 0:
+                limit = 1.0
+            return -limit, limit, "unclipped"
+        vmin = float(np.nanmin(finite))
+        vmax = float(np.nanmax(finite))
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+            vmax = vmin + 1.0
+        return vmin, vmax, "unclipped"
+
+    clip = float(clip)
+    if not np.isfinite(clip) or clip <= 0:
+        raise ValueError("clip must be None or a positive value.")
+
+    if clip <= 1:
+        if symmetric:
+            limit = float(np.nanquantile(np.abs(finite), clip))
+            label = f"{_clip_fraction_label(clip)} |value|"
+        else:
+            vmin = float(np.nanmin(finite))
+            vmax = float(np.nanquantile(finite, clip))
+            label = _clip_fraction_label(clip)
+            if not np.isfinite(vmax) or vmax <= vmin:
+                vmax = float(np.nanmax(finite))
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+                vmax = vmin + 1.0
+            return vmin, vmax, label
+    else:
+        limit = clip
+        label = f"{clip:.4g}"
+        if not symmetric:
+            vmin = min(float(np.nanmin(finite)), 0.0)
+            vmax = clip
+            if not np.isfinite(vmax) or vmax <= vmin:
+                vmax = float(np.nanmax(finite))
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+                vmax = vmin + 1.0
+            return vmin, vmax, label
+
+    if not np.isfinite(limit) or limit <= 0:
+        limit = float(np.nanmax(np.abs(finite)))
+    if not np.isfinite(limit) or limit <= 0:
+        limit = 1.0
+    return -limit, limit, label
+
+
+def _readout_grid_axes(n_images: int):
+    import matplotlib.pyplot as plt
+
+    ncols = min(3, max(1, n_images))
+    nrows = int(np.ceil(n_images / ncols))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(4.4 * ncols, 3.6 * nrows),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    return fig, axes
+
+
+def _plot_readout_image_grid(
+    images: list[np.ndarray],
+    titles: list[str],
+    *,
+    clip: float | None,
+    symmetric: bool,
+    cmap: str,
+    title_suffix: str = "",
+    annotate_max_abs: bool = False,
+):
+    fig, axes = _readout_grid_axes(len(images))
+    for ax, title, data in zip(axes.flat, titles, images, strict=False):
+        vmin, vmax, clip_label = _readout_display_limits(
+            data, clip, symmetric=symmetric,
+        )
+        im = ax.imshow(
+            data,
+            origin="lower",
+            vmin=vmin,
+            vmax=vmax,
+            cmap=cmap,
+            interpolation="nearest",
+        )
+        ax.set_title(f"{title}{title_suffix}", pad=8)
+        if annotate_max_abs:
+            finite = data[np.isfinite(data)]
+            max_abs = np.nanmax(np.abs(finite)) if finite.size else 0.0
+            ax.text(
+                0.02,
+                0.96,
+                f"max |delta| {max_abs:.3g}\nclip {clip_label}",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=9,
+                bbox={
+                    "boxstyle": "round,pad=0.22",
+                    "fc": "white",
+                    "ec": "0.75",
+                    "alpha": 0.78,
+                },
+            )
+        ax.axis("off")
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.025)
+        cbar.set_label(f"clip {clip_label}")
+    for ax in axes.flat[len(images):]:
+        ax.axis("off")
+    return fig, axes
+
+
+def plot_readout_overview(
+    hdul: Any,
+    titles: list[str] | None = None,
+    *,
+    clip: float | None = 0.995,
+):
+    """Plot detector readout images from a ScopeSim readout result."""
+    readouts = list(hdul)
+    titles = titles or [f"detector {idx}" for idx in range(len(readouts))]
+    images = [_readout_image_data(channel_hdul) for channel_hdul in readouts]
+    return _plot_readout_image_grid(
+        images,
+        titles,
+        clip=clip,
+        symmetric=False,
+        cmap="cividis",
+    )
+
+
 def plot_readout_delta_overview(
     signal_hdul: Any,
     reference_hdul: Any,
     titles: list[str] | None = None,
     *,
-    percentile: float = 99.5,
+    clip: float | None = 0.995,
 ):
     """Plot source-minus-reference detector readout images."""
-    import matplotlib.pyplot as plt
-
     signal_readouts = list(signal_hdul)
     reference_readouts = list(reference_hdul)
     if len(signal_readouts) != len(reference_readouts):
@@ -1055,58 +1207,19 @@ def plot_readout_delta_overview(
             f"{len(signal_readouts)} != {len(reference_readouts)}"
         )
     titles = titles or [f"detector {idx}" for idx in range(len(signal_readouts))]
-    ncols = min(3, max(1, len(signal_readouts)))
-    nrows = int(np.ceil(len(signal_readouts) / ncols))
-    fig, axes = plt.subplots(
-        nrows,
-        ncols,
-        figsize=(4.4 * ncols, 3.6 * nrows),
-        squeeze=False,
-        constrained_layout=True,
+    images = [
+        _readout_image_data(signal) - _readout_image_data(reference)
+        for signal, reference in zip(signal_readouts, reference_readouts, strict=True)
+    ]
+    return _plot_readout_image_grid(
+        images,
+        titles,
+        clip=clip,
+        symmetric=True,
+        cmap="coolwarm",
+        title_suffix=" Source - Empty",
+        annotate_max_abs=True,
     )
-    for ax, title, signal, reference in zip(
-        axes.flat, titles, signal_readouts, reference_readouts, strict=False,
-    ):
-        delta = _readout_image_data(signal) - _readout_image_data(reference)
-        finite = delta[np.isfinite(delta)]
-        if finite.size:
-            vmax = np.nanpercentile(np.abs(finite), percentile)
-            if not np.isfinite(vmax) or vmax <= 0:
-                vmax = np.nanmax(np.abs(finite))
-            if not np.isfinite(vmax) or vmax <= 0:
-                vmax = 1.0
-        else:
-            vmax = 1.0
-        im = ax.imshow(
-            delta,
-            origin="lower",
-            vmin=-vmax,
-            vmax=vmax,
-            cmap="coolwarm",
-            interpolation="nearest",
-        )
-        max_abs = np.nanmax(np.abs(finite)) if finite.size else 0.0
-        ax.set_title(f"{title} Source - Empty", pad=8)
-        ax.text(
-            0.02,
-            0.96,
-            f"max |delta| {max_abs:.3g}",
-            transform=ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=9,
-            bbox={
-                "boxstyle": "round,pad=0.22",
-                "fc": "white",
-                "ec": "0.75",
-                "alpha": 0.78,
-            },
-        )
-        ax.axis("off")
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.025)
-    for ax in axes.flat[len(signal_readouts):]:
-        ax.axis("off")
-    return fig, axes
 
 
 def plot_readout_cross_dispersion_cut(
