@@ -12,6 +12,8 @@ from astropy import units as u
 from astropy.table import Table
 from synphot.units import PHOTLAM
 
+from scopesim.utils import from_currsys
+
 from .plots import (
     plot_detector_background_budget,
     plot_emissivity_sanity,
@@ -117,14 +119,12 @@ def _evaluate_diffuse_throughput(
         return _as_float_array(values)
     return evaluate_throughput(effect, wave)
 
-
-def _candidate_qe_effects(effect: Any) -> list[Any]:
-    if hasattr(effect, "wheel_effects"):
-        return list(effect.wheel_effects.values())
-    return [effect]
-
-
 def _looks_like_qe_effect(effect: Any) -> bool:
+    def _candidate_qe_effects(effect: Any) -> list[Any]:
+        if hasattr(effect, "wheel_effects"):
+            return list(effect.wheel_effects.values())
+        return [effect]
+
     name = effect_name(effect).lower()
     class_name = effect.__class__.__name__.lower()
     if "qe" in name or "quantumefficiency" in class_name:
@@ -831,64 +831,52 @@ def build_emissivity_sanity_data(
     diffuse_extraction_pixels: float = 1.0,
 ) -> dict[str, Any]:
     """Build split pre/post-disperser emissivity sanity-check data."""
+
     from scopesim.effects.illumination import integrate_spectral_background
 
     wave_nm = wave_nm if wave_nm is not None else np.linspace(300, 2500, 5000) * u.nm
     wave = wave_nm.to(u.um)
     positional_qe_by_aperture = positional_qe_by_aperture or {}
     blocked_components = set(blocking_component_names)
-    telescope_area = _telescope_area(ztrain)
+    telescope_area = from_currsys("!TEL.area", ztrain.cmds).to(u.m**2)
 
     dichroic_tree = get_effect(ztrain, "dichroic_tree")
-    qe_selector = _get_qe_selector(
-        ztrain, qe_selector_name, active_only=active_only,
-    )
+    qe_selector = _get_qe_selector(ztrain, qe_selector_name, active_only=active_only)
     trace_list = get_effect(ztrain, "trace_list_analytical")
     traces_for_aperture = traces_by_aperture(trace_list)
 
-    aperture_ids = [
-        int(value)
-        for value in dichroic_tree.table[dichroic_tree.table.colnames[0]]
-    ]
+    aperture_ids = dichroic_tree.table[dichroic_tree.table.colnames[0]].tolist()
+
     channels: OrderedDict[int, dict[str, Any]] = OrderedDict()
     details: list[dict[str, Any]] = []
     for aperture_id in aperture_ids:
         detector_qe = resolve_effect(qe_selector, aperture_id)
         traces = traces_for_aperture.get(aperture_id, [])
-        image_plane_id = (
-            int(traces[0].meta["image_plane_id"]) if traces else aperture_id
-        )
+        image_plane_id = int(traces[0].meta["image_plane_id"]) if traces else aperture_id
+
         try:
             image_pixel_area = _image_plane_pixel_area(ztrain, image_plane_id)
-        except (AttributeError, IndexError, KeyError):
-            image_pixel_area = 1.0 * u.arcsec**2
-        qe_values = effective_diffuse_qe(
-            detector_qe,
-            wave,
-            positional_qe=positional_qe_by_aperture.get(aperture_id),
-        )
+        except (AttributeError, IndexError, KeyError) as e:
+            raise RuntimeError(f"Expected to be able to determine image plane pixel area: {e}")
+            # image_pixel_area = 1.0 * u.arcsec**2
 
-        components = channel_optical_components(
-            ztrain, aperture_id, qe_selector=qe_selector,
-        )
+        qe_values = effective_diffuse_qe(detector_qe, wave, positional_qe=positional_qe_by_aperture.get(aperture_id))
+
+        components = channel_optical_components(ztrain, aperture_id, qe_selector=qe_selector)
+
         surface_rows = optical_surface_rows(components, wave, groups=groups)
-        phase_terms, counts, surface_details = optical_surface_emissivity_terms(
-            surface_rows, wave, qe_values=qe_values,
-        )
-        unblocked_rows = _rows_excluding_components(
-            surface_rows, blocked_components,
-        )
+        phase_terms, counts, surface_details = optical_surface_emissivity_terms(surface_rows, wave, qe_values=qe_values)
+
+        unblocked_rows = _rows_excluding_components(surface_rows, blocked_components)
+
         unblocked_phase_terms, _unblocked_counts, _unblocked_details = (
-            optical_surface_emissivity_terms(
-                unblocked_rows, wave, qe_values=qe_values,
-            )
+            optical_surface_emissivity_terms(unblocked_rows, wave, qe_values=qe_values)
         )
         pre_total = _sum_terms(phase_terms["pre_disperser"], wave.size)
         post_total = _sum_terms(phase_terms["post_disperser"], wave.size)
-        post_unblocked_total = _sum_terms(
-            unblocked_phase_terms["post_disperser"], wave.size,
-        )
+        post_unblocked_total = _sum_terms(unblocked_phase_terms["post_disperser"], wave.size)
         post_blocked_delta = post_unblocked_total - post_total
+
         diffuse_rate_per_pix = integrate_spectral_background(
             post_total * PHOTLAM,
             wave,
@@ -901,15 +889,10 @@ def build_emissivity_sanity_data(
             telescope_area=telescope_area,
             image_pixel_area=image_pixel_area,
         )
-        diffuse_extract_equiv = np.full(
-            wave.size, diffuse_rate_per_pix * diffuse_extraction_pixels,
-            dtype=float,
-        )
-        diffuse_unblocked_extract_equiv = np.full(
-            wave.size,
-            diffuse_unblocked_rate_per_pix * diffuse_extraction_pixels,
-            dtype=float,
-        )
+
+        diffuse_extract_equiv = np.full(wave.size, diffuse_rate_per_pix * diffuse_extraction_pixels, dtype=float)
+        diffuse_unblocked_extract_equiv = np.full(wave.size, diffuse_unblocked_rate_per_pix * diffuse_extraction_pixels,
+                                                  dtype=float)
 
         label = channel_label(aperture_id, traces)
         for row in surface_details:
@@ -1074,16 +1057,6 @@ def _image_plane_pixel_area(ztrain: Any, image_plane_id: int) -> u.Quantity:
     )
 
 
-def _telescope_area(ztrain: Any) -> u.Quantity:
-    from scopesim.utils import from_currsys, quantify
-
-    value = from_currsys("!TEL.area", ztrain.cmds)
-    try:
-        return u.Quantity(value, u.m**2).to(u.m**2)
-    except Exception:
-        return quantify(value, u.m**2).to(u.m**2)
-
-
 def build_post_disperser_diffuse_background_data(
     ztrain: Any,
     wave_nm: u.Quantity | None = None,
@@ -1100,7 +1073,7 @@ def build_post_disperser_diffuse_background_data(
     wave = wave_nm.to(u.um)
     positional_qe_by_aperture = positional_qe_by_aperture or {}
     blocked_components = set(blocking_component_names)
-    telescope_area = _telescope_area(ztrain)
+    telescope_area = from_currsys("!TEL.area", ztrain.cmds).to(u.m**2)
 
     dichroic_tree = get_effect(ztrain, "dichroic_tree")
     qe_selector = _get_qe_selector(
@@ -2909,7 +2882,7 @@ def source_photon_crosscheck_table(
         spectral_resolution = _resolved_cmd_float(
             ztrain.cmds, "!SIM.spectral.spectral_resolution",
         )
-    telescope_area = _telescope_area(ztrain)
+    telescope_area = from_currsys("!TEL.area", ztrain.cmds).to(u.m**2)
     budget_by_channel = _budget_by_channel(detector_budget)
 
     rows: list[dict[str, Any]] = []
