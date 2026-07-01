@@ -1265,6 +1265,12 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
     assert list(summary["channel"]) == ["B"]
     np.testing.assert_allclose(summary["trace_R_median"], [26.25])
     np.testing.assert_allclose(summary["spectral_element_width_median_pix"], [4.0])
+    np.testing.assert_allclose(
+        summary["typical_spectral_element_width_median_pix"],
+        [4.0],
+    )
+    np.testing.assert_allclose(summary["resel_footprint_min_pix"], [19.09090909])
+    np.testing.assert_allclose(summary["resel_footprint_max_pix"], [21.0])
 
     display_table = val.trace_resolution_summary_display_table(summary)
     assert list(display_table.columns) == [
@@ -1272,7 +1278,7 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
         "nyq R k", "pix/resel", "seeing",
     ]
     assert display_table.loc[0, "R k"] == "0.0"
-    assert display_table.loc[0, "pix/resel"] == "4.00"
+    assert display_table.loc[0, "pix/resel"] == "19.1-21.0"
 
 
 def test_detector_background_budget_table_combines_detector_terms():
