@@ -178,6 +178,47 @@ class FakeTraceList:
         }
 
 
+class ConstantGradient:
+    def __init__(self, dx, dy):
+        self.dx = dx
+        self.dy = dy
+
+    def gradient(self):
+        return (
+            lambda x, y: np.full(np.asarray(x).shape, self.dx, dtype=float),
+            lambda x, y: np.full(np.asarray(x).shape, self.dy, dtype=float),
+        )
+
+
+class FakeGeometryTrace:
+    trace_id = "B_1"
+    wave_min = 1.0
+    wave_max = 1.1
+
+    def __init__(self):
+        self.meta = {
+            "trace_id": self.trace_id,
+            "aperture_id": 0,
+            "image_plane_id": 0,
+            "extension_id": 2,
+            "nominal_fwhm_pix": 4.0,
+            "nominal_slit_width": 0.7,
+            "design_res": 20000.0,
+        }
+        self.xy2lam = ConstantGradient(1.0, 0.0)
+
+    def xilam2x(self, xi, lam):
+        return np.asarray(lam, dtype=float)
+
+    def xilam2y(self, xi, lam):
+        return np.asarray(xi, dtype=float) / 10.0
+
+
+class FakeGeometryTraceList:
+    def __init__(self):
+        self.spectral_traces = {"B_1": FakeGeometryTrace()}
+
+
 class FakeTraceEfficiency:
     include = True
     display_name = "trace_eff_analytical"
@@ -1147,6 +1188,58 @@ def test_trace_catalog_table_uses_in_memory_traces():
     assert list(table["aperture_id"]) == [0, 1]
     assert list(table["image_plane_id"]) == [2, 3]
     np.testing.assert_allclose(table["wave_min_um"], [0.3, 0.5])
+
+
+def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
+    header = fits.Header({
+        "NAXIS": 2,
+        "NAXIS1": 200,
+        "NAXIS2": 50,
+        "CTYPE1D": "LINEAR",
+        "CTYPE2D": "LINEAR",
+        "CUNIT1D": "mm",
+        "CUNIT2D": "mm",
+        "CRVAL1D": 0.0,
+        "CRVAL2D": 0.0,
+        "CRPIX1D": 1.0,
+        "CRPIX2D": 1.0,
+        "CDELT1D": 0.01,
+        "CDELT2D": 0.01,
+    })
+    train = type("FakeTraceResolutionTrain", (), {})()
+    train.cmds = {"!OBS.airmass": 1.0, "!OBS.seeing": 0.5}
+    train.image_planes = [FakeImagePlane(header)]
+    train.optics_manager = type("FakeOptics", (), {
+        "all_effects": [
+            named_effect(FakeGeometryTraceList(), "trace_list_analytical"),
+        ],
+    })()
+    monkeypatch.setattr(
+        val,
+        "_image_plane_pixel_area",
+        lambda _ztrain, _image_plane_id: 0.01 * u.arcsec**2,
+    )
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            None,
+        ),
+    )
+
+    table = val.trace_resolution_diagnostic_table(train, samples_per_trace=3)
+
+    assert len(table) == 3
+    np.testing.assert_allclose(table["dispersion_nm_pix"], [10.0, 10.0, 10.0])
+    np.testing.assert_allclose(table["resolving_power_R"], [25.0, 26.25, 27.5])
+    np.testing.assert_allclose(table["element_width_pix"], [4.0, 4.0, 4.0])
+    np.testing.assert_allclose(table["spatial_fwhm_pix"], [5.0, 5.0, 5.0])
+
+    summary = val.trace_resolution_summary_table(table)
+    assert list(summary["channel"]) == ["B"]
+    np.testing.assert_allclose(summary["trace_R_median"], [26.25])
+    np.testing.assert_allclose(summary["nominal_fwhm_pix"], [4.0])
 
 
 def test_detector_background_budget_table_combines_detector_terms():

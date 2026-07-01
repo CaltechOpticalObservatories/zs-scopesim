@@ -58,6 +58,10 @@ def test_validation_reexports_plot_helpers():
     assert validation.plot_slit_width_loss is plots.plot_slit_width_loss
     assert validation.plot_slit_pair_geometry is plots.plot_slit_pair_geometry
     assert (
+        validation.plot_trace_resolution_detector_maps
+        is plots.plot_trace_resolution_detector_maps
+    )
+    assert (
         validation.plot_readout_cross_dispersion_cut
         is plots.plot_readout_cross_dispersion_cut
     )
@@ -480,4 +484,43 @@ def test_readout_delta_overview_uses_absolute_clip_from_zero():
 
     assert axes[0, 0].images[0].get_clim() == (0.0, 5.0)
     assert "min delta -10" in axes[0, 0].texts[0].get_text()
+    fig.clf()
+
+
+def test_trace_resolution_detector_map_plot_smoke():
+    table = Table(rows=[
+        {
+            "channel": "B",
+            "image_plane_id": 0,
+            "trace_id": "B_1",
+            "detector_naxis1": 12,
+            "detector_naxis2": 10,
+            "detector_x_pix": 2.0,
+            "detector_y_pix": 3.0,
+            "wave_nm": 1000.0,
+            "dispersion_nm_pix": 0.05,
+            "resolving_power_R": 20000.0,
+            "seeing_fwhm_arcsec": 0.6,
+            "spatial_fwhm_pix": 4.0,
+        },
+        {
+            "channel": "B",
+            "image_plane_id": 0,
+            "trace_id": "B_1",
+            "detector_naxis1": 12,
+            "detector_naxis2": 10,
+            "detector_x_pix": 3.0,
+            "detector_y_pix": 3.0,
+            "wave_nm": 1005.0,
+            "dispersion_nm_pix": 0.05,
+            "resolving_power_R": 20100.0,
+            "seeing_fwhm_arcsec": 0.6,
+            "spatial_fwhm_pix": 4.0,
+        },
+    ])
+
+    fig, axes = plots.plot_trace_resolution_detector_maps(table)
+
+    assert axes[0, 0].images[0].get_array().shape == (10, 12)
+    assert "B image plane 0" in axes[0, 0].get_title()
     fig.clf()

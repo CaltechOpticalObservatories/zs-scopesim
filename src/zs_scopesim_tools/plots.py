@@ -1615,3 +1615,102 @@ def plot_readout_cross_dispersion_cut(
     for ax in axes.flat[len(readouts):]:
         ax.axis("off")
     return fig, axes
+
+
+def plot_trace_resolution_detector_maps(
+    table: Table,
+    *,
+    value_column: str = "resolving_power_R",
+    cmap: str = "viridis",
+    vmin: float | None = None,
+    vmax: float | None = None,
+):
+    """Plot trace resolving power as masked detector-plane images."""
+    import matplotlib.pyplot as plt
+
+    if len(table) == 0:
+        raise ValueError("trace resolution diagnostic table is empty.")
+    image_plane_ids = sorted({int(value) for value in table["image_plane_id"]})
+    ncols = min(3, max(1, len(image_plane_ids)))
+    nrows = int(np.ceil(len(image_plane_ids) / ncols))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(4.4 * ncols, 3.8 * nrows),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    values_k = np.asarray(table[value_column], dtype=float) / 1000.0
+    finite_values = values_k[np.isfinite(values_k)]
+    if finite_values.size == 0:
+        raise ValueError(f"{value_column!r} contains no finite values.")
+    if vmin is None:
+        vmin = float(np.nanpercentile(finite_values, 1))
+    if vmax is None:
+        vmax = float(np.nanpercentile(finite_values, 99))
+    if vmin == vmax:
+        vmin, vmax = vmin * 0.95, vmax * 1.05
+
+    colormap = plt.get_cmap(cmap).copy()
+    colormap.set_bad((0, 0, 0, 0))
+    image = None
+    median_lambda_over_dispersion = np.nanmedian(
+        np.asarray(table["wave_nm"], dtype=float)
+        / np.asarray(table["dispersion_nm_pix"], dtype=float)
+    )
+
+    for ax, image_plane_id in zip(axes.flat, image_plane_ids, strict=False):
+        rows = table[np.asarray(table["image_plane_id"], dtype=int) == image_plane_id]
+        nx = int(rows["detector_naxis1"][0])
+        ny = int(rows["detector_naxis2"][0])
+        if nx <= 0 or ny <= 0:
+            x = np.asarray(rows["detector_x_pix"], dtype=float)
+            y = np.asarray(rows["detector_y_pix"], dtype=float)
+            nx = int(np.ceil(np.nanmax(x))) + 1
+            ny = int(np.ceil(np.nanmax(y))) + 1
+        detector_map = np.full((ny, nx), np.nan, dtype=np.float32)
+        xpix = np.rint(np.asarray(rows["detector_x_pix"], dtype=float)).astype(int)
+        ypix = np.rint(np.asarray(rows["detector_y_pix"], dtype=float)).astype(int)
+        row_values = np.asarray(rows[value_column], dtype=float) / 1000.0
+        valid = (
+            np.isfinite(row_values)
+            & (xpix >= 0) & (xpix < nx)
+            & (ypix >= 0) & (ypix < ny)
+        )
+        detector_map[ypix[valid], xpix[valid]] = row_values[valid]
+        image = ax.imshow(
+            detector_map,
+            origin="lower",
+            cmap=colormap,
+            vmin=vmin,
+            vmax=vmax,
+            interpolation="nearest",
+        )
+        channels = sorted({str(value) for value in rows["channel"]})
+        seeing = float(np.nanmedian(np.asarray(rows["seeing_fwhm_arcsec"], dtype=float)))
+        spatial = float(np.nanmedian(np.asarray(rows["spatial_fwhm_pix"], dtype=float)))
+        ax.set_title(
+            f"{'/'.join(channels)} image plane {image_plane_id}\n"
+            f"seeing FWHM {seeing:.2f} arcsec = {spatial:.1f} pix",
+            pad=8,
+        )
+        ax.set_xlabel("Detector x [pix]")
+        ax.set_ylabel("Detector y [pix]")
+
+    for ax in axes.flat[len(image_plane_ids):]:
+        ax.axis("off")
+    cbar = fig.colorbar(image, ax=axes.ravel().tolist(), shrink=0.86)
+    cbar.set_label("Resolving power R [10^3]")
+    if np.isfinite(median_lambda_over_dispersion) and median_lambda_over_dispersion > 0:
+        def r_k_to_width(r_k):
+            return median_lambda_over_dispersion / (np.asarray(r_k) * 1000.0)
+
+        def width_to_r_k(width):
+            return median_lambda_over_dispersion / (np.asarray(width) * 1000.0)
+
+        secondary = cbar.ax.secondary_yaxis(
+            "right",
+            functions=(r_k_to_width, width_to_r_k),
+        )
+        secondary.set_ylabel("Implied spectral FWHM [pix]")
+    return fig, axes
