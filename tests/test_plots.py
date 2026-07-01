@@ -224,23 +224,48 @@ def test_slit_loss_plot_smoke():
 def test_slit_width_loss_plot_smoke():
     slit_widths = np.linspace(0.2, 1.0, 5) * u.arcsec
     data = {
+        "psf_modes": {
+            "no_ao": {"label": '0.6" NS'},
+            "ao": {"label": "AO"},
+        },
         "arms": {
             "VIS": {
                 "slit_widths_arcsec": slit_widths,
                 "current_slit_width_arcsec": 0.7 * u.arcsec,
                 "selector_slit_widths_arcsec": [0.3, 0.7] * u.arcsec,
+                "wavelengths_nm": [500.0] * u.nm,
                 "curves": {
                     "no_ao_500nm": {
-                        "label": "no AO, 500 nm",
                         "loss": np.linspace(0.8, 0.1, slit_widths.size),
                         "linestyle": "-",
+                        "psf_mode": "no_ao",
                         "wavelength_nm": 500.0,
                     },
                     "ao_500nm": {
-                        "label": "AO, 500 nm",
                         "loss": np.linspace(0.2, 0.01, slit_widths.size),
                         "linestyle": "--",
+                        "psf_mode": "ao",
                         "wavelength_nm": 500.0,
+                    },
+                },
+            },
+            "NIR": {
+                "slit_widths_arcsec": slit_widths,
+                "current_slit_width_arcsec": 0.7 * u.arcsec,
+                "selector_slit_widths_arcsec": [0.3, 0.7] * u.arcsec,
+                "wavelengths_nm": [1250.0] * u.nm,
+                "curves": {
+                    "no_ao_1250nm": {
+                        "loss": np.linspace(0.7, 0.08, slit_widths.size),
+                        "linestyle": "-",
+                        "psf_mode": "no_ao",
+                        "wavelength_nm": 1250.0,
+                    },
+                    "ao_1250nm": {
+                        "loss": np.linspace(0.1, 0.005, slit_widths.size),
+                        "linestyle": "--",
+                        "psf_mode": "ao",
+                        "wavelength_nm": 1250.0,
                     },
                 },
             },
@@ -249,9 +274,13 @@ def test_slit_width_loss_plot_smoke():
 
     fig, axes = plots.plot_slit_width_loss(data)
 
-    assert axes.shape == (1, 1)
+    assert axes.shape == (1, 2)
     assert len(axes[0, 0].lines) == 3
     assert len(axes[0, 0].collections) == 2
+    labels = [text.get_text() for text in fig.legends[0].texts]
+    assert '0.6" NS, 500/1250 nm' in labels
+    assert "AO, 500/1250 nm" in labels
+    assert "available slit widths" in labels
     fig.clf()
 
 

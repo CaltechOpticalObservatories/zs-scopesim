@@ -110,7 +110,13 @@ class FakeTEREffect:
         emission=0.0,
         **meta,
     ):
-        self.meta = {"name": "fake_ter", "action": "transmission", **meta}
+        self.meta = {
+            "name": "fake_ter",
+            "action": "transmission",
+            "throughput_group": "fake_ter",
+            "emission_phase": "none",
+            **meta,
+        }
         self.surface = FakeSurface(
             transmission=transmission,
             reflection=reflection,
@@ -310,9 +316,18 @@ class FakeScienceOpticsManager:
 
 
 class FakeScienceTrain:
-    cmds = {}
-
     def __init__(self, qe_selectors, optical_selectors=()):
+        self.cmds = {
+            "!TEL.area": "1 m2",
+            "!INST.plate_scale": 10.0,
+        }
+        header = fits.Header({
+            "CDELT1D": 0.015,
+            "CUNIT1D": "mm",
+            "CDELT2D": 0.015,
+            "CUNIT2D": "mm",
+        })
+        self.image_planes = [None, None, FakeImagePlane(header)]
         self.optics_manager = FakeScienceOpticsManager(
             qe_selectors, optical_selectors,
         )
@@ -400,7 +415,7 @@ def test_surface_group_for_row_prefers_explicit_metadata():
 
 def test_emission_phase_for_row_prefers_explicit_metadata():
     row = FakeSurfaceList().table[1]
-    assert val.emission_phase_for_row(row, "camera") == "post_disperser"
+    assert val.emission_phase_for_row(row) == "post_disperser"
 
 
 def test_emission_phase_for_row_normalizes_common_aliases():
@@ -408,9 +423,61 @@ def test_emission_phase_for_row_normalizes_common_aliases():
     assert val.emission_phase_for_row(row) == "post_disperser"
 
 
-def test_emission_phase_for_row_falls_back_to_camera_post_disperser():
-    row = Table({"name": ["VIS_Camera_1"]})[0]
-    assert val.emission_phase_for_row(row, "camera") == "post_disperser"
+def test_surface_group_for_row_rejects_missing_metadata():
+    row = Table({"name": ["VIS_Camera_1"], "emission_phase": ["post_disperser"]})[0]
+
+    with np.testing.assert_raises_regex(ValueError, "throughput_group"):
+        val.surface_group_for_row(row)
+
+
+def test_emission_phase_for_row_rejects_missing_metadata():
+    row = Table({"name": ["VIS_Camera_1"], "throughput_group": ["camera"]})[0]
+
+    with np.testing.assert_raises_regex(ValueError, "emission_phase"):
+        val.emission_phase_for_row(row)
+
+
+def test_optical_surface_rows_accepts_explicit_missing_component_group():
+    wave = np.linspace(1, 2, 4) * u.um
+    effect = FakeTEREffect(transmission=0.5, emission_phase="post_disperser")
+    del effect.meta["throughput_group"]
+    selector = FakeNamedSelector("untagged_filter_selector", "aperture_id", {0: effect})
+    components = [{
+        "selector": selector,
+        "selector_name": "untagged_filter_selector",
+        "effect": effect,
+    }]
+
+    rows = val.optical_surface_rows(
+        components,
+        wave,
+        component_metadata={
+            "untagged_filter_selector": {"throughput_group": "blocking_filter"},
+        },
+    )
+
+    assert rows[0]["group"] == "blocking_filter"
+    assert rows[0]["emission_phase"] == "post_disperser"
+
+
+def test_optical_surface_rows_rejects_conflicting_component_group():
+    wave = np.linspace(1, 2, 4) * u.um
+    effect = FakeTEREffect(transmission=0.5, throughput_group="configured")
+    selector = FakeNamedSelector("tagged_filter_selector", "aperture_id", {0: effect})
+    components = [{
+        "selector": selector,
+        "selector_name": "tagged_filter_selector",
+        "effect": effect,
+    }]
+
+    with np.testing.assert_raises_regex(ValueError, "conflicts"):
+        val.optical_surface_rows(
+            components,
+            wave,
+            component_metadata={
+                "tagged_filter_selector": {"throughput_group": "override"},
+            },
+        )
 
 
 def test_effective_diffuse_qe_uses_average_positional_qe():
@@ -472,7 +539,10 @@ def test_build_transmission_sanity_data_includes_extra_optical_selector():
         optical_selectors=[FakeNamedSelector(
             "ir_blocking_filter_selector",
             "aperture_id",
-            {0: FakeTEREffect(transmission=0.25)},
+            {0: FakeTEREffect(
+                transmission=0.25,
+                throughput_group="ir_blocking_filter",
+            )},
         )],
     )
 
@@ -519,9 +589,12 @@ def test_build_emissivity_sanity_data_applies_downstream_extra_selector(monkeypa
     extra_selector = FakeNamedSelector(
         "ir_blocking_filter_selector",
         "aperture_id",
-        {0: FakeTEREffect(transmission=0.25)},
+        {0: FakeTEREffect(
+            transmission=0.25,
+            throughput_group="ir_blocking_filter",
+            emission_phase="post_disperser",
+        )},
     )
-    extra_selector.meta["emission_phase"] = "postdisperser"
     train = FakeScienceTrain(
         [FakeNamedSelector(
             "detector_qe_selector",
@@ -531,6 +604,9 @@ def test_build_emissivity_sanity_data_applies_downstream_extra_selector(monkeypa
         optical_selectors=[extra_selector],
     )
     monkeypatch.setattr(val, "_telescope_area", lambda _ztrain: 1 * u.m**2)
+    monkeypatch.setattr(
+        val, "_image_plane_pixel_area", lambda _ztrain, _id: 1 * u.arcsec**2,
+    )
 
     data = val.build_emissivity_sanity_data(
         train, wave_nm=wave_nm, qe_selector_name=None,
@@ -568,7 +644,11 @@ def test_post_disperser_diffuse_data_applies_downstream_extra_selector(monkeypat
         optical_selectors=[FakeNamedSelector(
             "ir_blocking_filter_selector",
             "aperture_id",
-            {0: FakeTEREffect(transmission=0.25)},
+            {0: FakeTEREffect(
+                transmission=0.25,
+                throughput_group="ir_blocking_filter",
+                emission_phase="post_disperser",
+            )},
         )],
     )
     train.image_planes = [None, None, FakeImagePlane(fits.Header())]
@@ -739,6 +819,7 @@ def test_build_slit_adc_psf_scene_data_uses_physical_scene_images():
         slit_length=4.0 * u.arcsec,
         wave_nm=np.linspace(400, 700, 5) * u.nm,
         grid_step=0.2 * u.arcsec,
+        allow_diagnostic_psf=True,
     )
 
     assert list(data["variants"]) == ["ad_only", "adc_residual"]
@@ -757,6 +838,7 @@ def test_build_slit_loss_data_returns_losses_between_zero_and_one():
         n_wave=5,
         slit_length=4.0 * u.arcsec,
         grid_step=0.25 * u.arcsec,
+        allow_diagnostic_psf=True,
     )
 
     curves = data["arms"]["VIS"]["curves"]
@@ -765,6 +847,17 @@ def test_build_slit_loss_data_returns_losses_between_zero_and_one():
     for curve in curves.values():
         assert np.all(curve["loss"] >= 0)
         assert np.all(curve["loss"] <= 1)
+
+
+def test_build_slit_loss_data_requires_configured_psf_by_default():
+    with np.testing.assert_raises_regex(ValueError, "No active ScopeSim"):
+        val.build_slit_loss_data(
+            _slit_adc_cmds(),
+            arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
+            n_wave=5,
+            slit_length=4.0 * u.arcsec,
+            grid_step=0.25 * u.arcsec,
+        )
 
 
 def test_build_slit_loss_data_includes_ao_mode_when_psf_supports_it():
@@ -855,6 +948,7 @@ def test_build_slit_width_loss_data_uses_configured_scopesim_psf_fwhm():
     )
 
     arm = data["arms"]["VIS"]
+    assert data["psf_modes"]["no_ao"]["label"] == '0.6" NS'
     np.testing.assert_allclose(
         arm["selector_slit_widths_arcsec"].to_value(u.arcsec),
         [0.33, 0.5, 0.7, 1.25],
@@ -875,68 +969,6 @@ def test_build_slit_width_loss_data_uses_configured_scopesim_psf_fwhm():
     )
     assert set(effect.seen_fwhm_units) == {u.um}
     assert set(effect.seen_wave_units) == {u.um}
-
-
-def test_slit_loss_summary_table_computes_throughput():
-    table = val.slit_loss_summary_table([
-        {"scenario": "adc_on", "source": "source_0", "input_signal": 10, "output_signal": 7},
-        {"scenario": "adc_on", "source": "source_1", "input_signal": 10, "output_signal": 0},
-    ])
-
-    np.testing.assert_allclose(table["throughput"], [0.7, 0.0])
-
-
-def test_surface_list_emissivity_terms_splits_phases_and_applies_qe():
-    wave = np.linspace(1, 2, 4) * u.um
-    qe_values = np.full(wave.size, 0.5)
-
-    terms, counts, details = val.surface_list_emissivity_terms(
-        FakeSurfaceList(), wave, qe_values=qe_values)
-
-    np.testing.assert_allclose(
-        terms["pre_disperser"]["preoptics"],
-        np.full(wave.size, 80.0),
-    )
-    np.testing.assert_allclose(
-        terms["post_disperser"]["camera"],
-        np.full(wave.size, 1.0),
-    )
-    assert counts["pre_disperser:preoptics"] == 1
-    assert counts["post_disperser:camera"] == 1
-    assert details[0]["qe_applied"] is False
-    assert details[1]["qe_applied"] is True
-
-
-def test_surface_list_emissivity_terms_rejects_unknown_phase():
-    surface_list = FakeSurfaceList()
-    surface_list.table["emission_phase"][0] = "typo"
-    wave = np.linspace(1, 2, 4) * u.um
-
-    with np.testing.assert_raises_regex(ValueError, "Unknown emission_phase"):
-        val.surface_list_emissivity_terms(surface_list, wave)
-
-
-def test_surface_list_post_disperser_diffuse_terms_uses_post_phase_and_qe():
-    wave = np.linspace(1, 2, 4) * u.um
-    qe_values = np.full(wave.size, 0.5)
-
-    spectra, details = val.surface_list_post_disperser_diffuse_terms(
-        FakeSurfaceList(), wave, qe_values=qe_values,
-    )
-
-    assert list(spectra) == ["camera"]
-    np.testing.assert_allclose(spectra["camera"].value, np.full(wave.size, 1.0))
-    included = [row for row in details if row["included_as_diffuse"]]
-    assert [row["surface"] for row in included] == ["Camera"]
-
-
-def test_surface_list_post_disperser_diffuse_terms_rejects_unknown_phase():
-    surface_list = FakeSurfaceList()
-    surface_list.table["emission_phase"][1] = "typo"
-    wave = np.linspace(1, 2, 4) * u.um
-
-    with np.testing.assert_raises_regex(ValueError, "Unknown emission_phase"):
-        val.surface_list_post_disperser_diffuse_terms(surface_list, wave)
 
 
 def test_image_plane_pixel_area_handles_detector_wcs_headers():
@@ -966,6 +998,55 @@ def test_post_disperser_diffuse_effect_consistency_table_compares_rates():
     np.testing.assert_allclose(table["helper_rel_delta"], [0.01])
 
 
+def test_post_disperser_diffuse_effect_consistency_passes_component_metadata(monkeypatch):
+    helper_data = {
+        "channels": {
+            0: {
+                "label": "B",
+                "image_plane_id": 2,
+                "pixel_area": 0.01 * u.arcsec**2,
+                "total_rate_ph_s_pix": 1.0,
+            },
+        },
+    }
+    component_metadata = {
+        "ir_blocking_filter_selector": {"throughput_group": "ir_blocking_filter"},
+    }
+    train = FakeTrainWithDiffuseEffect()
+    diffuse_effect = train.optics_manager.all_effects[0].wheel_effects[2]
+    diffuse_effect._waveset = lambda: np.array([350.0, 360.0]) * u.nm
+    seen_metadata = []
+
+    def fake_build_post_diffuse(
+        _ztrain,
+        *,
+        wave_nm,
+        component_metadata,
+        qe_selector_name,
+        active_only,
+    ):
+        seen_metadata.append(component_metadata)
+        np.testing.assert_allclose(wave_nm.to_value(u.nm), [350.0, 360.0])
+        assert qe_selector_name == "detector_qe_selector"
+        assert active_only is True
+        return helper_data
+
+    monkeypatch.setattr(
+        val,
+        "build_post_disperser_diffuse_background_data",
+        fake_build_post_diffuse,
+    )
+
+    table = val.post_disperser_diffuse_effect_consistency_table(
+        train,
+        helper_data,
+        component_metadata=component_metadata,
+    )
+
+    assert seen_metadata == [component_metadata]
+    np.testing.assert_allclose(table["matched_rel_delta"], [0.0])
+
+
 def test_validate_post_disperser_diffuse_effect_consistency_rejects_mismatch():
     table = Table({
         "matched_rel_delta": [0.0, 1e-3],
@@ -973,57 +1054,6 @@ def test_validate_post_disperser_diffuse_effect_consistency_rejects_mismatch():
 
     with np.testing.assert_raises_regex(ValueError, "mismatch"):
         val.validate_post_disperser_diffuse_effect_consistency(table, rtol=1e-6)
-
-
-def test_copy_image_plane_data_returns_detached_arrays():
-    class DataPlane:
-        def __init__(self):
-            self.hdu = fits.ImageHDU(data=np.ones((2, 2)))
-
-    ztrain = type("Train", (), {"image_planes": [DataPlane()]})()
-
-    copied = val.copy_image_plane_data(ztrain)
-    ztrain.image_planes[0].hdu.data[0, 0] = 9
-
-    assert list(copied) == [0]
-    np.testing.assert_allclose(copied[0], np.ones((2, 2)))
-
-
-def test_image_plane_delta_summary_compares_uniform_expected_rates():
-    with_effect = {
-        2: np.full((2, 3), 4.25),
-        3: np.full((2, 2), 8.5),
-    }
-    without_effect = {
-        2: np.full((2, 3), 1.25),
-        3: np.full((2, 2), 4.5),
-    }
-    expected = Table({
-        "image_plane_id": [2, 3],
-        "effect_rate_ph_s_pix": [3.0, 4.0],
-    })
-
-    table = val.image_plane_delta_summary(
-        with_effect, without_effect, expected_rates=expected,
-    )
-
-    assert list(table["image_plane_id"]) == [2, 3]
-    assert list(table["shape"]) == ["2x3", "2x2"]
-    np.testing.assert_allclose(table["mean_delta_ph_s_pix"], [3.0, 4.0])
-    np.testing.assert_allclose(table["std_delta_ph_s_pix"], [0.0, 0.0])
-    np.testing.assert_allclose(table["expected_rel_delta"], [0.0, 0.0])
-    val.validate_image_plane_delta_summary(table)
-
-
-def test_validate_image_plane_delta_summary_rejects_nonuniform_delta():
-    table = Table({
-        "expected_rel_delta": [0.0],
-        "std_delta_ph_s_pix": [0.2],
-        "mean_delta_ph_s_pix": [1.0],
-    })
-
-    with np.testing.assert_raises_regex(ValueError, "not spatially uniform"):
-        val.validate_image_plane_delta_summary(table)
 
 
 def test_dichroic_path_throughput_uses_tree_actions():
@@ -1090,6 +1120,23 @@ def test_detector_background_budget_table_flags_saturation():
 
     np.testing.assert_allclose(table["signal_fraction_of_full_well"], [1.26])
     assert list(table["saturation_status"]) == ["saturated"]
+
+
+def test_detector_background_budget_table_requires_full_well_command():
+    ztrain = FakeBudgetTrain()
+
+    with np.testing.assert_raises_regex(ValueError, "!DET.full_well"):
+        val.detector_background_budget_table(
+            ztrain,
+            post_diffuse_data={
+                "channels": {
+                    0: {
+                        "image_plane_id": 0,
+                        "total_rate_ph_s_pix": 2.0,
+                    },
+                },
+            },
+        )
 
 
 def test_science_truth_crosscheck_table_reports_physical_anchors():
@@ -1210,3 +1257,26 @@ def test_source_photon_crosscheck_table_uses_resolution_element_and_throughput()
         table["source_ph_s_resel_at_detector"], [1500.0],
     )
     np.testing.assert_allclose(table["source_e_resel"], [15000.0])
+
+
+def test_source_photon_crosscheck_table_rejects_missing_transmission():
+    class FakeSource:
+        fields = []
+
+    ztrain = FakeBudgetTrain()
+    ztrain.cmds = {
+        "!TEL.area": "1 m2",
+        "!SIM.spectral.spectral_resolution": 40000.0,
+    }
+    transmission = {
+        "wave_nm": np.array([400.0, 401.0]) * u.nm,
+        "channels": {
+            0: {
+                "label": "B",
+                "orders": {"B_1": {"total": np.array([np.nan, np.nan])}},
+            },
+        },
+    }
+
+    with np.testing.assert_raises_regex(ValueError, "no finite transmission"):
+        val.source_photon_crosscheck_table(FakeSource(), ztrain, transmission)

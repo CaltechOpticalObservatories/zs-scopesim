@@ -96,14 +96,47 @@ def disable_scopesim_top_level_catch() -> None:
 
 
 def warning_prevent_sync_alt_ra_dec(cmd: Any) -> None:
-    """Populate alt/ra/dec command keys to avoid repeated ScopeSim sync warnings."""
-    from scopesim.utils import get_observation_info_from_cmds
+    """Populate AltAz command keys without letting RA/Dec override airmass."""
+    from astropy import units as u
+    from astropy.coordinates import AltAz
+    from scopesim.utils import (
+        airmass2zendist,
+        from_currsys,
+        get_observation_info_from_cmds,
+    )
 
-    target, _location, _time = get_observation_info_from_cmds(cmd)
-    cmd["!OBS.alt"] = float(target.alt.to("deg").value)
-    icrs_target = target.transform_to("icrs")
-    cmd["!OBS.ra"] = str(icrs_target.ra.to("deg")) #TODO convert to h:m:s
-    cmd["!OBS.dec"] = str(icrs_target.dec.to("deg"))
+    def cmd_value(key: str, default: Any = None) -> Any:
+        try:
+            return from_currsys(key, cmd)
+        except (KeyError, ValueError):
+            return default
+
+    def degree_value(value: Any) -> float:
+        quantity = u.Quantity(value)
+        if quantity.unit == u.dimensionless_unscaled:
+            return float(quantity.value)
+        return float(quantity.to_value(u.deg))
+
+    alt = cmd_value("!OBS.alt")
+    az = cmd_value("!OBS.az", 0.0)
+    airmass = cmd_value("!OBS.airmass")
+    if alt is None and airmass is not None:
+        alt = 90.0 - airmass2zendist(float(airmass))
+    if alt is not None:
+        cmd["!OBS.alt"] = degree_value(alt)
+        cmd["!OBS.az"] = degree_value(az)
+    else:
+        target, location, time = get_observation_info_from_cmds(cmd)
+        if hasattr(target, "alt") and hasattr(target, "az"):
+            altaz_target = target
+        else:
+            altaz_target = target.transform_to(
+                AltAz(obstime=time, location=location),
+            )
+        cmd["!OBS.alt"] = float(altaz_target.alt.to("deg").value)
+        cmd["!OBS.az"] = float(altaz_target.az.to("deg").value)
+    cmd["!OBS.ra"] = None
+    cmd["!OBS.dec"] = None
 
 
 def ignore_warnings() -> None:

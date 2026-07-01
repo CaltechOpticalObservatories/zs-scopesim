@@ -966,6 +966,38 @@ def plot_slit_width_loss(data: Mapping[str, Any]):
     import matplotlib.pyplot as plt
 
     arms = data["arms"]
+    if len(arms) != 2:
+        raise ValueError(
+            "plot_slit_width_loss expects the matched two-arm data produced by "
+            "build_slit_width_loss_data."
+        )
+    arm_names = list(arms)
+    arm_waves = {
+        name: u.Quantity(arms[name]["wavelengths_nm"]).to_value(u.nm)
+        for name in arm_names
+    }
+    n_waves = len(arm_waves[arm_names[0]])
+    if any(len(values) != n_waves for values in arm_waves.values()):
+        raise ValueError("Matched slit-width loss arms have different wavelengths.")
+
+    colors = plt.cm.viridis(np.linspace(0.12, 0.88, n_waves))
+    curve_labels: dict[tuple[str, str, float], str] = {}
+    curve_colors: dict[tuple[str, float], Any] = {}
+    psf_modes = data["psf_modes"]
+    for color, wave_pair in zip(
+        colors,
+        zip(*(arm_waves[name] for name in arm_names), strict=True),
+        strict=True,
+    ):
+        wave_text = "/".join(f"{wave_nm:.0f}" for wave_nm in wave_pair)
+        for arm_name, wave_nm in zip(arm_names, wave_pair, strict=True):
+            wave_key = round(float(wave_nm), 9)
+            curve_colors[(arm_name, wave_key)] = color
+            for psf_mode, psf_spec in psf_modes.items():
+                curve_labels[(arm_name, psf_mode, wave_key)] = (
+                    f"{psf_spec['label']}, {wave_text} nm"
+                )
+
     fig, axes = plt.subplots(
         1,
         len(arms),
@@ -975,22 +1007,16 @@ def plot_slit_width_loss(data: Mapping[str, Any]):
     )
     for ax, (arm_name, arm) in zip(axes.flat, arms.items(), strict=True):
         slit_widths = u.Quantity(arm["slit_widths_arcsec"]).to_value(u.arcsec)
-        wave_values = sorted({
-            float(curve["wavelength_nm"])
-            for curve in arm["curves"].values()
-        })
-        colors = plt.cm.viridis(np.linspace(0.12, 0.88, len(wave_values)))
-        color_map = dict(zip(wave_values, colors, strict=True))
         for curve in arm["curves"].values():
-            wave_nm = float(curve["wavelength_nm"])
-            color = color_map[wave_nm]
+            wave_key = round(float(curve["wavelength_nm"]), 9)
+            color = curve_colors[(arm_name, wave_key)]
             ax.plot(
                 slit_widths,
                 curve["loss"],
                 lw=2.4,
                 color=color,
                 ls=curve.get("linestyle", "-"),
-                label=curve["label"],
+                label=curve_labels[(arm_name, curve["psf_mode"], wave_key)],
             )
             selector_slits = u.Quantity(
                 arm.get("selector_slit_widths_arcsec", []),
@@ -1009,6 +1035,7 @@ def plot_slit_width_loss(data: Mapping[str, Any]):
                     edgecolor=color,
                     linewidth=1.2,
                     zorder=4,
+                    label="available slit widths",
                 )
 
         current_slit = u.Quantity(
@@ -1026,10 +1053,15 @@ def plot_slit_width_loss(data: Mapping[str, Any]):
         ax.set_xlim(slit_widths.min(), slit_widths.max())
         ax.grid(alpha=0.25)
 
-    handles, labels = axes.flat[0].get_legend_handles_labels()
+    legend_entries: OrderedDict[str, Any] = OrderedDict()
+    for ax in axes.flat:
+        handles, labels = ax.get_legend_handles_labels()
+        for handle, label in zip(handles, labels, strict=True):
+            legend_entries.setdefault(label, handle)
     fig.legend(
-        handles, labels, loc="outside lower center",
-        ncol=min(4, max(1, len(handles))),
+        list(legend_entries.values()), list(legend_entries),
+        loc="outside lower center",
+        ncol=min(4, max(1, len(legend_entries))),
         frameon=False,
         fontsize="small",
     )

@@ -40,7 +40,11 @@ def effect_name(effect: Any) -> str:
 
 
 def active_effects(ztrain: Any) -> list[Any]:
-    """Return included effects from an optical train."""
+    """Return included effects from an optical train.
+
+    ScopeSim-refactor candidate: optical-train effect lookup should live on
+    the train or optics manager instead of in notebook validation code.
+    """
     return [
         eff for eff in ztrain.optics_manager.all_effects
         if getattr(eff, "include", True)
@@ -48,7 +52,11 @@ def active_effects(ztrain: Any) -> list[Any]:
 
 
 def get_effect(ztrain: Any, display_name: str, *, active_only: bool = True) -> Any:
-    """Fetch one active optical-train effect by display name."""
+    """Fetch one optical-train effect by display name.
+
+    ScopeSim-refactor candidate: exact effect lookup by notebook-facing name is
+    a general optical-train inspection primitive.
+    """
     effects = active_effects(ztrain) if active_only else ztrain.optics_manager.all_effects
     matches = [eff for eff in effects if effect_name(eff) == display_name]
     if len(matches) != 1:
@@ -61,7 +69,11 @@ def get_effect(ztrain: Any, display_name: str, *, active_only: bool = True) -> A
 
 
 def resolve_effect(effect: Any, selector_value: Any = None) -> Any:
-    """Return a plain effect, or one selected entry from a SelectorWheel."""
+    """Return a plain effect, or one selected entry from a SelectorWheel.
+
+    ScopeSim-refactor candidate: selector-wheel resolution should be exposed by
+    ScopeSim's selector effects.
+    """
     if not hasattr(effect, "wheel_effects"):
         return effect
     if selector_value is None:
@@ -77,11 +89,6 @@ def resolve_effect(effect: Any, selector_value: Any = None) -> Any:
             f"{effect_name(effect)!r} has no selector value "
             f"{selector_value!r}; available {keys}"
         ) from exc
-
-
-def get_arm_effect(ztrain: Any, display_name: str, aperture_id: int) -> Any:
-    """Fetch one selected arm/channel effect from an optical train."""
-    return resolve_effect(get_effect(ztrain, display_name), aperture_id)
 
 
 def _as_float_array(values: Any) -> np.ndarray:
@@ -196,33 +203,68 @@ def _is_surface_effect(effect: Any) -> bool:
     )
 
 
-def _selected_aperture_effect(effect: Any, aperture_id: int) -> Any | None:
-    if not hasattr(effect, "wheel_effects"):
-        return None
-    if getattr(effect, "meta", {}).get("selector_key") != "aperture_id":
-        return None
-    try:
-        return resolve_effect(effect, aperture_id)
-    except KeyError:
-        return None
-
-
-def _surface_effect_group_name(parent: Any, effect: Any) -> str:
+def _surface_effect_group_name(
+    parent: Any,
+    effect: Any,
+    component_metadata: Mapping[str, Any] | None = None,
+) -> str:
+    configured_group = None
     for meta in (getattr(effect, "meta", {}), getattr(parent, "meta", {})):
         group_name = _clean_metadata_value(meta.get("throughput_group"))
         if group_name is not None:
-            return group_name
+            configured_group = group_name
+            break
 
-    name = effect_name(parent)
-    return name[:-9] if name.endswith("_selector") else name
+    override_group = _clean_metadata_value(
+        (component_metadata or {}).get("throughput_group"),
+    )
+    if configured_group is not None and override_group is not None:
+        if configured_group != override_group:
+            raise ValueError(
+                f"{effect_name(parent)!r} configured throughput_group "
+                f"{configured_group!r} conflicts with explicit override "
+                f"{override_group!r}."
+            )
+    if configured_group is not None:
+        return configured_group
+    if override_group is not None:
+        return override_group
+
+    raise ValueError(
+        f"{effect_name(parent)!r} selected {effect_name(effect)!r} without "
+        "throughput_group metadata."
+    )
 
 
-def _surface_effect_phase_name(parent: Any, effect: Any) -> str:
+def _surface_effect_phase_name(
+    parent: Any,
+    effect: Any,
+    component_metadata: Mapping[str, Any] | None = None,
+) -> str:
+    configured_phase = None
     for meta in (getattr(effect, "meta", {}), getattr(parent, "meta", {})):
         phase_name = _clean_emission_phase(meta.get("emission_phase"))
         if phase_name is not None:
-            return phase_name
-    return "none"
+            configured_phase = phase_name
+            break
+    override_phase = _clean_emission_phase(
+        (component_metadata or {}).get("emission_phase"),
+    )
+    if configured_phase is not None and override_phase is not None:
+        if configured_phase != override_phase:
+            raise ValueError(
+                f"{effect_name(parent)!r} configured emission_phase "
+                f"{configured_phase!r} conflicts with explicit override "
+                f"{override_phase!r}."
+            )
+    if configured_phase is not None:
+        return configured_phase
+    if override_phase is not None:
+        return override_phase
+    raise ValueError(
+        f"{effect_name(parent)!r} selected {effect_name(effect)!r} without "
+        "emission_phase metadata."
+    )
 
 
 def _surface_effect_action_name(effect: Any) -> str:
@@ -243,14 +285,24 @@ def channel_optical_components(
     *,
     qe_selector: Any | None = None,
 ) -> list[dict[str, Any]]:
-    """Return active per-aperture optical components before trace mapping."""
+    """Return active per-aperture optical components before trace mapping.
+
+    ScopeSim-refactor candidate: this is optical-train path introspection and
+    should eventually be provided by the train/configuration layer.
+    """
     excluded_ids = {id(qe_selector)} if qe_selector is not None else set()
     components: list[dict[str, Any]] = []
     for parent in active_effects(ztrain):
         if id(parent) in excluded_ids or _looks_like_qe_effect(parent):
             continue
-        effect = _selected_aperture_effect(parent, aperture_id)
-        if effect is None or _looks_like_qe_effect(effect):
+        if not hasattr(parent, "wheel_effects"):
+            continue
+        if getattr(parent, "meta", {}).get("selector_key") != "aperture_id":
+            continue
+        if aperture_id not in parent.wheel_effects:
+            continue
+        effect = resolve_effect(parent, aperture_id)
+        if _looks_like_qe_effect(effect):
             continue
         if not (_is_surface_list_effect(effect) or _is_surface_effect(effect)):
             continue
@@ -265,9 +317,10 @@ def channel_optical_components(
 def optical_surface_rows(
     components: list[dict[str, Any]],
     wave: u.Quantity,
-    groups: Mapping[str, tuple[str, ...]] | None = None,
+    component_metadata: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Flatten discovered optical components into ordered surface rows."""
+    component_metadata = component_metadata or {}
     rows: list[dict[str, Any]] = []
     for component in components:
         parent = component["selector"]
@@ -283,8 +336,8 @@ def optical_surface_rows(
             for row in effect.table:
                 surface_name = str(_row_scalar(row, name_col))
                 action_name = str(_row_scalar(row, action_col))
-                group_name = surface_group_for_row(row, groups)
-                phase_name = emission_phase_for_row(row, group_name)
+                group_name = surface_group_for_row(row)
+                phase_name = emission_phase_for_row(row)
                 surface = effect.surfaces[surface_name]
                 rows.append({
                     "component": selector_name,
@@ -307,8 +360,9 @@ def optical_surface_rows(
 
         surface = effect.surface
         action_name = _surface_effect_action_name(effect)
-        group_name = _surface_effect_group_name(parent, effect)
-        phase_name = _surface_effect_phase_name(parent, effect)
+        metadata = component_metadata.get(selector_name, {})
+        group_name = _surface_effect_group_name(parent, effect, metadata)
+        phase_name = _surface_effect_phase_name(parent, effect, metadata)
         rows.append({
             "component": selector_name,
             "surface_name": selector_name,
@@ -353,15 +407,6 @@ def fetch_effect_spectrum_or_transmission(
     raise TypeError(f"Cannot fetch spectrum/transmission from {target!r}")
 
 
-def default_surface_groups() -> OrderedDict[str, tuple[str, ...]]:
-    """Fallback group rules for older optics lists without group metadata."""
-    return OrderedDict([
-        ("preoptics", ("Window", "ADC", "Derotator", "PreOpt", "Fold")),
-        ("collimator", ("Col", "Mangin")),
-        ("camera", ("Camera",)),
-    ])
-
-
 def _real_colname(name: str, colnames: list[str] | tuple[str, ...]) -> str | None:
     name_lower = name.lower()
     for colname in colnames:
@@ -399,46 +444,38 @@ def _clean_emission_phase(value: Any) -> str | None:
     return aliases.get(key, phase_name)
 
 
-def surface_group_for_name(
-    surface_name: str,
-    groups: Mapping[str, tuple[str, ...]] | None = None,
-) -> str:
-    """Return fallback throughput group from a surface name."""
-    groups = groups or default_surface_groups()
-    return next(
-        (name for name, patterns in groups.items()
-         if any(pattern in surface_name for pattern in patterns)),
-        "other",
-    )
-
-
-def surface_group_for_row(
-    row: Any,
-    groups: Mapping[str, tuple[str, ...]] | None = None,
-) -> str:
-    """Return explicit row throughput group, falling back to name patterns."""
+def surface_group_for_row(row: Any) -> str:
+    """Return explicit row throughput group."""
     group_col = _real_colname("throughput_group", row.colnames)
-    if group_col is not None:
-        group_name = _clean_metadata_value(_row_scalar(row, group_col))
-        if group_name is not None:
-            return group_name
-
     name_col = _real_colname("name", row.colnames)
-    surface_name = str(_row_scalar(row, name_col))
-    return surface_group_for_name(surface_name, groups)
+    surface_name = str(_row_scalar(row, name_col)) if name_col else repr(row)
+    if group_col is None:
+        raise ValueError(
+            f"Surface row {surface_name!r} has no throughput_group column."
+        )
+    group_name = _clean_metadata_value(_row_scalar(row, group_col))
+    if group_name is None:
+        raise ValueError(
+            f"Surface row {surface_name!r} has an empty throughput_group."
+        )
+    return group_name
 
 
-def emission_phase_for_row(row: Any, group_name: str | None = None) -> str:
-    """Return explicit row emission phase, falling back conservatively."""
+def emission_phase_for_row(row: Any) -> str:
+    """Return explicit row emission phase."""
     phase_col = _real_colname("emission_phase", row.colnames)
-    if phase_col is not None:
-        phase_name = _clean_emission_phase(_row_scalar(row, phase_col))
-        if phase_name is not None:
-            return phase_name
-
-    if group_name == "camera":
-        return "post_disperser"
-    return "pre_disperser"
+    name_col = _real_colname("name", row.colnames)
+    surface_name = str(_row_scalar(row, name_col)) if name_col else repr(row)
+    if phase_col is None:
+        raise ValueError(
+            f"Surface row {surface_name!r} has no emission_phase column."
+        )
+    phase_name = _clean_emission_phase(_row_scalar(row, phase_col))
+    if phase_name is None:
+        raise ValueError(
+            f"Surface row {surface_name!r} has an empty emission_phase."
+        )
+    return phase_name
 
 
 def ter_property_sources(surface: Any) -> dict[str, str]:
@@ -477,33 +514,6 @@ def evaluate_ter_property(
     return evaluate_curve(curve, wave)
 
 
-def surface_list_group_throughputs(
-    surface_list: Any,
-    wave: u.Quantity,
-    groups: Mapping[str, tuple[str, ...]] | None = None,
-) -> tuple[OrderedDict[str, np.ndarray], dict[str, int]]:
-    """Return grouped throughputs for one SurfaceList."""
-    name_col = _real_colname("name", surface_list.table.colnames)
-    action_col = _real_colname("action", surface_list.table.colnames)
-
-    grouped: OrderedDict[str, np.ndarray] = OrderedDict()
-    counts: dict[str, int] = {}
-
-    for row in surface_list.table:
-        surface_name = str(_row_scalar(row, name_col))
-        action_name = str(_row_scalar(row, action_col))
-        group_name = surface_group_for_row(row, groups)
-        surface = surface_list.surfaces[surface_name]
-
-        if group_name not in grouped:
-            grouped[group_name] = np.ones(wave.size, dtype=float)
-            counts[group_name] = 0
-        grouped[group_name] *= evaluate_curve(getattr(surface, action_name), wave)
-        counts[group_name] += 1
-
-    return grouped, counts
-
-
 def optical_surface_group_throughputs(
     rows: list[dict[str, Any]],
     wave: u.Quantity,
@@ -519,35 +529,6 @@ def optical_surface_group_throughputs(
         grouped[group_name] *= row["action_values"]
         counts[group_name] += 1
     return grouped, counts
-
-
-def surface_list_emissivity_terms(
-    surface_list: Any,
-    wave: u.Quantity,
-    groups: Mapping[str, tuple[str, ...]] | None = None,
-    qe_values: np.ndarray | None = None,
-) -> tuple[dict[str, OrderedDict[str, np.ndarray]], dict[str, int], list[dict[str, Any]]]:
-    """Return grouped thermal-emission terms split by optical phase.
-
-    The per-surface base contribution follows ScopeSim's thermal-emission
-    path: a surface emission-density term is weighted by the downstream action
-    throughputs that ScopeSim applies after that surface's own emission is
-    added.
-
-    For ``post_disperser`` terms, ``after_qe`` also applies the detector QE
-    because this diffuse light is injected at the image plane instead of being
-    trace-mapped as a spectral source.
-    """
-    rows = optical_surface_rows(
-        [{
-            "selector": surface_list,
-            "selector_name": effect_name(surface_list),
-            "effect": surface_list,
-        }],
-        wave,
-        groups=groups,
-    )
-    return optical_surface_emissivity_terms(rows, wave, qe_values=qe_values)
 
 
 def _emission_density_plot_values(values: u.Quantity | None) -> np.ndarray | None:
@@ -823,14 +804,20 @@ def fov_image_plane_counts(ztrain: Any) -> Table:
 def build_emissivity_sanity_data(
     ztrain: Any,
     wave_nm: u.Quantity | None = None,
-    groups: Mapping[str, tuple[str, ...]] | None = None,
+    component_metadata: Mapping[str, Mapping[str, Any]] | None = None,
     positional_qe_by_aperture: Mapping[int, Any] | None = None,
     qe_selector_name: str | None = "detector_qe_selector",
     active_only: bool = True,
     blocking_component_names: tuple[str, ...] = ("ir_blocking_filter_selector",),
     diffuse_extraction_pixels: float = 1.0,
 ) -> dict[str, Any]:
-    """Build split pre/post-disperser emissivity sanity-check data."""
+    """Build split pre/post-disperser emissivity sanity-check data.
+
+    ``component_metadata`` supplies explicit metadata for selected single
+    surface effects that ScopeSim/IRDB cannot currently tag. Configured
+    metadata wins; conflicting overrides raise instead of silently replacing
+    the instrument definition.
+    """
 
     from scopesim.effects.illumination import integrate_spectral_background
 
@@ -854,16 +841,15 @@ def build_emissivity_sanity_data(
         traces = traces_for_aperture.get(aperture_id, [])
         image_plane_id = int(traces[0].meta["image_plane_id"]) if traces else aperture_id
 
-        try:
-            image_pixel_area = _image_plane_pixel_area(ztrain, image_plane_id)
-        except (AttributeError, IndexError, KeyError):
-            image_pixel_area = 1.0 * u.arcsec**2
+        image_pixel_area = _image_plane_pixel_area(ztrain, image_plane_id)
 
         qe_values = effective_diffuse_qe(detector_qe, wave, positional_qe=positional_qe_by_aperture.get(aperture_id))
 
         components = channel_optical_components(ztrain, aperture_id, qe_selector=qe_selector)
 
-        surface_rows = optical_surface_rows(components, wave, groups=groups)
+        surface_rows = optical_surface_rows(
+            components, wave, component_metadata=component_metadata,
+        )
         phase_terms, counts, surface_details = optical_surface_emissivity_terms(surface_rows, wave, qe_values=qe_values)
 
         unblocked_rows = _rows_excluding_components(surface_rows, blocked_components)
@@ -965,34 +951,6 @@ def evaluate_emission_density(surface: Any, wave: u.Quantity) -> u.Quantity | No
     return values
 
 
-def surface_list_post_disperser_diffuse_terms(
-    surface_list: Any,
-    wave: u.Quantity,
-    groups: Mapping[str, tuple[str, ...]] | None = None,
-    qe_values: np.ndarray | None = None,
-    emission_phase: str = "post_disperser",
-) -> tuple[OrderedDict[str, u.Quantity], list[dict[str, Any]]]:
-    """Return post-disperser diffuse spectra grouped by optics metadata.
-
-    This is the physical counterpart to ``surface_list_emissivity_terms``. It
-    follows ScopeSim's downstream-emission bookkeeping, but only surfaces tagged
-    with ``emission_phase == "post_disperser"`` are returned as image-plane
-    diffuse background candidates.
-    """
-    rows = optical_surface_rows(
-        [{
-            "selector": surface_list,
-            "selector_name": effect_name(surface_list),
-            "effect": surface_list,
-        }],
-        wave,
-        groups=groups,
-    )
-    return optical_surface_post_disperser_diffuse_terms(
-        rows, wave, qe_values=qe_values, emission_phase=emission_phase,
-    )
-
-
 def optical_surface_post_disperser_diffuse_terms(
     rows: list[dict[str, Any]],
     wave: u.Quantity,
@@ -1067,13 +1025,19 @@ def _telescope_area(ztrain: Any) -> u.Quantity:
 def build_post_disperser_diffuse_background_data(
     ztrain: Any,
     wave_nm: u.Quantity | None = None,
-    groups: Mapping[str, tuple[str, ...]] | None = None,
+    component_metadata: Mapping[str, Mapping[str, Any]] | None = None,
     positional_qe_by_aperture: Mapping[int, Any] | None = None,
     qe_selector_name: str | None = "detector_qe_selector",
     active_only: bool = True,
     blocking_component_names: tuple[str, ...] = ("ir_blocking_filter_selector",),
 ) -> dict[str, Any]:
-    """Build image-plane post-disperser diffuse background data."""
+    """Build image-plane post-disperser diffuse background data.
+
+    ``component_metadata`` supplies explicit metadata for selected single
+    surface effects that ScopeSim/IRDB cannot currently tag. Configured
+    metadata wins; conflicting overrides raise instead of silently replacing
+    the instrument definition.
+    """
     from scopesim.effects.illumination import integrate_spectral_background
 
     wave_nm = wave_nm if wave_nm is not None else np.linspace(300, 2500, 5000) * u.nm
@@ -1116,7 +1080,9 @@ def build_post_disperser_diffuse_background_data(
         components = channel_optical_components(
             ztrain, aperture_id, qe_selector=qe_selector,
         )
-        surface_rows = optical_surface_rows(components, wave, groups=groups)
+        surface_rows = optical_surface_rows(
+            components, wave, component_metadata=component_metadata,
+        )
         spectra, surface_details = optical_surface_post_disperser_diffuse_terms(
             surface_rows,
             wave,
@@ -1239,6 +1205,7 @@ def post_disperser_diffuse_effect_consistency_table(
     *,
     effect_display_name: str = "post_echelle_diffuse_background_selector",
     match_effect_grid: bool = True,
+    component_metadata: Mapping[str, Mapping[str, Any]] | None = None,
     qe_selector_name: str | None = "detector_qe_selector",
     active_only: bool = True,
 ) -> Table:
@@ -1248,6 +1215,8 @@ def post_disperser_diffuse_effect_consistency_table(
     :func:`build_post_disperser_diffuse_background_data`. The ``matched`` rate
     is recomputed on the effect's own wavelength grid when possible, so the
     table separates wavelength-sampling differences from real wiring problems.
+    ``component_metadata`` must match the metadata passed to
+    :func:`build_post_disperser_diffuse_background_data`.
     """
     selector = get_effect(ztrain, effect_display_name, active_only=False)
     matched_data_by_image_plane = {}
@@ -1257,6 +1226,7 @@ def post_disperser_diffuse_effect_consistency_table(
             helper_data,
             selector,
             qe_selector_name=qe_selector_name,
+            component_metadata=component_metadata,
             active_only=active_only,
         )
 
@@ -1269,11 +1239,14 @@ def post_disperser_diffuse_effect_consistency_table(
         matched_channel = matched_data_by_image_plane.get(image_plane_id, {}).get(
             "channels", {},
         ).get(aperture_id)
-        matched_rate = (
-            float(matched_channel["total_rate_ph_s_pix"])
-            if matched_channel is not None
-            else np.nan
-        )
+        if match_effect_grid and matched_channel is None:
+            raise ValueError(
+                f"No matched helper data for image_plane_id={image_plane_id}, "
+                f"aperture_id={aperture_id}."
+            )
+        matched_rate = float(matched_channel["total_rate_ph_s_pix"]) if (
+            matched_channel is not None
+        ) else np.nan
         rows.append({
             "aperture_id": int(aperture_id),
             "channel": channel["label"],
@@ -1320,6 +1293,7 @@ def _matched_post_diffuse_data_by_image_plane(
     selector: Any,
     *,
     qe_selector_name: str | None = "detector_qe_selector",
+    component_metadata: Mapping[str, Mapping[str, Any]] | None = None,
     active_only: bool = True,
 ) -> dict[int, Mapping[str, Any]]:
     matched = {}
@@ -1328,13 +1302,17 @@ def _matched_post_diffuse_data_by_image_plane(
         image_plane_id = int(channel["image_plane_id"])
         effect = resolve_effect(selector, image_plane_id)
         if not hasattr(effect, "_waveset"):
-            continue
+            raise ValueError(
+                f"{effect_name(effect)!r} for image_plane_id={image_plane_id} "
+                "has no _waveset method for matched-grid validation."
+            )
         wave_nm = effect._waveset().to(u.nm)
         cache_key = tuple(np.round(wave_nm.to_value(u.nm), 12))
         if cache_key not in cache:
             cache[cache_key] = build_post_disperser_diffuse_background_data(
                 ztrain,
                 wave_nm=wave_nm,
+                component_metadata=component_metadata,
                 qe_selector_name=qe_selector_name,
                 active_only=active_only,
             )
@@ -1348,237 +1326,6 @@ def _relative_delta(value: float, reference: float) -> float:
     if reference == 0:
         return 0.0 if value == 0 else np.inf
     return (value - reference) / reference
-
-
-def copy_image_plane_data(ztrain: Any) -> dict[int, np.ndarray]:
-    """Return detached copies of populated optical-train image planes."""
-    copies = {}
-    for image_plane_id, image_plane in enumerate(ztrain.image_planes):
-        if image_plane is None:
-            continue
-        try:
-            data = _image_plane_array(image_plane)
-        except ValueError:
-            continue
-        copies[int(image_plane_id)] = np.array(data, dtype=float, copy=True)
-    return copies
-
-
-def image_plane_delta_summary(
-    with_effect: Any,
-    without_effect: Any,
-    *,
-    expected_rates: Mapping[str, Any] | Mapping[int, float] | Table | None = None,
-    expected_rate_column: str | None = None,
-    image_plane_ids: list[int] | np.ndarray | None = None,
-) -> Table:
-    """Summarize image-plane differences from toggling a scalar background.
-
-    ``with_effect`` and ``without_effect`` may be image-plane objects, HDUs,
-    arrays, mappings keyed by image-plane id, or an optical train. The returned
-    table is intended for checks such as post-disperser diffuse emissivity,
-    where the expected image-plane signature is a uniform additive offset.
-    """
-    with_planes = _image_plane_items(with_effect, image_plane_ids)
-    without_planes = _image_plane_items(without_effect, image_plane_ids)
-    if set(with_planes) != set(without_planes):
-        raise ValueError(
-            "with_effect and without_effect have different image-plane ids: "
-            f"{sorted(with_planes)} != {sorted(without_planes)}"
-        )
-
-    expected_by_plane = _expected_rates_by_image_plane(
-        expected_rates, expected_rate_column,
-    )
-    rows = []
-    for image_plane_id in sorted(with_planes):
-        enabled = with_planes[image_plane_id]
-        disabled = without_planes[image_plane_id]
-        if enabled.shape != disabled.shape:
-            raise ValueError(
-                f"Image plane {image_plane_id} shape mismatch: "
-                f"{enabled.shape} != {disabled.shape}"
-            )
-
-        delta = enabled - disabled
-        finite_delta = delta[np.isfinite(delta)]
-        if finite_delta.size == 0:
-            raise ValueError(f"Image plane {image_plane_id} has no finite pixels.")
-
-        mean_delta = float(np.mean(finite_delta))
-        std_delta = float(np.std(finite_delta))
-        min_delta = float(np.min(finite_delta))
-        max_delta = float(np.max(finite_delta))
-        median_delta = float(np.median(finite_delta))
-        expected_rate = expected_by_plane.get(image_plane_id, np.nan)
-        rows.append({
-            "image_plane_id": int(image_plane_id),
-            "shape": "x".join(str(value) for value in enabled.shape),
-            "n_pixels": int(finite_delta.size),
-            "mean_delta_ph_s_pix": mean_delta,
-            "median_delta_ph_s_pix": median_delta,
-            "std_delta_ph_s_pix": std_delta,
-            "min_delta_ph_s_pix": min_delta,
-            "max_delta_ph_s_pix": max_delta,
-            "peak_to_peak_delta_ph_s_pix": max_delta - min_delta,
-            "std_over_abs_mean": _ratio_to_abs_reference(std_delta, mean_delta),
-            "expected_rate_ph_s_pix": expected_rate,
-            "mean_minus_expected_ph_s_pix": mean_delta - expected_rate,
-            "expected_rel_delta": _relative_delta(mean_delta, expected_rate),
-        })
-
-    return Table(rows=rows)
-
-
-def validate_image_plane_delta_summary(
-    table: Table,
-    *,
-    expected_rtol: float = 1e-3,
-    uniformity_rtol: float = 1e-4,
-    uniformity_atol: float = 1e-6,
-    require_expected: bool = True,
-) -> None:
-    """Validate that an image-plane delta is uniform and rate-consistent."""
-    if len(table) == 0:
-        raise ValueError("Image-plane delta summary is empty.")
-
-    expected_rel_delta = np.asarray(table["expected_rel_delta"], dtype=float)
-    if require_expected and not np.all(np.isfinite(expected_rel_delta)):
-        bad = table[~np.isfinite(expected_rel_delta)]
-        raise ValueError(f"Missing expected image-plane rates: {bad}")
-
-    finite_expected = np.isfinite(expected_rel_delta)
-    if np.any(np.abs(expected_rel_delta[finite_expected]) > expected_rtol):
-        bad = table[
-            finite_expected & (np.abs(expected_rel_delta) > expected_rtol)
-        ]
-        raise ValueError(
-            f"Image-plane delta differs from expected rate above "
-            f"{expected_rtol}: {bad}"
-        )
-
-    std_delta = np.asarray(table["std_delta_ph_s_pix"], dtype=float)
-    mean_delta = np.asarray(table["mean_delta_ph_s_pix"], dtype=float)
-    tolerance = uniformity_atol + uniformity_rtol * np.abs(mean_delta)
-    if np.any(std_delta > tolerance):
-        bad = table[std_delta > tolerance]
-        raise ValueError(
-            "Image-plane delta is not spatially uniform within "
-            f"atol={uniformity_atol}, rtol={uniformity_rtol}: {bad}"
-        )
-
-
-def _image_plane_items(
-    planes: Any,
-    image_plane_ids: list[int] | np.ndarray | None = None,
-) -> dict[int, np.ndarray]:
-    if hasattr(planes, "image_planes"):
-        planes = planes.image_planes
-
-    if isinstance(planes, Mapping):
-        items = {
-            int(image_plane_id): _image_plane_array(plane)
-            for image_plane_id, plane in planes.items()
-        }
-        if image_plane_ids is None:
-            return items
-        missing = [
-            int(image_plane_id) for image_plane_id in image_plane_ids
-            if int(image_plane_id) not in items
-        ]
-        if missing:
-            raise ValueError(f"Missing image-plane ids: {missing}")
-        return {
-            int(image_plane_id): items[int(image_plane_id)]
-            for image_plane_id in image_plane_ids
-        }
-
-    if (
-        isinstance(planes, np.ndarray)
-        or hasattr(planes, "hdu")
-        or hasattr(planes, "data")
-    ):
-        planes = [planes]
-
-    values = list(planes)
-    if image_plane_ids is None:
-        image_plane_ids = np.arange(len(values), dtype=int)
-    if len(image_plane_ids) != len(values):
-        raise ValueError(
-            f"Expected {len(values)} image-plane ids, got {len(image_plane_ids)}."
-        )
-    return {
-        int(image_plane_id): _image_plane_array(plane)
-        for image_plane_id, plane in zip(image_plane_ids, values, strict=True)
-    }
-
-
-def _image_plane_array(image_plane: Any) -> np.ndarray:
-    if image_plane is None:
-        raise ValueError("Image plane is None.")
-    if hasattr(image_plane, "hdu") and image_plane.hdu is not None:
-        data = image_plane.hdu.data
-    elif hasattr(image_plane, "data"):
-        data = image_plane.data
-    else:
-        data = image_plane
-    if data is None:
-        raise ValueError(f"Image plane {image_plane!r} has no data array.")
-    return np.asarray(data, dtype=float)
-
-
-def _expected_rates_by_image_plane(
-    expected_rates: Mapping[str, Any] | Mapping[int, float] | Table | None,
-    expected_rate_column: str | None,
-) -> dict[int, float]:
-    if expected_rates is None:
-        return {}
-
-    if isinstance(expected_rates, Table):
-        if "image_plane_id" not in expected_rates.colnames:
-            raise ValueError("Expected-rate table needs an image_plane_id column.")
-        rate_col = expected_rate_column or _first_available_column(
-            expected_rates,
-            (
-                "effect_rate_ph_s_pix",
-                "matched_helper_rate_ph_s_pix",
-                "helper_rate_ph_s_pix",
-                "total_rate_ph_s_pix",
-            ),
-        )
-        return {
-            int(row["image_plane_id"]): float(row[rate_col])
-            for row in expected_rates
-        }
-
-    if "channels" in expected_rates:
-        return {
-            int(channel["image_plane_id"]): float(channel["total_rate_ph_s_pix"])
-            for channel in expected_rates["channels"].values()
-        }
-
-    return {
-        int(image_plane_id): float(rate)
-        for image_plane_id, rate in expected_rates.items()
-    }
-
-
-def _first_available_column(table: Table, candidates: tuple[str, ...]) -> str:
-    for candidate in candidates:
-        if candidate in table.colnames:
-            return candidate
-    raise ValueError(
-        "Expected-rate table has none of these columns: "
-        f"{', '.join(candidates)}"
-    )
-
-
-def _ratio_to_abs_reference(value: float, reference: float) -> float:
-    if not np.isfinite(value) or not np.isfinite(reference):
-        return np.nan
-    if reference == 0:
-        return 0.0 if value == 0 else np.inf
-    return value / abs(reference)
 
 
 def _sum_quantity_terms(terms: Mapping[str, u.Quantity]) -> u.Quantity | None:
@@ -1872,44 +1619,31 @@ def _resolved_for_display(value: Any, cmds: Any) -> Any:
         return value
 
 
-def slit_loss_summary_table(rows: list[Mapping[str, Any]]) -> Table:
-    """Return slit-throughput summary rows from input/output signal pairs."""
-    output_rows = []
-    for row in rows:
-        input_signal = float(row["input_signal"])
-        output_signal = float(row["output_signal"])
-        if input_signal == 0:
-            throughput = np.nan if output_signal != 0 else 0.0
-        else:
-            throughput = output_signal / input_signal
-        output = dict(row)
-        output["throughput"] = throughput
-        output_rows.append(output)
-    return Table(rows=output_rows)
+def _required_cmd_value(cmds: Any, key: str) -> Any:
+    from scopesim.utils import from_currsys
 
-
-def _cmd_value(cmds: Any, key: str, default: Any) -> Any:
-    value = _resolved_for_display(key, cmds)
+    try:
+        value = from_currsys(key, cmds)
+    except Exception as exc:
+        raise ValueError(f"Required ScopeSim command {key!r} is not set.") from exc
     if isinstance(value, str) and value == key:
-        return default
+        raise ValueError(f"Required ScopeSim command {key!r} is unresolved.")
     return value
 
 
-def _cmd_float(cmds: Any, key: str, default: float) -> float:
-    value = _cmd_value(cmds, key, default)
+def _required_cmd_float(cmds: Any, key: str) -> float:
+    value = _required_cmd_value(cmds, key)
     try:
         return float(value)
-    except (TypeError, ValueError):
-        return float(default)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Required ScopeSim command {key!r} must resolve to a float; "
+            f"got {value!r}."
+        ) from exc
 
 
-def _cmd_quantity(
-    cmds: Any,
-    key: str,
-    default: u.Quantity,
-    unit: u.UnitBase,
-) -> u.Quantity:
-    value = _cmd_value(cmds, key, default)
+def _required_cmd_quantity(cmds: Any, key: str, unit: u.UnitBase) -> u.Quantity:
+    value = _required_cmd_value(cmds, key)
     try:
         quantity = u.Quantity(value)
         if quantity.unit == u.dimensionless_unscaled:
@@ -1924,6 +1658,10 @@ def _quantity_with_default_unit(value: Any, unit: u.UnitBase) -> u.Quantity:
     if quantity.unit == u.dimensionless_unscaled:
         quantity = quantity.value * unit
     return quantity.to(unit)
+
+
+def _format_arcsec_value(value: u.Quantity) -> str:
+    return f"{u.Quantity(value).to_value(u.arcsec):.3g}"
 
 
 def _metadata_bool(value: Any, default: bool = False) -> bool:
@@ -1944,7 +1682,7 @@ def _zenith_angle_from_airmass(airmass: float) -> u.Quantity:
 
 
 def _zenith_angle_from_cmds(cmds: Any) -> u.Quantity:
-    return _zenith_angle_from_airmass(_cmd_float(cmds, "!OBS.airmass", 1.0))
+    return _zenith_angle_from_airmass(_required_cmd_float(cmds, "!OBS.airmass"))
 
 
 def _natural_seeing_fwhm(
@@ -1998,9 +1736,17 @@ def _scopesim_psf_fwhm_func(effect: Any) -> Callable[
 
 def _configured_psf_fwhm_func(
     train_or_cmds: Any,
+    *,
+    allow_diagnostic_fallback: bool = False,
 ) -> tuple[Callable[[u.Quantity, u.Quantity, u.Quantity], u.Quantity], Any | None]:
     effect = _active_moffat_psf(train_or_cmds)
     if effect is None:
+        if not allow_diagnostic_fallback:
+            raise ValueError(
+                "No active ScopeSim Moffat-like PSF effect was found. Pass "
+                "allow_diagnostic_psf=True only for an explicit diagnostic "
+                "seeing-law calculation."
+            )
         return _diagnostic_fallback_psf_fwhm, None
     return _scopesim_psf_fwhm_func(effect), effect
 
@@ -2014,12 +1760,10 @@ def _atmospheric_refraction_shift(
 ) -> u.Quantity:
     from scopesim.effects.atmo_dispersion import refractive_index
 
-    temperature = _cmd_quantity(
-        cmds, "!ATMO.temperature", 9.0 * u.deg_C, u.deg_C,
-    )
-    pressure = _cmd_quantity(cmds, "!ATMO.pressure", 0.75 * u.bar, u.bar)
-    humidity = _cmd_float(cmds, "!ATMO.humidity", 0.15)
-    x_co2 = _cmd_float(cmds, "!ATMO.x_co2", 450.0)
+    temperature = _required_cmd_quantity(cmds, "!ATMO.temperature", u.deg_C)
+    pressure = _required_cmd_quantity(cmds, "!ATMO.pressure", u.bar)
+    humidity = _required_cmd_float(cmds, "!ATMO.humidity")
+    x_co2 = _required_cmd_float(cmds, "!ATMO.x_co2")
     wave_um = u.Quantity(wave).to(u.um)
     ref_um = u.Quantity(wave_ref).to(u.um)
     delta_n = (
@@ -2163,8 +1907,14 @@ def _active_ao_enhanceable_psf(train_or_cmds: Any) -> Any | None:
 def _slit_loss_psf_modes(
     train_or_cmds: Any,
     beta: float,
+    *,
+    seeing: u.Quantity,
+    allow_diagnostic_fallback: bool = False,
 ) -> OrderedDict[str, dict[str, Any]]:
-    base_fwhm_func, psf_effect = _configured_psf_fwhm_func(train_or_cmds)
+    base_fwhm_func, psf_effect = _configured_psf_fwhm_func(
+        train_or_cmds,
+        allow_diagnostic_fallback=allow_diagnostic_fallback,
+    )
     base_beta = float(getattr(psf_effect, "alpha", beta) or beta)
     if psf_effect is None:
         base_note = (
@@ -2179,7 +1929,7 @@ def _slit_loss_psf_modes(
 
     modes: OrderedDict[str, dict[str, Any]] = OrderedDict()
     modes["no_ao"] = {
-        "label": "no AO",
+        "label": f'{_format_arcsec_value(seeing)}" NS',
         "style": "-",
         "beta": base_beta,
         "fwhm_func": base_fwhm_func,
@@ -2233,6 +1983,7 @@ def build_slit_adc_psf_scene_data(
     adc_zenith_angle_error: u.Quantity = 0.9 * u.deg,
     grid_step: u.Quantity = 0.035 * u.arcsec,
     beta: float = 4.765,
+    allow_diagnostic_psf: bool = False,
 ) -> dict[str, Any]:
     """Build PSF/AD slit-scene images for notebook validation.
 
@@ -2247,11 +1998,14 @@ def build_slit_adc_psf_scene_data(
         if wave_nm is None
         else u.Quantity(wave_nm).to(u.nm)
     )
-    seeing = _cmd_quantity(cmds, "!OBS.seeing", 0.6 * u.arcsec, u.arcsec)
+    seeing = _required_cmd_quantity(cmds, "!OBS.seeing", u.arcsec)
     zenith_angle = _zenith_angle_from_cmds(cmds)
     slit_width = u.Quantity(slit_width).to(u.arcsec)
     slit_length = u.Quantity(slit_length).to(u.arcsec)
-    fwhm_func, psf_effect = _configured_psf_fwhm_func(train_or_cmds)
+    fwhm_func, psf_effect = _configured_psf_fwhm_func(
+        train_or_cmds,
+        allow_diagnostic_fallback=allow_diagnostic_psf,
+    )
     adc_error, adc_note = _adc_zenith_angle_error(
         train_or_cmds, adc_zenith_angle_error,
     )
@@ -2343,7 +2097,7 @@ def build_slit_adc_psf_scene_data(
         "wave_ref_nm": u.Quantity(wave_ref).to(u.nm),
         "seeing_arcsec": seeing,
         "zenith_angle_deg": zenith_angle.to(u.deg),
-        "airmass": _cmd_float(cmds, "!OBS.airmass", 1.0),
+        "airmass": _required_cmd_float(cmds, "!OBS.airmass"),
         "slit_width_arcsec": slit_width,
         "slit_length_arcsec": slit_length,
         "x_arcsec": x * u.arcsec,
@@ -2376,6 +2130,7 @@ def build_slit_loss_data(
     adc_zenith_angle_error: u.Quantity = 0.9 * u.deg,
     grid_step: u.Quantity = 0.04 * u.arcsec,
     beta: float = 4.765,
+    allow_diagnostic_psf: bool = False,
 ) -> dict[str, Any]:
     """Return centered point-source slit-loss curves by arm."""
     cmds = _cmds_from_train_or_cmds(train_or_cmds)
@@ -2383,8 +2138,13 @@ def build_slit_loss_data(
         "VIS": (310 * u.nm, 980 * u.nm, "!INST.vis_curr_slit"),
         "NIR": (980 * u.nm, 2450 * u.nm, "!INST.nir_curr_slit"),
     })
-    seeing = _cmd_quantity(cmds, "!OBS.seeing", 0.6 * u.arcsec, u.arcsec)
-    psf_modes = _slit_loss_psf_modes(train_or_cmds, beta)
+    seeing = _required_cmd_quantity(cmds, "!OBS.seeing", u.arcsec)
+    psf_modes = _slit_loss_psf_modes(
+        train_or_cmds,
+        beta,
+        seeing=seeing,
+        allow_diagnostic_fallback=allow_diagnostic_psf,
+    )
     adc_error, adc_note = _adc_zenith_angle_error(
         train_or_cmds, adc_zenith_angle_error,
     )
@@ -2419,7 +2179,7 @@ def build_slit_loss_data(
             u.Quantity(wave_max).to_value(u.nm),
             n_wave,
         ) * u.nm
-        slit_width = _cmd_quantity(cmds, slit_key, 0.7 * u.arcsec, u.arcsec)
+        slit_width = _required_cmd_quantity(cmds, slit_key, u.arcsec)
         curves: OrderedDict[str, dict[str, Any]] = OrderedDict()
         for psf_name, psf_spec in psf_modes.items():
             for curve_name, spec in curve_specs.items():
@@ -2486,12 +2246,15 @@ def build_slit_width_loss_data(
     slit_length: u.Quantity = 10.0 * u.arcsec,
     grid_step: u.Quantity = 0.04 * u.arcsec,
     beta: float = 4.765,
+    allow_diagnostic_psf: bool = False,
 ) -> dict[str, Any]:
     """Return centered point-source slit loss over a sweep of slit widths.
 
     This isolates PSF/slit coupling: the source is centered and no atmospheric
     dispersion shift is applied. When an optical train is supplied, FWHM values
-    come from the active ScopeSim Moffat-like PSF effect.
+    come from the active ScopeSim Moffat-like PSF effect. The default VIS/NIR
+    wavelength arrays are matched by index; ``plot_slit_width_loss`` depends on
+    that contract and raises if the paired arms diverge.
     """
     cmds = _cmds_from_train_or_cmds(train_or_cmds)
     slit_widths = (
@@ -2509,14 +2272,19 @@ def build_slit_width_loss_data(
             "!INST.nir_curr_slit",
         ),
     })
-    seeing = _cmd_quantity(cmds, "!OBS.seeing", 0.6 * u.arcsec, u.arcsec)
+    seeing = _required_cmd_quantity(cmds, "!OBS.seeing", u.arcsec)
     zenith_angle = _zenith_angle_from_cmds(cmds)
-    psf_modes = _slit_loss_psf_modes(train_or_cmds, beta)
+    psf_modes = _slit_loss_psf_modes(
+        train_or_cmds,
+        beta,
+        seeing=seeing,
+        allow_diagnostic_fallback=allow_diagnostic_psf,
+    )
 
     arm_data: OrderedDict[str, dict[str, Any]] = OrderedDict()
     for arm_name, (wave_values, slit_key) in arms.items():
         wave = _quantity_with_default_unit(wave_values, u.nm).to(u.nm)
-        current_slit = _cmd_quantity(cmds, slit_key, np.nan * u.arcsec, u.arcsec)
+        current_slit = _required_cmd_quantity(cmds, slit_key, u.arcsec)
         curves: OrderedDict[str, dict[str, Any]] = OrderedDict()
         for psf_name, psf_spec in psf_modes.items():
             for wave_value in wave:
@@ -2738,23 +2506,23 @@ def detector_background_budget_table(
             post_diffuse_consistency=post_diffuse_consistency,
         )
         dark_rate = _resolved_detector_meta(
-            dark_current, "value", ztrain.cmds, detector_id, default=0.0,
+            dark_current, "value", ztrain.cmds, detector_id,
         )
         read_noise_single = _resolved_detector_meta(
-            read_noise, "noise_std", ztrain.cmds, detector_id, default=0.0,
+            read_noise, "noise_std", ztrain.cmds, detector_id,
         )
         read_ndit = _resolved_detector_meta(
-            read_noise, "ndit", ztrain.cmds, detector_id, default=ndit,
+            read_noise, "ndit", ztrain.cmds, detector_id,
         )
         bias_level = _resolved_detector_meta(
-            bias, "bias", ztrain.cmds, detector_id, default=0.0,
+            bias, "bias", ztrain.cmds, detector_id,
         )
 
         diffuse_counts = diffuse_rate * exposure_time
         dark_counts = dark_rate * exposure_time
         additive_signal = diffuse_counts + dark_counts
-        full_well = _resolved_detector_cmd_value(
-            ztrain.cmds, "!DET.full_well", detector_id, default=np.nan,
+        full_well = _required_detector_cmd_float(
+            ztrain.cmds, "!DET.full_well", detector_id,
         )
         if np.isfinite(full_well) and full_well > 0:
             full_well_fraction = additive_signal / full_well
@@ -2812,7 +2580,7 @@ def science_truth_crosscheck_table(
             ztrain, post_diffuse_data=post_diffuse_data,
         )
     if spectral_resolution is None:
-        spectral_resolution = _resolved_cmd_float(
+        spectral_resolution = _required_cmd_float(
             ztrain.cmds, "!SIM.spectral.spectral_resolution",
         )
 
@@ -2886,35 +2654,61 @@ def source_photon_crosscheck_table(
     extracted-spectrum model.
     """
     if spectral_resolution is None:
-        spectral_resolution = _resolved_cmd_float(
+        spectral_resolution = _required_cmd_float(
             ztrain.cmds, "!SIM.spectral.spectral_resolution",
+        )
+    if not np.isfinite(spectral_resolution) or spectral_resolution <= 0:
+        raise ValueError(
+            "Spectral resolution must be finite and positive for source photon "
+            f"crosschecks; got {spectral_resolution!r}."
         )
     telescope_area = _telescope_area(ztrain)
     budget_by_channel = _budget_by_channel(detector_budget)
+    wave = u.Quantity(transmission_data["wave_nm"]).to_value(u.nm)
 
     rows: list[dict[str, Any]] = []
     for aperture_id, channel in transmission_data["channels"].items():
-        wave_mid_nm = _transmission_channel_mid_wavelength_nm(
-            transmission_data, channel,
-        )
-        resolution_element_nm = (
-            wave_mid_nm / spectral_resolution
-            if np.isfinite(wave_mid_nm) and np.isfinite(spectral_resolution)
-            and spectral_resolution > 0
-            else np.nan
-        )
-        if np.isfinite(resolution_element_nm):
-            wave_min = (wave_mid_nm - 0.5 * resolution_element_nm) * u.nm
-            wave_max = (wave_mid_nm + 0.5 * resolution_element_nm) * u.nm
-            source_rate = _source_photons_in_range(
-                source, wave_min, wave_max, telescope_area,
+        finite_ranges = []
+        for order in channel["orders"].values():
+            total = np.asarray(order["total"], dtype=float)
+            finite = np.isfinite(total)
+            if np.any(finite):
+                finite_ranges.append((np.nanmin(wave[finite]), np.nanmax(wave[finite])))
+        if not finite_ranges:
+            raise ValueError(
+                f"Channel {channel['label']!r} has no finite transmission orders."
             )
-        else:
-            source_rate = np.nan
-
-        throughput = _representative_channel_throughput(
-            transmission_data, channel, wave_mid_nm,
+        wave_mid_nm = 0.5 * (
+            min(range_[0] for range_ in finite_ranges)
+            + max(range_[1] for range_ in finite_ranges)
         )
+        resolution_element_nm = wave_mid_nm / spectral_resolution
+        wave_min = (wave_mid_nm - 0.5 * resolution_element_nm) * u.nm
+        wave_max = (wave_mid_nm + 0.5 * resolution_element_nm) * u.nm
+        source_rate = _source_photons_in_range(
+            source, wave_min, wave_max, telescope_area,
+        )
+
+        throughput_values = []
+        for order in channel["orders"].values():
+            total = np.asarray(order["total"], dtype=float)
+            finite = np.isfinite(total)
+            if not np.any(finite):
+                continue
+            if (
+                wave_mid_nm < np.nanmin(wave[finite])
+                or wave_mid_nm > np.nanmax(wave[finite])
+            ):
+                continue
+            throughput_values.append(
+                float(np.interp(wave_mid_nm, wave[finite], total[finite])),
+            )
+        if not throughput_values:
+            raise ValueError(
+                f"Channel {channel['label']!r} has no order covering "
+                f"{wave_mid_nm:.6g} nm."
+            )
+        throughput = float(np.nanmax(throughput_values))
         detector_rate = source_rate * throughput
         budget = budget_by_channel.get(str(channel["label"]))
         exposure_time = (
@@ -2958,14 +2752,14 @@ def readout_delta_summary_table(
     for idx, (title, signal, reference) in enumerate(
         zip(titles, signal_readouts, reference_readouts, strict=False),
     ):
-        #sigh Codex, for crying out loud:
-        # try:
-        #   `delta = signal.data - reference.data`
-        # except AttributeError:
-        #    `delta = signal[1].data - reference[1].data`
-        # is the more appropriate path. your weights mislead you and make readability hard.
-        # An exception here would have ADDED user insight.
-        delta = _readout_array(signal) - _readout_array(reference)
+        try:
+            delta = np.asarray(signal.data, dtype=float) - np.asarray(
+                reference.data, dtype=float,
+            )
+        except AttributeError:
+            delta = np.asarray(signal[1].data, dtype=float) - np.asarray(
+                reference[1].data, dtype=float,
+            )
         finite = delta[np.isfinite(delta)]
         rows.append({
             "readout_id": idx,
@@ -2988,48 +2782,6 @@ def _budget_by_channel(detector_budget: Table | None) -> dict[str, Any]:
     if detector_budget is None:
         return {}
     return {str(row["channel"]): row for row in detector_budget}
-
-
-def _transmission_channel_mid_wavelength_nm(
-    transmission_data: Mapping[str, Any],
-    channel: Mapping[str, Any],
-) -> float:
-    wave = u.Quantity(transmission_data["wave_nm"]).to_value(u.nm)
-    finite_ranges = []
-    for order in channel["orders"].values():
-        values = np.asarray(order["total"], dtype=float)
-        finite = np.isfinite(values)
-        if np.any(finite):
-            finite_ranges.append((np.nanmin(wave[finite]), np.nanmax(wave[finite])))
-    if finite_ranges:
-        return 0.5 * (
-            min(range_[0] for range_ in finite_ranges)
-            + max(range_[1] for range_ in finite_ranges)
-        )
-    return np.nan
-
-
-def _representative_channel_throughput(
-    transmission_data: Mapping[str, Any],
-    channel: Mapping[str, Any],
-    wave_mid_nm: float,
-) -> float:
-    if not np.isfinite(wave_mid_nm):
-        return np.nan
-    wave = u.Quantity(transmission_data["wave_nm"]).to_value(u.nm)
-    values = []
-    for order in channel["orders"].values():
-        total = np.asarray(order["total"], dtype=float)
-        finite = np.isfinite(total)
-        if not np.any(finite):
-            continue
-        if (
-            wave_mid_nm < np.nanmin(wave[finite])
-            or wave_mid_nm > np.nanmax(wave[finite])
-        ):
-            continue
-        values.append(float(np.interp(wave_mid_nm, wave[finite], total[finite])))
-    return float(np.nanmax(values)) if values else np.nan
 
 
 def _source_photons_in_range(
@@ -3082,19 +2834,6 @@ def _source_spectrum_weights(source: Any) -> list[tuple[Any, float]]:
     return weighted
 
 
-def _readout_array(channel_hdul: Any) -> np.ndarray:
-    # try:
-    #     return channel_hdul.data
-    # except AttributeError:
-    #     channel_hdul[1].data
-        image_hdu = (
-            channel_hdul
-            if hasattr(channel_hdul, "data")
-            else channel_hdul[1]
-        )
-        return np.asarray(image_hdu.data, dtype=float)
-
-
 def _post_diffuse_channels_by_image_plane(
     post_diffuse_data: Mapping[str, Any] | None,
 ) -> dict[int, Mapping[str, Any]]:
@@ -3118,20 +2857,7 @@ def _current_slit_arcsec(ztrain: Any, channel: str) -> float:
     key = "!INST.vis_curr_slit" if channel.upper() in {"B", "G", "R"} else (
         "!INST.nir_curr_slit"
     )
-    return _resolved_cmd_float(ztrain.cmds, key)
-
-
-def _resolved_cmd_float(cmds: Any, key: str, default: float = np.nan) -> float:
-    from scopesim.utils import from_currsys
-
-    try:
-        value = from_currsys(key, cmds)
-    except Exception:
-        return float(default)
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
+    return _required_cmd_float(ztrain.cmds, key)
 
 
 def _science_truth_note(status: str) -> str:
@@ -3152,51 +2878,62 @@ def _selected_detector_effect(
     ztrain: Any,
     selector_name: str,
     detector_row: Any,
-) -> Any | None:
-    try:
-        selector = get_effect(ztrain, selector_name)
-    except ValueError:
-        return None
+) -> Any:
+    selector = get_effect(ztrain, selector_name)
     selector_value = _selector_value_for_detector(selector, detector_row)
     if selector_value is None:
-        return None
+        raise ValueError(
+            f"{selector_name!r} selector_key={selector.meta.get('selector_key')!r} "
+            f"cannot be resolved for detector_id={int(detector_row['detector_id'])}."
+        )
     try:
         return resolve_effect(selector, selector_value)
-    except KeyError:
-        return None
+    except KeyError as exc:
+        raise KeyError(
+            f"{selector_name!r} has no entry for selector value "
+            f"{selector_value!r} while resolving detector_id="
+            f"{int(detector_row['detector_id'])}."
+        ) from exc
 
 
 def _resolved_detector_meta(
-    effect: Any | None,
+    effect: Any,
     key: str,
     cmds: Any,
     detector_id: int,
     *,
-    default: float = np.nan,
+    default: float | None = None,
 ) -> float:
     from scopesim.utils import from_currsys
 
-    if effect is None or key not in getattr(effect, "meta", {}):
-        return float(default)
+    if key not in getattr(effect, "meta", {}):
+        if default is not None:
+            return float(default)
+        raise ValueError(
+            f"{effect_name(effect)!r} has no required metadata key {key!r} "
+            f"for detector_id={detector_id}."
+        )
     value = from_currsys(effect.meta[key], cmds)
     if isinstance(value, Mapping):
-        value = from_currsys(value[detector_id], cmds)
+        if detector_id in value:
+            value = value[detector_id]
+        elif str(detector_id) in value:
+            value = value[str(detector_id)]
+        else:
+            raise ValueError(
+                f"{effect_name(effect)!r} metadata key {key!r} has no "
+                f"detector_id={detector_id} entry."
+            )
+        value = from_currsys(value, cmds)
     return float(value)
 
 
-def _resolved_detector_cmd_value(
+def _required_detector_cmd_float(
     cmds: Any,
     key: str,
     detector_id: int,
-    *,
-    default: float = np.nan,
 ) -> float:
-    from scopesim.utils import from_currsys
-
-    try:
-        value = from_currsys(key, cmds)
-    except Exception:
-        return float(default)
+    value = _required_cmd_value(cmds, key)
 
     if isinstance(value, Mapping):
         if detector_id in value:
@@ -3204,15 +2941,21 @@ def _resolved_detector_cmd_value(
         elif str(detector_id) in value:
             value = value[str(detector_id)]
         else:
-            return float(default)
-        value = from_currsys(value, cmds)
+            raise ValueError(
+                f"Required ScopeSim command {key!r} has no "
+                f"detector_id={detector_id} entry."
+            )
+        value = _resolved_for_display(value, cmds)
     elif (
         isinstance(value, (list, tuple, np.ndarray))
         and not hasattr(value, "unit")
     ):
         if len(value) <= detector_id:
-            return float(default)
-        value = from_currsys(value[detector_id], cmds)
+            raise ValueError(
+                f"Required ScopeSim command {key!r} has length {len(value)} "
+                f"and no detector_id={detector_id} entry."
+            )
+        value = _resolved_for_display(value[detector_id], cmds)
 
     return float(value)
 
@@ -3252,15 +2995,12 @@ def _post_diffuse_rate_for_image_plane(
             if int(channel["image_plane_id"]) == image_plane_id:
                 return float(channel["total_rate_ph_s_pix"])
 
-    try:
-        selector = get_effect(
-            ztrain, "post_echelle_diffuse_background_selector", active_only=False,
-        )
-        if not getattr(selector, "include", True):
-            return 0.0
-        effect = resolve_effect(selector, image_plane_id)
-    except (ValueError, KeyError):
+    selector = get_effect(
+        ztrain, "post_echelle_diffuse_background_selector", active_only=False,
+    )
+    if not getattr(selector, "include", True):
         return 0.0
+    effect = resolve_effect(selector, image_plane_id)
     if not getattr(effect, "include", True):
         return 0.0
     return float(effect.background_value(ztrain.image_planes[image_plane_id]))
@@ -3299,11 +3039,17 @@ def dichroic_path_throughput(
 def build_transmission_sanity_data(
     ztrain: Any,
     wave_nm: u.Quantity | None = None,
-    groups: Mapping[str, tuple[str, ...]] | None = None,
+    component_metadata: Mapping[str, Mapping[str, Any]] | None = None,
     qe_selector_name: str | None = "detector_qe_selector",
     active_only: bool = True,
 ) -> dict[str, Any]:
-    """Build channel/order throughput data for transmission sanity plots."""
+    """Build channel/order throughput data for transmission sanity plots.
+
+    ``component_metadata`` supplies explicit metadata for selected single
+    surface effects that ScopeSim/IRDB cannot currently tag. Configured
+    metadata wins; conflicting overrides raise instead of silently replacing
+    the instrument definition.
+    """
     wave_nm = wave_nm if wave_nm is not None else np.linspace(300, 2500, 5000) * u.nm
     wave = wave_nm.to(u.um)
 
@@ -3329,7 +3075,9 @@ def build_transmission_sanity_data(
         components = channel_optical_components(
             ztrain, aperture_id, qe_selector=qe_selector,
         )
-        surface_rows = optical_surface_rows(components, wave, groups=groups)
+        surface_rows = optical_surface_rows(
+            components, wave, component_metadata=component_metadata,
+        )
         optics_groups, group_counts = optical_surface_group_throughputs(
             surface_rows, wave,
         )
