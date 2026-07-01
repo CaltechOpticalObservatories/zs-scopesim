@@ -296,6 +296,12 @@ def channel_optical_components(
         if id(parent) in excluded_ids or _looks_like_qe_effect(parent):
             continue
         if not hasattr(parent, "wheel_effects"):
+            if _is_surface_list_effect(parent):
+                components.append({
+                    "selector": parent,
+                    "selector_name": effect_name(parent),
+                    "effect": parent,
+                })
             continue
         if getattr(parent, "meta", {}).get("selector_key") != "aperture_id":
             continue
@@ -336,8 +342,19 @@ def optical_surface_rows(
             for row in effect.table:
                 surface_name = str(_row_scalar(row, name_col))
                 action_name = str(_row_scalar(row, action_col))
-                group_name = surface_group_for_row(row)
-                phase_name = emission_phase_for_row(row)
+                metadata = component_metadata.get(selector_name, {})
+                if _real_colname("throughput_group", row.colnames) is None:
+                    group_name = _surface_effect_group_name(
+                        parent, effect, metadata,
+                    )
+                else:
+                    group_name = surface_group_for_row(row)
+                if _real_colname("emission_phase", row.colnames) is None:
+                    phase_name = _surface_effect_phase_name(
+                        parent, effect, metadata,
+                    )
+                else:
+                    phase_name = emission_phase_for_row(row)
                 surface = effect.surfaces[surface_name]
                 rows.append({
                     "component": selector_name,
@@ -532,7 +549,7 @@ def optical_surface_group_throughputs(
 
 
 def _emission_density_plot_values(values: u.Quantity | None) -> np.ndarray | None:
-    """Return thermal emission density in PHOTLAM-equivalent plot units."""
+    """Return thermal emission density in ScopeSim's PHOTLAM-like internal unit."""
     if values is None:
         return None
     try:
@@ -2139,6 +2156,10 @@ def build_slit_loss_data(
         "NIR": (980 * u.nm, 2450 * u.nm, "!INST.nir_curr_slit"),
     })
     seeing = _required_cmd_quantity(cmds, "!OBS.seeing", u.arcsec)
+    airmass = max(1.0, _required_cmd_float(cmds, "!OBS.airmass"))
+    current_zenith_angle = (
+        np.degrees(np.arccos(np.clip(1.0 / airmass, 0.0, 1.0))) * u.deg
+    )
     psf_modes = _slit_loss_psf_modes(
         train_or_cmds,
         beta,
@@ -2149,6 +2170,18 @@ def build_slit_loss_data(
         train_or_cmds, adc_zenith_angle_error,
     )
     curve_specs = OrderedDict({
+        "current_adc_residual": {
+            "label": (
+                f"current airmass {airmass:.2f}, ADC residual"
+            ),
+            "zenith_angle": current_zenith_angle,
+            "mode": "adc",
+            "color": "tab:red",
+            "note": (
+                "Current observing airmass with the active ADC residual model. "
+                + adc_note
+            ),
+        },
         "zenith": {
             "label": "zenith",
             "zenith_angle": 0.0 * u.deg,
@@ -2228,6 +2261,8 @@ def build_slit_loss_data(
     return {
         "arms": arm_data,
         "seeing_arcsec": seeing,
+        "airmass": airmass,
+        "current_zenith_angle_deg": current_zenith_angle.to(u.deg),
         "psf_modes": psf_modes,
         "wave_ref_nm": u.Quantity(wave_ref).to(u.nm),
         "adc_zenith_angle_error_deg": adc_error,
@@ -3081,9 +3116,23 @@ def build_transmission_sanity_data(
         optics_groups, group_counts = optical_surface_group_throughputs(
             surface_rows, wave,
         )
+        telescope_throughput = optics_groups.get(
+            "telescope",
+            np.ones(wave.size, dtype=float),
+        )
+        instrument_optics_groups = OrderedDict(
+            (name, values)
+            for name, values in optics_groups.items()
+            if name != "telescope"
+        )
         optics_total = (
             np.prod(list(optics_groups.values()), axis=0)
             if optics_groups
+            else np.ones(wave.size)
+        )
+        instrument_optics_total = (
+            np.prod(list(instrument_optics_groups.values()), axis=0)
+            if instrument_optics_groups
             else np.ones(wave.size)
         )
         image_plane = None
@@ -3102,7 +3151,10 @@ def build_transmission_sanity_data(
             else evaluate_throughput(detector_qe, wave)
         )
         qe_midpoint_values = evaluate_throughput(detector_qe, wave)
-        pre_disperser_total = dichroic_total * optics_total
+        pre_disperser_instrument_total = (
+            dichroic_total * instrument_optics_total
+        )
+        pre_disperser_total = pre_disperser_instrument_total * telescope_throughput
 
         orders: OrderedDict[str, dict[str, Any]] = OrderedDict()
         qe_methods: set[str] = set()
@@ -3120,6 +3172,12 @@ def build_transmission_sanity_data(
                 "disperser": order_eff,
                 "detector_qe": order_qe,
                 "detector_qe_method": qe_method,
+                "instrument": (
+                    pre_disperser_instrument_total * order_eff * order_qe
+                ),
+                "total_with_telescope_no_slit": (
+                    pre_disperser_total * order_eff * order_qe
+                ),
                 "total": pre_disperser_total * order_eff * order_qe,
                 "wave_min": trace.wave_min * u.um,
                 "wave_max": trace.wave_max * u.um,
@@ -3131,7 +3189,10 @@ def build_transmission_sanity_data(
             "dichroic_components": dichroic_components,
             "optics_groups": optics_groups,
             "optics_group_counts": group_counts,
+            "instrument_optics_groups": instrument_optics_groups,
+            "telescope_throughput": telescope_throughput,
             "optics_total": optics_total,
+            "instrument_optics_total": instrument_optics_total,
             "detector_qe": qe_values,
             "detector_qe_midpoint": qe_midpoint_values,
             "detector_qe_label": (
@@ -3146,6 +3207,7 @@ def build_transmission_sanity_data(
             ),
             "detector_qe_accounting": detector_qe_accounting_summary(detector_qe),
             "order_detector_qe_methods": sorted(qe_methods),
+            "pre_disperser_instrument_total": pre_disperser_instrument_total,
             "pre_disperser_total": pre_disperser_total,
             "orders": orders,
         }
@@ -3163,13 +3225,21 @@ def validate_transmission_sanity_data(data: Mapping[str, Any]) -> None:
         arrays = [
             channel["dichroic_total"],
             channel["optics_total"],
+            channel["instrument_optics_total"],
+            channel["telescope_throughput"],
             channel["detector_qe"],
             channel["detector_qe_midpoint"],
+            channel["pre_disperser_instrument_total"],
             channel["pre_disperser_total"],
         ]
         arrays.extend(channel["optics_groups"].values())
         arrays.extend(order["disperser"] for order in channel["orders"].values())
         arrays.extend(order["detector_qe"] for order in channel["orders"].values())
+        arrays.extend(order["instrument"] for order in channel["orders"].values())
+        arrays.extend(
+            order["total_with_telescope_no_slit"]
+            for order in channel["orders"].values()
+        )
         for arr in arrays:
             finite = arr[np.isfinite(arr)]
             if finite.size == 0:

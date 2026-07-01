@@ -3,17 +3,20 @@ from __future__ import annotations
 import numpy as np
 from astropy import units as u
 from astropy.table import Table
+from synphot.units import PHOTLAM
 
 from zs_scopesim_tools import plots
 from zs_scopesim_tools import validation
 
 
 class FakeSpectrum:
-    def __init__(self, scale=1.0):
+    def __init__(self, scale=1.0, unit=None):
         self.scale = scale
+        self.unit = unit
 
     def __call__(self, wave):
-        return np.full(wave.size, self.scale)
+        values = np.full(wave.size, self.scale)
+        return values * self.unit if self.unit is not None else values
 
 
 class FakeTableSourceField:
@@ -100,6 +103,22 @@ def test_plot_source_accepts_log_spectrum_options():
 
     assert axes[0, 1].get_yscale() == "log"
     assert axes[0, 1].lines[0].get_linewidth() == 0.7
+    assert axes[0, 1].get_ylabel() == "Flux density"
+    fig.clf()
+
+
+def test_plot_source_converts_photlam_like_spectra_to_human_units():
+    class PhotlamSource:
+        meta = {"name": "photlam_source"}
+        fields = [FakeTableSourceField()]
+
+    source = PhotlamSource()
+    source.fields[0].spectra = {0: FakeSpectrum(1.0, PHOTLAM)}
+
+    fig, axes = plots.plot_source(source, wave=np.linspace(0.4, 0.8, 4) * u.um)
+
+    assert "photons" in axes[0, 1].get_ylabel()
+    np.testing.assert_allclose(axes[0, 1].lines[0].get_ydata(), 1.5e5)
     fig.clf()
 
 
@@ -152,7 +171,95 @@ def test_post_disperser_diffuse_plot_annotates_ir_blocking():
 
     assert "IR block removes 1" in axes.flat[0].texts[0].get_text()
     assert "unblocked diffuse" in axes.flat[0].texts[0].get_text()
+    assert "photons" in axes.flat[0].get_ylabel()
     assert "Image Plane 0" in axes.flat[0].get_title()
+    fig.clf()
+
+
+def test_transmission_plot_uses_active_slit_for_total_throughput():
+    wave = np.array([400.0, 500.0]) * u.nm
+    data = {
+        "wave_nm": wave,
+        "channels": {
+            0: {
+                "label": "B",
+                "optics_groups": {
+                    "telescope": np.array([0.8, 0.8]),
+                    "preoptics": np.array([0.5, 0.5]),
+                },
+                "telescope_throughput": np.array([0.8, 0.8]),
+                "dichroic_total": np.array([0.9, 0.9]),
+                "instrument_optics_total": np.array([0.5, 0.5]),
+                "orders": {
+                    "B1": {
+                        "disperser": np.array([0.6, 0.7]),
+                        "detector_qe": np.array([0.7, 0.8]),
+                        "instrument": np.array([0.4, 0.6]),
+                        "total_with_telescope_no_slit": np.array([0.2, 0.3]),
+                    },
+                },
+            },
+            3: {
+                "label": "YJ",
+                "optics_groups": {
+                    "telescope": np.array([0.8, 0.8]),
+                    "camera": np.array([0.6, 0.6]),
+                },
+                "telescope_throughput": np.array([0.8, 0.8]),
+                "dichroic_total": np.array([0.85, 0.85]),
+                "instrument_optics_total": np.array([0.6, 0.6]),
+                "orders": {
+                    "YJ1": {
+                        "disperser": np.array([0.5, 0.6]),
+                        "detector_qe": np.array([0.65, 0.75]),
+                        "instrument": np.array([0.5, 0.7]),
+                        "total_with_telescope_no_slit": np.array([0.25, 0.35]),
+                    },
+                },
+            },
+        },
+    }
+    slit_loss_data = {
+        "arms": {
+            "VIS": {
+                "wave_nm": wave,
+                "curves": {
+                    "no_ao_current_adc_residual": {
+                        "throughput": np.array([0.5, 0.5]),
+                    },
+                },
+            },
+            "NIR": {
+                "wave_nm": wave,
+                "curves": {
+                    "no_ao_current_adc_residual": {
+                        "throughput": np.array([0.8, 0.8]),
+                    },
+                },
+            },
+        },
+    }
+
+    fig, axes = plots.plot_transmission_sanity(
+        data,
+        slit_loss_data=slit_loss_data,
+    )
+
+    assert axes["components"].shape == (2, 3)
+    summary_ax = axes["summary"]
+    component_labels = [
+        line.get_label() for line in axes["components"][0, 0].lines
+    ]
+    assert "telescope" in component_labels
+    assert "preoptics" in component_labels
+    assert "trace QE" in component_labels
+    labels = [line.get_label() for line in summary_ax.lines]
+    assert "B instrument" in labels
+    assert "B total" in labels
+    assert "active slit" in labels
+    assert "trace QE median" in labels
+    b_total = next(line for line in summary_ax.lines if line.get_label() == "B total")
+    np.testing.assert_allclose(b_total.get_ydata(), [0.1, 0.15])
     fig.clf()
 
 
@@ -324,7 +431,31 @@ def test_readout_overview_uses_fractional_clip_as_quantile():
     fig.clf()
 
 
-def test_readout_delta_overview_uses_absolute_clip_symmetrically():
+def test_readout_overview_can_share_color_scale():
+    class FakeHDU:
+        def __init__(self, data):
+            self.data = np.asarray(data, dtype=float)
+
+    hdul = [
+        FakeHDU([[0, 1], [2, 3]]),
+        FakeHDU([[100, 101], [102, 103]]),
+    ]
+
+    fig, axes = plots.plot_readout_overview(
+        hdul,
+        titles=["YJ", "H"],
+        clip=None,
+        shared_scale=[["YJ", "H"]],
+        annotate_stats=True,
+    )
+
+    assert axes[0, 0].images[0].get_clim() == (0.0, 103.0)
+    assert axes[0, 1].images[0].get_clim() == (0.0, 103.0)
+    assert "mean" in axes[0, 0].texts[0].get_text()
+    fig.clf()
+
+
+def test_readout_delta_overview_uses_absolute_clip_from_zero():
     class FakeHDU:
         def __init__(self, data):
             self.data = np.asarray(data, dtype=float)
@@ -336,5 +467,6 @@ def test_readout_delta_overview_uses_absolute_clip_symmetrically():
         clip=5,
     )
 
-    assert axes[0, 0].images[0].get_clim() == (-5.0, 5.0)
+    assert axes[0, 0].images[0].get_clim() == (0.0, 5.0)
+    assert "min delta -10" in axes[0, 0].texts[0].get_text()
     fig.clf()

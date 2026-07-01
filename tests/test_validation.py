@@ -57,6 +57,19 @@ class FakeSurfaceList:
         }
 
 
+class FakeUntaggedSurfaceList:
+    def __init__(self):
+        self.table = Table({
+            "name": ["M1", "M2"],
+            "action": ["reflection", "reflection"],
+        })
+        self.surfaces = {
+            "M1": FakeSurface(reflection=0.9, emissivity=0.1, emission=1.0),
+            "M2": FakeSurface(reflection=0.8, emissivity=0.2, emission=2.0),
+        }
+        self.meta = {"name": "telescope_reflection"}
+
+
 class FakeADCSurfaceList(FakeSurfaceList):
     def __init__(self):
         super().__init__()
@@ -480,6 +493,53 @@ def test_optical_surface_rows_rejects_conflicting_component_group():
         )
 
 
+def test_channel_optical_components_includes_static_surface_lists():
+    static_surface_list = named_effect(
+        FakeUntaggedSurfaceList(), "telescope_reflection",
+    )
+    train = FakeScienceTrain(
+        [FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        )],
+        optical_selectors=[static_surface_list],
+    )
+
+    components = val.channel_optical_components(train, aperture_id=0)
+
+    names = [component["selector_name"] for component in components]
+    assert "telescope_reflection" in names
+    assert "channel_optics_selector" in names
+
+
+def test_optical_surface_rows_accepts_static_surface_list_metadata():
+    wave = np.linspace(1, 2, 4) * u.um
+    surface_list = named_effect(
+        FakeUntaggedSurfaceList(), "telescope_reflection",
+    )
+    components = [{
+        "selector": surface_list,
+        "selector_name": "telescope_reflection",
+        "effect": surface_list,
+    }]
+
+    rows = val.optical_surface_rows(
+        components,
+        wave,
+        component_metadata={
+            "telescope_reflection": {
+                "throughput_group": "telescope",
+                "emission_phase": "pre_disperser",
+            },
+        },
+    )
+
+    assert [row["surface_name"] for row in rows] == ["M1", "M2"]
+    assert {row["group"] for row in rows} == {"telescope"}
+    assert {row["emission_phase"] for row in rows} == {"pre_disperser"}
+
+
 def test_effective_diffuse_qe_uses_average_positional_qe():
     wave = np.linspace(1, 2, 4) * u.um
     spatial_map = np.array([[0.8, 1.0], [0.6, 1.0]])
@@ -524,7 +584,16 @@ def test_build_transmission_sanity_data_can_auto_select_enabled_qe():
     channel = data["channels"][0]
     np.testing.assert_allclose(channel["detector_qe"], [0.7, 0.7])
     np.testing.assert_allclose(channel["detector_qe_midpoint"], [0.6, 0.6])
+    np.testing.assert_allclose(
+        channel["pre_disperser_instrument_total"], [0.16, 0.16],
+    )
     np.testing.assert_allclose(channel["pre_disperser_total"], [0.16, 0.16])
+    order = next(iter(channel["orders"].values()))
+    np.testing.assert_allclose(order["instrument"], order["total"])
+    np.testing.assert_allclose(
+        order["total_with_telescope_no_slit"],
+        order["total"],
+    )
     assert channel["order_detector_qe_methods"] == ["spectral throughput"]
 
 
@@ -842,8 +911,10 @@ def test_build_slit_loss_data_returns_losses_between_zero_and_one():
     )
 
     curves = data["arms"]["VIS"]["curves"]
+    assert "no_ao_current_adc_residual" in curves
     assert "no_ao_zenith" in curves
     assert "no_ao_elevation_60_ad_only" in curves
+    assert np.isclose(data["airmass"], 1.3)
     for curve in curves.values():
         assert np.all(curve["loss"] >= 0)
         assert np.all(curve["loss"] <= 1)
@@ -908,7 +979,9 @@ def test_slit_loss_notebook_call_chain_handles_dimensionless_ao_tables():
     fig, axes = val.plot_slit_loss_by_arm(data)
 
     assert axes.shape == (1, 1)
-    assert len(axes[0, 0].lines) == 6
+    assert "no_ao_current_adc_residual" in data["arms"]["VIS"]["curves"]
+    assert "ao_current_adc_residual" in data["arms"]["VIS"]["curves"]
+    assert len(axes[0, 0].lines) == 8
     fig.clf()
 
 

@@ -7,6 +7,7 @@ import inspect
 import io
 import pathlib
 import warnings
+from contextlib import contextmanager
 from typing import Any
 
 
@@ -93,6 +94,33 @@ def disable_scopesim_top_level_catch() -> None:
         if unwrapped_method is not method:
             setattr(cls, method_name, unwrapped_method)
     scopesim.OpticalTrain = cls
+
+
+@contextmanager
+def disable_scopesim_progress_bars(disable: bool = True):
+    """Temporarily suppress ScopeSim observe-time tqdm progress bars.
+
+    ScopeSim imports ``tqdm`` directly in ``optical_train``. Patching that
+    module binding keeps the behavior local to the active notebook cell and
+    avoids changing ScopeSim or rebuilding the optical train.
+    """
+    if not disable:
+        yield
+        return
+
+    import scopesim.optics.optical_train as optical_train
+
+    original_tqdm = optical_train.tqdm
+
+    def quiet_tqdm(*args: Any, **kwargs: Any):
+        kwargs["disable"] = True
+        return original_tqdm(*args, **kwargs)
+
+    optical_train.tqdm = quiet_tqdm
+    try:
+        yield
+    finally:
+        optical_train.tqdm = original_tqdm
 
 
 def warning_prevent_sync_alt_ra_dec(cmd: Any) -> None:

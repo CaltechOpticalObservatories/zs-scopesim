@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -46,14 +46,31 @@ def _plot_spectrum_values(
     alpha: float = 1.0,
     linestyle: str = "-",
 ) -> None:
+    unit = getattr(values, "unit", None)
+    plot_values = _as_float_array(values)
+    ylabel = "Flux density"
+    if unit is not None and unit != u.dimensionless_unscaled:
+        try:
+            plot_values = (
+                u.Quantity(values).to_value(PHOTLAM)
+                * _PHOTLAM_TO_PH_S_M2_NM
+            )
+            ylabel = (
+                r"Flux density "
+                r"[photons s$^{-1}$ m$^{-2}$ nm$^{-1}$]"
+            )
+        except Exception:
+            ylabel = f"Flux density [{unit}]"
     ax.plot(
         wave.to_value(u.um),
-        _as_float_array(values),
+        plot_values,
         label=label,
         lw=linewidth,
         alpha=alpha,
         ls=linestyle,
     )
+    if not ax.get_ylabel():
+        ax.set_ylabel(ylabel)
 
 
 def _evaluate_spectrum_values(spectrum: Any, wave: u.Quantity, weight: float = 1.0) -> Any:
@@ -207,8 +224,14 @@ def _plot_image_source_field(
     else:
         if data.ndim > 2:
             data = np.nanmean(data, axis=0)
-        ax_image.imshow(data, origin="lower", cmap="viridis")
+        im = ax_image.imshow(data, origin="lower", cmap="viridis")
         ax_image.set_title("Spatial Profile")
+        ax_image.set_xlabel("x pixel")
+        ax_image.set_ylabel("y pixel")
+        cbar = ax_image.figure.colorbar(
+            im, ax=ax_image, fraction=0.046, pad=0.025,
+        )
+        cbar.set_label("Relative surface brightness")
 
     try:
         spectrum = field.spectrum
@@ -296,11 +319,25 @@ def plot_source(
     return fig, axs
 
 
-def _plot_quantity_values(values: u.Quantity) -> np.ndarray:
+_PHOTLAM_TO_PH_S_M2_NM = 1e5
+_SPECTRAL_SURFACE_BRIGHTNESS_LABEL = (
+    r"Spectral surface brightness "
+    r"[photons s$^{-1}$ m$^{-2}$ nm$^{-1}$ arcsec$^{-2}$]"
+)
+
+
+def _plot_spectral_surface_brightness(values: Any) -> np.ndarray:
+    """Return PHOTLAM-like background density in human photon units.
+
+    ScopeSim's spectral-background integrator treats PHOTLAM-like thermal
+    spectra as per square arcsecond. The numeric conversion is therefore
+    1 PHOTLAM = 1 ph s-1 cm-2 A-1 arcsec-2 = 1e5 ph s-1 m-2 nm-1 arcsec-2.
+    """
     try:
-        return values.to_value(PHOTLAM)
+        photlam_values = u.Quantity(values).to_value(PHOTLAM)
     except Exception:
-        return _as_float_array(values)
+        photlam_values = _as_float_array(values)
+    return np.asarray(photlam_values, dtype=float) * _PHOTLAM_TO_PH_S_M2_NM
 
 
 def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
@@ -329,7 +366,7 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
         for name, spectrum in channel["spectra"].items():
             ax.plot(
                 wave,
-                _plot_quantity_values(spectrum),
+                _plot_spectral_surface_brightness(spectrum),
                 lw=1.4,
                 color=colors.get(name, "0.5"),
                 label=f"{name} diffuse",
@@ -337,7 +374,7 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
         if channel.get("total_spectrum_without_blocking") is not None:
             ax.plot(
                 wave,
-                _plot_quantity_values(
+                _plot_spectral_surface_brightness(
                     channel["total_spectrum_without_blocking"],
                 ),
                 lw=2.0,
@@ -349,9 +386,8 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
         if channel["total_spectrum"] is not None:
             ax.plot(
                 wave,
-                _plot_quantity_values(channel["total_spectrum"]),
+                _plot_spectral_surface_brightness(channel["total_spectrum"]),
                 lw=2.2,
-                color="black",
                 alpha=0.95,
                 label="total with ir block",
             )
@@ -377,9 +413,9 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
             fontsize=9,
             bbox={
                 "boxstyle": "round,pad=0.22",
-                "fc": "white",
+                "fc": "none",
                 "ec": "0.75",
-                "alpha": 0.78,
+                "alpha": 0.9,
             },
         )
         ax.set_title(
@@ -393,7 +429,7 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
     for ax in axes[-1, :]:
         ax.set_xlabel("Wavelength [nm]")
     for ax in axes[:, 0]:
-        ax.set_ylabel("Spectral background [PHOTLAM equiv.]")
+        ax.set_ylabel(_SPECTRAL_SURFACE_BRIGHTNESS_LABEL)
     handles, labels = [], []
     for ax in axes.flat:
         ax_handles, ax_labels = ax.get_legend_handles_labels()
@@ -418,13 +454,16 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
         constrained_layout=True,
     )
     group_colors = {
+        "telescope": "tab:gray",
         "preoptics": "tab:blue",
         "collimator": "tab:green",
         "camera": "tab:cyan",
+        "ir_blocking_filter": "tab:olive",
         "other": "0.5",
     }
 
     ymax = 0.0
+    ymin = np.inf
     for channel in data["channels"].values():
         curves = (
             list(channel["pre_disperser_terms"].values())
@@ -435,78 +474,88 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
                            np.zeros_like(channel["post_disperser_after_qe"]))]
         )
         for curve in curves:
+            curve = _plot_spectral_surface_brightness(curve)
             finite = curve[np.isfinite(curve)]
             if finite.size:
                 ymax = max(ymax, float(np.nanmax(finite)))
-    ymax = max(1e-3, ymax * 1.08)
+                positive = finite[finite > 0]
+                if positive.size:
+                    ymin = min(ymin, float(np.nanmin(positive)))
+    ymax = max(1e-12, ymax * 1.5)
+    ymin = max(1e-18, ymin / 2) if np.isfinite(ymin) else 1e-18
 
     for ax, (aperture_id, channel) in zip(axes.flat, data["channels"].items()):
         for name, values in channel["pre_disperser_terms"].items():
+            values = _plot_spectral_surface_brightness(values)
             ax.plot(
-                wave, values, lw=1.0, ls="--", alpha=0.75,
+                wave, np.where(values > 0, values, np.nan),
+                lw=1.0, ls="--", alpha=0.8,
                 color=group_colors.get(name, "0.5"),
                 label=f"pre {name}",
             )
         for name, values in channel["post_disperser_terms"].items():
+            values = _plot_spectral_surface_brightness(values)
             ax.plot(
-                wave, values, lw=1.1, ls="-", alpha=0.7,
+                wave, np.where(values > 0, values, np.nan),
+                lw=1.1, ls="-", alpha=0.8,
                 color=group_colors.get(name, "0.5"),
                 label=f"post {name}",
             )
 
         ax.plot(
-            wave, channel["pre_disperser_output_equiv"], lw=2.0,
+            wave,
+            np.where(
+                _plot_spectral_surface_brightness(
+                    channel["pre_disperser_output_equiv"],
+                ) > 0,
+                _plot_spectral_surface_brightness(
+                    channel["pre_disperser_output_equiv"],
+                ),
+                np.nan,
+            ),
+            lw=2.0,
             color="tab:purple", alpha=0.9,
             label="pre total before trace QE", zorder=8,
         )
-        ax.plot(
-            wave,
+        post_without_block = _plot_spectral_surface_brightness(
             channel.get(
                 "post_disperser_without_blocking_after_qe",
                 channel["post_disperser_after_qe"],
             ),
-            lw=2.0,
-            ls="--",
-            color="0.25",
-            alpha=0.85,
-            label="post diffuse without ir block",
-            zorder=9,
         )
         ax.plot(
-            wave, channel["post_disperser_after_qe"], lw=2.4,
-            color="black", alpha=0.95,
-            label="post diffuse with ir block+QE", zorder=10,
+            wave,
+            np.where(post_without_block > 0, post_without_block, np.nan),
+            lw=2.0,
+            ls="--",
+            color="0.35",
+            alpha=0.9,
+            label="post diffuse without IR block",
+            zorder=9,
+        )
+        post_after_qe = _plot_spectral_surface_brightness(
+            channel["post_disperser_after_qe"],
+        )
+        ax.plot(
+            wave,
+            np.where(post_after_qe > 0, post_after_qe, np.nan),
+            lw=2.4,
+            alpha=0.95,
+            label="post diffuse with IR block+QE", zorder=10,
         )
         blocked_delta = channel.get("post_disperser_blocked_delta")
         if blocked_delta is not None and np.nanmax(np.abs(blocked_delta)) > 0:
+            blocked_delta = _plot_spectral_surface_brightness(blocked_delta)
             ax.plot(
-                wave, blocked_delta, lw=1.8, ls="-.",
-                color="tab:brown", alpha=0.9,
-                label="removed by ir block", zorder=9,
-            )
-        extract_curve = channel.get("post_disperser_extract_equiv_rate_ph_s")
-        if extract_curve is not None:
-            rate_ax = ax.twinx()
-            rate_ax.plot(
                 wave,
-                extract_curve,
-                lw=1.2,
-                ls=":",
-                color="tab:orange",
-                alpha=0.8,
-                label="integrated diffuse extraction equiv.",
+                np.where(blocked_delta > 0, blocked_delta, np.nan),
+                lw=1.8,
+                ls="-.",
+                color="tab:brown",
+                alpha=0.9,
+                label="removed by IR block",
+                zorder=9,
             )
-            ax.plot(
-                [], [], lw=1.2, ls=":", color="tab:orange",
-                alpha=0.8, label="integrated diffuse extraction equiv.",
-            )
-            rate_ax.set_yscale("symlog", linthresh=1e-6)
-            rate_ax.tick_params(axis="y", labelsize=7, colors="tab:orange")
-            if aperture_id in (2, 5):
-                rate_ax.set_ylabel("Integrated diffuse [ph/s]", color="tab:orange")
-            peak_rate = float(np.nanmax(extract_curve))
-        else:
-            peak_rate = np.nan
         peak_lines = []
         for label, values in (
             ("pre", channel["pre_disperser_output_equiv"]),
@@ -516,37 +565,34 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
                 channel["post_disperser_after_qe"],
             )),
         ):
+            values = _plot_spectral_surface_brightness(values)
             finite = values[np.isfinite(values)]
             if finite.size:
                 peak_lines.append(f"{label}: {np.nanmax(finite):.2g}")
+        peak_rate = float(channel.get("post_disperser_rate_ph_s_pix", np.nan))
         if np.isfinite(peak_rate):
-            peak_lines.append(f"int: {peak_rate:.2g} ph/s")
+            peak_lines.append(f"post rate: {peak_rate:.2g} ph/s/pix")
         ax.text(
             0.02,
             0.04,
             "peak " + "\n".join(peak_lines),
             transform=ax.transAxes,
             fontsize=10,
-            color="black",
             va="bottom",
             ha="left",
-            bbox={"boxstyle": "round,pad=0.25", "fc": "white",
-                  "ec": "0.75", "alpha": 0.78},
-        )
-        ax.plot(
-            wave, channel["detector_qe"], lw=0.9, ls=":",
-            color="tab:red", alpha=0.8, label="QE throughput",
+            bbox={"boxstyle": "round,pad=0.25", "fc": "none",
+                  "ec": "0.75", "alpha": 0.9},
         )
         ax.set_title(f"{channel['label']} (aperture {aperture_id})")
         ax.set_xlim(wave.min(), wave.max())
-        ax.set_yscale("symlog", linthresh=1e-4)
-        ax.set_ylim(0, ymax)
+        ax.set_yscale("log")
+        ax.set_ylim(ymin, ymax)
         ax.grid(alpha=0.2)
 
     for ax in axes[-1, :]:
         ax.set_xlabel("Wavelength [nm]")
     for ax in axes[:, 0]:
-        ax.set_ylabel("Thermal emission density [PHOTLAM equiv.] (symlog)")
+        ax.set_ylabel(_SPECTRAL_SURFACE_BRIGHTNESS_LABEL)
 
     handles, labels = [], []
     for ax in axes.flat:
@@ -690,81 +736,240 @@ def plot_detector_background_budget(table: Table):
     return fig, axes
 
 
-def plot_transmission_sanity(data: Mapping[str, Any]):
-    """Plot channel/order throughput sanity-check data."""
+def _arm_name_for_channel(label: str) -> str:
+    channel_label = str(label).upper()
+    if channel_label in {"B", "G", "R", "VIS"}:
+        return "VIS"
+    if channel_label in {"YJ", "H", "K", "NIR"}:
+        return "NIR"
+    raise ValueError(f"Cannot map channel label {label!r} to VIS/NIR slit arm.")
+
+
+def _slit_transmission_for_channel(
+    channel: Mapping[str, Any],
+    slit_loss_data: Mapping[str, Any],
+    wave_nm: np.ndarray,
+    slit_curve_name: str,
+) -> np.ndarray:
+    arm_name = _arm_name_for_channel(channel["label"])
+    arms = slit_loss_data["arms"]
+    if arm_name not in arms:
+        raise ValueError(f"slit_loss_data has no {arm_name!r} arm.")
+    arm = arms[arm_name]
+    if slit_curve_name not in arm["curves"]:
+        raise ValueError(
+            f"{arm_name} slit-loss data has no {slit_curve_name!r} curve."
+        )
+    curve = arm["curves"][slit_curve_name]
+    arm_wave = u.Quantity(arm["wave_nm"]).to_value(u.nm)
+    throughput = np.asarray(curve["throughput"], dtype=float)
+    return np.interp(wave_nm, arm_wave, throughput, left=np.nan, right=np.nan)
+
+
+def _order_statistic(
+    channel: Mapping[str, Any],
+    key: str,
+    reducer: Any,
+) -> np.ndarray:
+    arrays = [
+        np.asarray(order[key], dtype=float)
+        for order in channel["orders"].values()
+        if key in order
+    ]
+    if not arrays:
+        raise ValueError(f"Channel {channel['label']} has no order {key!r} curves.")
+    return reducer(np.vstack(arrays), axis=0)
+
+
+def plot_transmission_sanity(
+    data: Mapping[str, Any],
+    *,
+    slit_loss_data: Mapping[str, Any] | None = None,
+    slit_curve_name: str = "no_ao_current_adc_residual",
+):
+    """Plot component-level and all-channel throughput sanity checks."""
     import matplotlib.pyplot as plt
 
     wave = data["wave_nm"].to_value(u.nm)
-    fig, axes = plt.subplots(
-        2, 3, figsize=(16, 7.5), sharex=True, sharey=True,
-        constrained_layout=True,
-    )
+    fig = plt.figure(figsize=(16, 12.5), constrained_layout=True)
+    grid = fig.add_gridspec(3, 3, height_ratios=[1.0, 1.0, 1.35])
+    component_axes = np.array([
+        [fig.add_subplot(grid[row, col]) for col in range(3)]
+        for row in range(2)
+    ])
+    summary_ax = fig.add_subplot(grid[2, :])
+    axes = {"components": component_axes, "summary": summary_ax}
+
+    cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    channel_colors = {
+        channel["label"]: color
+        for idx, channel in enumerate(data["channels"].values())
+        for color in [cycle[idx % len(cycle)]]
+    }
 
     group_colors = {
+        "telescope": "tab:gray",
         "preoptics": "tab:blue",
         "collimator": "tab:green",
         "camera": "tab:cyan",
+        "ir_blocking_filter": "tab:olive",
         "other": "0.5",
     }
 
-    for ax, (aperture_id, channel) in zip(axes.flat, data["channels"].items()):
+    for ax, (aperture_id, channel) in zip(
+        component_axes.flat,
+        data["channels"].items(),
+        strict=False,
+    ):
         for name, values in channel["optics_groups"].items():
             ax.plot(
-                wave, values, lw=1.0,
+                wave,
+                values,
+                lw=1.0,
+                alpha=0.8,
                 color=group_colors.get(name, "0.5"),
                 label=name,
             )
-
         ax.plot(
-            wave, channel["dichroic_total"], lw=1.2,
-            color="tab:purple", label="dichroics",
+            wave,
+            channel["dichroic_total"],
+            lw=1.2,
+            color="tab:purple",
+            alpha=0.85,
+            label="dichroics",
         )
         ax.plot(
-            wave, channel["detector_qe"], lw=1.8, ls=":",
-            color="tab:red", alpha=0.9,
-            label=channel.get("detector_qe_label", "detector QE"),
+            wave,
+            channel["instrument_optics_total"],
+            lw=1.0,
+            ls="--",
+            color="0.25",
+            alpha=0.7,
+            label="optics product",
         )
-        midpoint_qe = channel.get("detector_qe_midpoint")
-        if midpoint_qe is not None:
+        for idx, order in enumerate(channel["orders"].values()):
             ax.plot(
-                wave, midpoint_qe, lw=1.4, ls="--",
-                color="tab:red", alpha=0.75,
-                label=channel.get(
-                    "detector_qe_midpoint_label",
-                    "detector QE midpoint",
-                ),
-            )
-
-        for idx, (_trace_id, order) in enumerate(channel["orders"].items()):
-            order_label = "disperser/order" if idx == 0 else None
-            order_qe_label = "QE at order trace" if idx == 0 else None
-            total_label = "total/order" if idx == 0 else None
-            ax.plot(
-                wave, order["disperser"], lw=0.7, color="tab:orange",
-                alpha=0.35, label=order_label,
+                wave,
+                order["disperser"],
+                lw=0.6,
+                color="tab:orange",
+                alpha=0.25,
+                label="disperser/order" if idx == 0 else None,
             )
             ax.plot(
-                wave, order["detector_qe"], lw=1.0, color="tab:pink",
-                alpha=0.35, label=order_qe_label,
+                wave,
+                order["detector_qe"],
+                lw=0.6,
+                color="tab:red",
+                alpha=0.22,
+                label="trace QE" if idx == 0 else None,
             )
             ax.plot(
-                wave, order["total"], lw=1.8, color="black",
-                alpha=0.65, label=total_label,
+                wave,
+                order["instrument"],
+                lw=0.85,
+                color="0.1",
+                alpha=0.32,
+                label="instrument/order" if idx == 0 else None,
             )
-
         ax.set_title(f"{channel['label']} (aperture {aperture_id})")
         ax.set_xlim(wave.min(), wave.max())
         ax.set_ylim(0, 1.05)
         ax.grid(alpha=0.2)
 
-    for ax in axes[-1, :]:
+    for ax in component_axes[-1, :]:
         ax.set_xlabel("Wavelength [nm]")
-    for ax in axes[:, 0]:
+    for ax in component_axes[:, 0]:
         ax.set_ylabel("Throughput")
+    for ax in component_axes.flat[len(data["channels"]):]:
+        ax.axis("off")
 
-    handles, labels = axes.flat[0].get_legend_handles_labels()
+    component_legend: OrderedDict[str, Any] = OrderedDict()
+    for ax in component_axes.flat:
+        handles, labels = ax.get_legend_handles_labels()
+        for handle, label in zip(handles, labels, strict=True):
+            if label and not label.startswith("_"):
+                component_legend.setdefault(label, handle)
     fig.legend(
-        handles, labels, loc="outside upper center", ncol=7, frameon=False,
+        list(component_legend.values()),
+        list(component_legend),
+        loc="outside upper center",
+        ncol=7,
+        frameon=False,
+        fontsize="small",
+    )
+
+    summary_component_label_used: set[str] = set()
+    for channel in data["channels"].values():
+        label = channel["label"]
+        color = channel_colors[label]
+        slit_transmission = (
+            _slit_transmission_for_channel(
+                channel, slit_loss_data, wave, slit_curve_name,
+            )
+            if slit_loss_data is not None
+            else np.ones_like(wave)
+        )
+        summary_components = (
+            ("telescope", channel["telescope_throughput"], ":"),
+            ("dichroic", channel["dichroic_total"], "-."),
+            ("optics", channel["instrument_optics_total"], (0, (5, 2))),
+            ("active slit", slit_transmission, (0, (1, 2))),
+            (
+                "trace QE median",
+                _order_statistic(channel, "detector_qe", np.nanmedian),
+                (0, (3, 1, 1, 1)),
+            ),
+        )
+        for component_name, values, linestyle in summary_components:
+            summary_ax.plot(
+                wave,
+                values,
+                lw=0.9,
+                ls=linestyle,
+                color=color,
+                alpha=0.24,
+                label=(
+                    component_name
+                    if component_name not in summary_component_label_used
+                    else None
+                ),
+            )
+            summary_component_label_used.add(component_name)
+
+        for idx, order in enumerate(channel["orders"].values()):
+            instrument_label = f"{label} instrument" if idx == 0 else None
+            total_label = f"{label} total" if idx == 0 else None
+            summary_ax.plot(
+                wave,
+                order["instrument"],
+                lw=0.95,
+                ls="--",
+                color=color,
+                alpha=0.48,
+                label=instrument_label,
+            )
+            summary_ax.plot(
+                wave,
+                order["total_with_telescope_no_slit"] * slit_transmission,
+                lw=1.55,
+                color=color,
+                alpha=0.86,
+                label=total_label,
+            )
+
+    summary_ax.set_title("All Channels: Components, Instrument, and Total")
+    summary_ax.set_xlim(wave.min(), wave.max())
+    summary_ax.set_ylim(0, 1.05)
+    summary_ax.set_xlabel("Wavelength [nm]")
+    summary_ax.set_ylabel("Throughput")
+    summary_ax.grid(alpha=0.2)
+    summary_ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.16),
+        ncol=7,
+        frameon=False,
+        fontsize="small",
     )
     return fig, axes
 
@@ -1086,6 +1291,7 @@ def _readout_display_limits(
     clip: float | None,
     *,
     symmetric: bool,
+    zero_floor: bool = False,
 ) -> tuple[float, float, str]:
     finite = data[np.isfinite(data)]
     if finite.size == 0:
@@ -1098,6 +1304,8 @@ def _readout_display_limits(
                 limit = 1.0
             return -limit, limit, "unclipped"
         vmin = float(np.nanmin(finite))
+        if zero_floor:
+            vmin = 0.0
         vmax = float(np.nanmax(finite))
         if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
             vmax = vmin + 1.0
@@ -1112,7 +1320,7 @@ def _readout_display_limits(
             limit = float(np.nanquantile(np.abs(finite), clip))
             label = f"{_clip_fraction_label(clip)} |value|"
         else:
-            vmin = float(np.nanmin(finite))
+            vmin = 0.0 if zero_floor else float(np.nanmin(finite))
             vmax = float(np.nanquantile(finite, clip))
             label = _clip_fraction_label(clip)
             if not np.isfinite(vmax) or vmax <= vmin:
@@ -1124,7 +1332,7 @@ def _readout_display_limits(
         limit = clip
         label = f"{clip:.4g}"
         if not symmetric:
-            vmin = min(float(np.nanmin(finite)), 0.0)
+            vmin = 0.0 if zero_floor else min(float(np.nanmin(finite)), 0.0)
             vmax = clip
             if not np.isfinite(vmax) or vmax <= vmin:
                 vmax = float(np.nanmax(finite))
@@ -1154,6 +1362,65 @@ def _readout_grid_axes(n_images: int):
     return fig, axes
 
 
+def _readout_scale_groups(
+    shared_scale: bool | Sequence[Sequence[int | str]],
+    titles: Sequence[str],
+    n_images: int,
+) -> list[list[int]]:
+    if shared_scale is False:
+        return [[idx] for idx in range(n_images)]
+    if shared_scale is True:
+        return [list(range(n_images))]
+    title_to_index = {title: idx for idx, title in enumerate(titles)}
+    groups: list[list[int]] = []
+    seen: set[int] = set()
+    for group in shared_scale:
+        indices: list[int] = []
+        for item in group:
+            idx = title_to_index[item] if isinstance(item, str) else int(item)
+            if idx < 0 or idx >= n_images:
+                raise IndexError(f"Readout scale index out of range: {idx}")
+            indices.append(idx)
+            seen.add(idx)
+        if indices:
+            groups.append(indices)
+    for idx in range(n_images):
+        if idx not in seen:
+            groups.append([idx])
+    return groups
+
+
+def _readout_group_limits(
+    images: Sequence[np.ndarray],
+    groups: Sequence[Sequence[int]],
+    *,
+    clip: float | None,
+    symmetric: bool,
+    zero_floor: bool,
+) -> dict[int, tuple[float, float, str, bool]]:
+    limits: dict[int, tuple[float, float, str, bool]] = {}
+    for group in groups:
+        finite_values = [
+            np.asarray(images[idx])[np.isfinite(images[idx])]
+            for idx in group
+        ]
+        finite_values = [values for values in finite_values if values.size]
+        if finite_values:
+            combined = np.concatenate(finite_values)
+        else:
+            combined = np.array([], dtype=float)
+        vmin, vmax, clip_label = _readout_display_limits(
+            combined,
+            clip,
+            symmetric=symmetric,
+            zero_floor=zero_floor,
+        )
+        is_shared = len(group) > 1
+        for idx in group:
+            limits[idx] = (vmin, vmax, clip_label, is_shared)
+    return limits
+
+
 def _plot_readout_image_grid(
     images: list[np.ndarray],
     titles: list[str],
@@ -1162,13 +1429,24 @@ def _plot_readout_image_grid(
     symmetric: bool,
     cmap: str,
     title_suffix: str = "",
-    annotate_max_abs: bool = False,
+    annotate_delta: bool = False,
+    annotate_stats: bool = False,
+    zero_floor: bool = False,
+    shared_scale: bool | Sequence[Sequence[int | str]] = False,
 ):
     fig, axes = _readout_grid_axes(len(images))
-    for ax, title, data in zip(axes.flat, titles, images, strict=False):
-        vmin, vmax, clip_label = _readout_display_limits(
-            data, clip, symmetric=symmetric,
-        )
+    scale_groups = _readout_scale_groups(shared_scale, titles, len(images))
+    scale_limits = _readout_group_limits(
+        images,
+        scale_groups,
+        clip=clip,
+        symmetric=symmetric,
+        zero_floor=zero_floor,
+    )
+    for idx, (ax, title, data) in enumerate(
+        zip(axes.flat, titles, images, strict=False),
+    ):
+        vmin, vmax, clip_label, is_shared = scale_limits[idx]
         im = ax.imshow(
             data,
             origin="lower",
@@ -1178,27 +1456,48 @@ def _plot_readout_image_grid(
             interpolation="nearest",
         )
         ax.set_title(f"{title}{title_suffix}", pad=8)
-        if annotate_max_abs:
+        if annotate_delta or annotate_stats:
             finite = data[np.isfinite(data)]
             max_abs = np.nanmax(np.abs(finite)) if finite.size else 0.0
+            max_pos = np.nanmax(finite) if finite.size else 0.0
+            min_delta = np.nanmin(finite) if finite.size else 0.0
+            neg_sum = np.nansum(np.clip(data, None, 0))
+            mean_value = np.nanmean(finite) if finite.size else 0.0
+            median_value = np.nanmedian(finite) if finite.size else 0.0
+            if annotate_delta:
+                annotation = (
+                    f"max +delta {max_pos:.3g}\n"
+                    f"min delta {min_delta:.3g}\n"
+                    f"neg sum {neg_sum:.3g}\n"
+                    f"max |delta| {max_abs:.3g}\n"
+                    f"clip {clip_label}"
+                )
+            else:
+                annotation = (
+                    f"mean {mean_value:.3g}\n"
+                    f"median {median_value:.3g}\n"
+                    f"max {max_pos:.3g}\n"
+                    f"clip {clip_label}"
+                )
             ax.text(
                 0.02,
                 0.96,
-                f"max |delta| {max_abs:.3g}\nclip {clip_label}",
+                annotation,
                 transform=ax.transAxes,
                 ha="left",
                 va="top",
                 fontsize=9,
+                color="white",
                 bbox={
                     "boxstyle": "round,pad=0.22",
-                    "fc": "white",
-                    "ec": "0.75",
-                    "alpha": 0.78,
+                    "fc": "black",
+                    "ec": "none",
+                    "alpha": 0.55,
                 },
             )
         ax.axis("off")
         cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.025)
-        cbar.set_label(f"clip {clip_label}")
+        cbar.set_label(f"{'shared ' if is_shared else ''}clip {clip_label}")
     for ax in axes.flat[len(images):]:
         ax.axis("off")
     return fig, axes
@@ -1209,6 +1508,8 @@ def plot_readout_overview(
     titles: list[str] | None = None,
     *,
     clip: float | None = 0.995,
+    shared_scale: bool | Sequence[Sequence[int | str]] = False,
+    annotate_stats: bool = False,
 ):
     """Plot detector readout images from a ScopeSim readout result."""
     readouts = list(hdul)
@@ -1220,6 +1521,9 @@ def plot_readout_overview(
         clip=clip,
         symmetric=False,
         cmap="cividis",
+        zero_floor=True,
+        shared_scale=shared_scale,
+        annotate_stats=annotate_stats,
     )
 
 
@@ -1229,6 +1533,8 @@ def plot_readout_delta_overview(
     titles: list[str] | None = None,
     *,
     clip: float | None = 0.995,
+    title_suffix: str = " Source - Empty",
+    shared_scale: bool | Sequence[Sequence[int | str]] = False,
 ):
     """Plot source-minus-reference detector readout images."""
     signal_readouts = list(signal_hdul)
@@ -1247,10 +1553,12 @@ def plot_readout_delta_overview(
         images,
         titles,
         clip=clip,
-        symmetric=True,
-        cmap="coolwarm",
-        title_suffix=" Source - Empty",
-        annotate_max_abs=True,
+        symmetric=False,
+        cmap="magma",
+        title_suffix=title_suffix,
+        annotate_delta=True,
+        zero_floor=True,
+        shared_scale=shared_scale,
     )
 
 
