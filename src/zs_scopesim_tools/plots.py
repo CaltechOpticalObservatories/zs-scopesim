@@ -781,11 +781,24 @@ def _order_statistic(
     return reducer(np.vstack(arrays), axis=0)
 
 
+def _spectrograph_optics_total(channel: Mapping[str, Any]) -> np.ndarray:
+    groups = [
+        np.asarray(values, dtype=float)
+        for name, values in channel["instrument_optics_groups"].items()
+        if name != "ir_blocking_filter"
+    ]
+    if not groups:
+        return np.ones_like(np.asarray(channel["dichroic_total"], dtype=float))
+    return np.prod(groups, axis=0)
+
+
 def plot_transmission_sanity(
     data: Mapping[str, Any],
     *,
     slit_loss_data: Mapping[str, Any] | None = None,
     slit_curve_name: str = "no_ao_current_adc_residual",
+    summary_component_alpha: float = 0.38,
+    summary_component_linewidth: float = 1.15,
 ):
     """Plot component-level and all-channel throughput sanity checks."""
     import matplotlib.pyplot as plt
@@ -812,7 +825,6 @@ def plot_transmission_sanity(
         "preoptics": "tab:blue",
         "collimator": "tab:green",
         "camera": "tab:cyan",
-        "ir_blocking_filter": "tab:olive",
         "other": "0.5",
     }
 
@@ -822,6 +834,8 @@ def plot_transmission_sanity(
         strict=False,
     ):
         for name, values in channel["optics_groups"].items():
+            if name == "ir_blocking_filter":
+                continue
             ax.plot(
                 wave,
                 values,
@@ -840,12 +854,12 @@ def plot_transmission_sanity(
         )
         ax.plot(
             wave,
-            channel["instrument_optics_total"],
+            _spectrograph_optics_total(channel),
             lw=1.0,
             ls="--",
             color="0.25",
             alpha=0.7,
-            label="optics product",
+            label="spectrograph optics",
         )
         for idx, order in enumerate(channel["orders"].values()):
             ax.plot(
@@ -913,7 +927,11 @@ def plot_transmission_sanity(
         summary_components = (
             ("telescope", channel["telescope_throughput"], ":"),
             ("dichroic", channel["dichroic_total"], "-."),
-            ("optics", channel["instrument_optics_total"], (0, (5, 2))),
+            (
+                "spectrograph optics",
+                _spectrograph_optics_total(channel),
+                (0, (5, 2)),
+            ),
             ("active slit", slit_transmission, (0, (1, 2))),
             (
                 "trace QE median",
@@ -925,10 +943,10 @@ def plot_transmission_sanity(
             summary_ax.plot(
                 wave,
                 values,
-                lw=0.9,
+                lw=summary_component_linewidth,
                 ls=linestyle,
                 color=color,
-                alpha=0.24,
+                alpha=summary_component_alpha,
                 label=(
                     component_name
                     if component_name not in summary_component_label_used

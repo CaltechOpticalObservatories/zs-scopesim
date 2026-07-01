@@ -2769,6 +2769,205 @@ def source_photon_crosscheck_table(
     return Table(rows=rows)
 
 
+def _zenith_angle_from_airmass(airmass: float) -> u.Quantity:
+    airmass = max(1.0, float(airmass))
+    return (
+        np.degrees(np.arccos(np.clip(1.0 / airmass, 0.0, 1.0))) * u.deg
+    )
+
+
+def _trace_dispersion_nm_per_pixel(
+    trace: Any,
+    image_plane: Any | None,
+    wave_mid_nm: float,
+) -> float:
+    trace_min_nm = float(trace.wave_min) * 1000.0
+    trace_max_nm = float(trace.wave_max) * 1000.0
+    span_nm = trace_max_nm - trace_min_nm
+    if not np.isfinite(span_nm) or span_nm <= 0:
+        return np.nan
+    step_nm = min(
+        max(abs(wave_mid_nm) * 1.0e-5, span_nm * 1.0e-4, 1.0e-5),
+        0.45 * span_nm,
+    )
+    wave_pair = np.array([
+        max(trace_min_nm, wave_mid_nm - step_nm),
+        min(trace_max_nm, wave_mid_nm + step_nm),
+    ]) * u.nm
+    if wave_pair[1] <= wave_pair[0]:
+        return np.nan
+    coords = _trace_center_detector_positions(trace, wave_pair, image_plane)
+    if coords is None:
+        return np.nan
+    if "detector_x" in coords and "detector_y" in coords:
+        dx = float(coords["detector_x"][1] - coords["detector_x"][0])
+        dy = float(coords["detector_y"][1] - coords["detector_y"][0])
+        pixel_distance = np.hypot(dx, dy)
+    else:
+        pixel_size = getattr(trace, "meta", {}).get("pixel_size")
+        try:
+            pixel_size = float(pixel_size)
+        except (TypeError, ValueError):
+            pixel_size = np.nan
+        if not np.isfinite(pixel_size) or pixel_size <= 0:
+            return np.nan
+        dx = float(coords["detector_x_mm"][1] - coords["detector_x_mm"][0])
+        dy = float(coords["detector_y_mm"][1] - coords["detector_y_mm"][0])
+        pixel_distance = np.hypot(dx, dy) / pixel_size
+    if not np.isfinite(pixel_distance) or pixel_distance <= 0:
+        return np.nan
+    return float((wave_pair[1] - wave_pair[0]).to_value(u.nm) / pixel_distance)
+
+
+def resolution_element_footprint_table(
+    ztrain: Any,
+    *,
+    spectral_resolution: float | None = None,
+    allow_diagnostic_psf: bool = False,
+) -> Table:
+    """Return a per-channel FWHM resolution-element footprint estimate.
+
+    The spectral footprint is derived from ``lambda / R`` and the trace
+    wavelength-to-detector-pixel mapping. The spatial footprint is derived from
+    the active PSF FWHM and the image-plane pixel area. This is a compact
+    detector-scale sanity estimate, not an extracted-spectrum model.
+    """
+    if spectral_resolution is None:
+        spectral_resolution = _required_cmd_float(
+            ztrain.cmds, "!SIM.spectral.spectral_resolution",
+        )
+    if not np.isfinite(spectral_resolution) or spectral_resolution <= 0:
+        raise ValueError(
+            "Spectral resolution must be finite and positive; got "
+            f"{spectral_resolution!r}."
+        )
+    seeing = _required_cmd_quantity(ztrain.cmds, "!OBS.seeing", u.arcsec)
+    zenith_angle = _zenith_angle_from_airmass(
+        _required_cmd_float(ztrain.cmds, "!OBS.airmass"),
+    )
+    fwhm_func, psf_effect = _configured_psf_fwhm_func(
+        ztrain,
+        allow_diagnostic_fallback=allow_diagnostic_psf,
+    )
+    traces_for_aperture = traces_by_aperture(
+        get_effect(ztrain, "trace_list_analytical"),
+    )
+
+    rows: list[dict[str, Any]] = []
+    for aperture_id, traces in traces_for_aperture.items():
+        label = channel_label(aperture_id, traces)
+        image_plane_id = int(traces[0].meta["image_plane_id"]) if traces else aperture_id
+        image_plane = (
+            ztrain.image_planes[image_plane_id]
+            if hasattr(ztrain, "image_planes")
+            and image_plane_id < len(ztrain.image_planes)
+            else None
+        )
+        pixel_area = _image_plane_pixel_area(ztrain, image_plane_id)
+        pixel_scale = np.sqrt(pixel_area.to_value(u.arcsec**2))
+        wave_mid_values = []
+        resolution_elements = []
+        dispersion_values = []
+        spectral_pixels = []
+        psf_values = []
+        spatial_pixels = []
+        for trace in traces:
+            wave_mid_nm = 500.0 * float(trace.wave_min + trace.wave_max)
+            resolution_element_nm = wave_mid_nm / spectral_resolution
+            dispersion_nm_pix = _trace_dispersion_nm_per_pixel(
+                trace, image_plane, wave_mid_nm,
+            )
+            spectral_fwhm_pix = (
+                resolution_element_nm / dispersion_nm_pix
+                if np.isfinite(dispersion_nm_pix) and dispersion_nm_pix > 0
+                else np.nan
+            )
+            psf_fwhm = fwhm_func(
+                np.array([wave_mid_nm]) * u.nm,
+                zenith_angle,
+                seeing,
+            )[0].to_value(u.arcsec)
+            spatial_fwhm_pix = (
+                psf_fwhm / pixel_scale
+                if np.isfinite(pixel_scale) and pixel_scale > 0
+                else np.nan
+            )
+            wave_mid_values.append(wave_mid_nm)
+            resolution_elements.append(resolution_element_nm)
+            dispersion_values.append(dispersion_nm_pix)
+            spectral_pixels.append(spectral_fwhm_pix)
+            psf_values.append(psf_fwhm)
+            spatial_pixels.append(spatial_fwhm_pix)
+
+        spectral_fwhm_pix = float(np.nanmedian(spectral_pixels))
+        spatial_fwhm_pix = float(np.nanmedian(spatial_pixels))
+        resel_pixels = (
+            max(spectral_fwhm_pix, 1.0) * max(spatial_fwhm_pix, 1.0)
+            if np.isfinite(spectral_fwhm_pix) and np.isfinite(spatial_fwhm_pix)
+            else np.nan
+        )
+        rows.append({
+            "aperture_id": int(aperture_id),
+            "channel": label,
+            "image_plane_id": image_plane_id,
+            "current_slit_arcsec": _current_slit_arcsec(ztrain, label),
+            "spectral_resolution_R": float(spectral_resolution),
+            "wavelength_median_nm": float(np.nanmedian(wave_mid_values)),
+            "resolution_element_median_nm": float(
+                np.nanmedian(resolution_elements),
+            ),
+            "dispersion_median_nm_pix": float(np.nanmedian(dispersion_values)),
+            "spectral_fwhm_pix": spectral_fwhm_pix,
+            "psf_fwhm_median_arcsec": float(np.nanmedian(psf_values)),
+            "pixel_scale_arcsec_pix": float(pixel_scale),
+            "spatial_fwhm_pix": spatial_fwhm_pix,
+            "resel_pixels_fwhm": float(resel_pixels),
+            "snr_resel_scale": float(np.sqrt(resel_pixels)),
+            "n_orders": len(traces),
+            "psf_model": effect_name(psf_effect) if psf_effect is not None else "diagnostic",
+            "note": (
+                "Approximate FWHM footprint: spectral term from lambda/R and "
+                "trace dispersion; spatial term from active PSF FWHM and "
+                "image-plane pixel area. This is not an optimal extraction."
+            ),
+        })
+    return Table(rows=rows)
+
+
+def resolution_element_snr_summary_table(
+    snr_images: list[np.ndarray],
+    footprint_table: Table,
+    *,
+    titles: list[str] | None = None,
+) -> Table:
+    """Return per-channel median positive S/N scaled to a FWHM resel estimate."""
+    titles = titles or [str(row["channel"]) for row in footprint_table]
+    footprint_by_channel = {
+        str(row["channel"]): row for row in footprint_table
+    }
+    rows: list[dict[str, Any]] = []
+    for title, snr in zip(titles, snr_images, strict=True):
+        channel = str(title)
+        footprint = footprint_by_channel[channel]
+        image = np.asarray(snr, dtype=float)
+        positive = image[np.isfinite(image) & (image > 0)]
+        median_pixel_snr = (
+            float(np.nanmedian(positive)) if positive.size else np.nan
+        )
+        scale = float(footprint["snr_resel_scale"])
+        rows.append({
+            "channel": channel,
+            "median_positive_pixel_snr": median_pixel_snr,
+            "resel_pixels_fwhm": float(footprint["resel_pixels_fwhm"]),
+            "snr_resel_scale": scale,
+            "median_resel_snr": median_pixel_snr * scale,
+            "positive_snr_pixels": int(positive.size),
+            "spectral_fwhm_pix": float(footprint["spectral_fwhm_pix"]),
+            "spatial_fwhm_pix": float(footprint["spatial_fwhm_pix"]),
+        })
+    return Table(rows=rows)
+
+
 def readout_delta_summary_table(
     signal_hdul: Any,
     reference_hdul: Any,

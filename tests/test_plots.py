@@ -186,6 +186,11 @@ def test_transmission_plot_uses_active_slit_for_total_throughput():
                 "optics_groups": {
                     "telescope": np.array([0.8, 0.8]),
                     "preoptics": np.array([0.5, 0.5]),
+                    "ir_blocking_filter": np.array([0.2, 0.2]),
+                },
+                "instrument_optics_groups": {
+                    "preoptics": np.array([0.5, 0.5]),
+                    "ir_blocking_filter": np.array([0.2, 0.2]),
                 },
                 "telescope_throughput": np.array([0.8, 0.8]),
                 "dichroic_total": np.array([0.9, 0.9]),
@@ -203,6 +208,9 @@ def test_transmission_plot_uses_active_slit_for_total_throughput():
                 "label": "YJ",
                 "optics_groups": {
                     "telescope": np.array([0.8, 0.8]),
+                    "camera": np.array([0.6, 0.6]),
+                },
+                "instrument_optics_groups": {
                     "camera": np.array([0.6, 0.6]),
                 },
                 "telescope_throughput": np.array([0.8, 0.8]),
@@ -252,12 +260,15 @@ def test_transmission_plot_uses_active_slit_for_total_throughput():
     ]
     assert "telescope" in component_labels
     assert "preoptics" in component_labels
+    assert "ir_blocking_filter" not in component_labels
+    assert "spectrograph optics" in component_labels
     assert "trace QE" in component_labels
     labels = [line.get_label() for line in summary_ax.lines]
     assert "B instrument" in labels
     assert "B total" in labels
     assert "active slit" in labels
     assert "trace QE median" in labels
+    assert "spectrograph optics" in labels
     b_total = next(line for line in summary_ax.lines if line.get_label() == "B total")
     np.testing.assert_allclose(b_total.get_ydata(), [0.1, 0.15])
     fig.clf()

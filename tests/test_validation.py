@@ -1332,6 +1332,73 @@ def test_source_photon_crosscheck_table_uses_resolution_element_and_throughput()
     np.testing.assert_allclose(table["source_e_resel"], [15000.0])
 
 
+def test_resolution_element_footprint_table_derives_channel_scales(monkeypatch):
+    train = FakeScienceTrain([
+        FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE(), 1: FakeDetectorQE()},
+        ),
+    ])
+    train.cmds.update({
+        "!OBS.airmass": 1.3,
+        "!OBS.seeing": 0.6,
+        "!INST.vis_curr_slit": 0.7,
+        "!INST.nir_curr_slit": 0.7,
+        "!SIM.spectral.spectral_resolution": 10000.0,
+    })
+    train.image_planes.append(train.image_planes[-1])
+
+    monkeypatch.setattr(
+        val,
+        "_trace_dispersion_nm_per_pixel",
+        lambda _trace, _image_plane, _wave_mid_nm: 0.01,
+    )
+    monkeypatch.setattr(
+        val,
+        "_image_plane_pixel_area",
+        lambda _ztrain, _image_plane_id: 0.04 * u.arcsec**2,
+    )
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.6) * u.arcsec,
+            None,
+        ),
+    )
+
+    table = val.resolution_element_footprint_table(train)
+
+    by_channel = {str(row["channel"]): row for row in table}
+    assert set(by_channel) == {"B", "R"}
+    np.testing.assert_allclose(by_channel["B"]["wavelength_median_nm"], 350.0)
+    np.testing.assert_allclose(by_channel["B"]["spectral_fwhm_pix"], 3.5)
+    np.testing.assert_allclose(by_channel["B"]["spatial_fwhm_pix"], 3.0)
+    np.testing.assert_allclose(by_channel["B"]["resel_pixels_fwhm"], 10.5)
+    np.testing.assert_allclose(by_channel["B"]["snr_resel_scale"], np.sqrt(10.5))
+
+
+def test_resolution_element_snr_summary_table_scales_positive_median():
+    footprint = Table(rows=[{
+        "channel": "B",
+        "resel_pixels_fwhm": 9.0,
+        "snr_resel_scale": 3.0,
+        "spectral_fwhm_pix": 2.0,
+        "spatial_fwhm_pix": 4.5,
+    }])
+
+    table = val.resolution_element_snr_summary_table(
+        [np.array([[0.0, 1.0], [2.0, 4.0]])],
+        footprint,
+        titles=["B"],
+    )
+
+    np.testing.assert_allclose(table["median_positive_pixel_snr"], [2.0])
+    np.testing.assert_allclose(table["median_resel_snr"], [6.0])
+    assert list(table["positive_snr_pixels"]) == [3]
+
+
 def test_source_photon_crosscheck_table_rejects_missing_transmission():
     class FakeSource:
         fields = []
