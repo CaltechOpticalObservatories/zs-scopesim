@@ -1365,7 +1365,7 @@ def _readout_display_limits(
     return -limit, limit, label
 
 
-def _readout_grid_axes(n_images: int):
+def _detector_grid_axes(n_images: int, *, row_height: float = 3.6):
     import matplotlib.pyplot as plt
 
     ncols = min(3, max(1, n_images))
@@ -1373,7 +1373,7 @@ def _readout_grid_axes(n_images: int):
     fig, axes = plt.subplots(
         nrows,
         ncols,
-        figsize=(4.4 * ncols, 3.6 * nrows),
+        figsize=(4.4 * ncols, row_height * nrows),
         squeeze=False,
         constrained_layout=True,
     )
@@ -1439,7 +1439,7 @@ def _readout_group_limits(
     return limits
 
 
-def _plot_readout_image_grid(
+def _plot_detector_image_grid(
     images: list[np.ndarray],
     titles: list[str],
     *,
@@ -1451,8 +1451,10 @@ def _plot_readout_image_grid(
     annotate_stats: bool = False,
     zero_floor: bool = False,
     shared_scale: bool | Sequence[Sequence[int | str]] = False,
+    colorbar_mode: str = "per-panel",
+    colorbar_label: str | None = None,
 ):
-    fig, axes = _readout_grid_axes(len(images))
+    fig, axes = _detector_grid_axes(len(images))
     scale_groups = _readout_scale_groups(shared_scale, titles, len(images))
     scale_limits = _readout_group_limits(
         images,
@@ -1514,10 +1516,17 @@ def _plot_readout_image_grid(
                 },
             )
         ax.axis("off")
-        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.025)
-        cbar.set_label(f"{'shared ' if is_shared else ''}clip {clip_label}")
+        if colorbar_mode == "per-panel":
+            cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.025)
+            label = colorbar_label or f"{'shared ' if is_shared else ''}clip {clip_label}"
+            cbar.set_label(label)
     for ax in axes.flat[len(images):]:
         ax.axis("off")
+    if colorbar_mode == "shared":
+        cbar = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.86)
+        cbar.set_label(colorbar_label or f"clip {clip_label}")
+    elif colorbar_mode != "per-panel":
+        raise ValueError("colorbar_mode must be 'per-panel' or 'shared'.")
     return fig, axes
 
 
@@ -1533,7 +1542,7 @@ def plot_readout_overview(
     readouts = list(hdul)
     titles = titles or [f"detector {idx}" for idx in range(len(readouts))]
     images = [_readout_image_data(channel_hdul) for channel_hdul in readouts]
-    return _plot_readout_image_grid(
+    return _plot_detector_image_grid(
         images,
         titles,
         clip=clip,
@@ -1567,7 +1576,7 @@ def plot_readout_delta_overview(
         _readout_image_data(signal) - _readout_image_data(reference)
         for signal, reference in zip(signal_readouts, reference_readouts, strict=True)
     ]
-    return _plot_readout_image_grid(
+    return _plot_detector_image_grid(
         images,
         titles,
         clip=clip,
@@ -1617,16 +1626,17 @@ def plot_readout_cross_dispersion_cut(
     return fig, axes
 
 
-def plot_trace_resolution_detector_maps(
+def _plot_trace_detector_maps(
     table: Table,
+    values: np.ndarray,
     *,
-    value_column: str = "element_width_pix",
-    cmap: str = "viridis",
-    vmin: float | None = None,
-    vmax: float | None = None,
-    nyquist_width_pix: float | None = 2.0,
+    colorbar_label: str,
+    title_kind: str,
+    cmap: str,
+    vmin: float | None,
+    vmax: float | None,
 ):
-    """Plot trace resolution diagnostics directly in detector coordinates."""
+    """Plot trace samples directly in detector coordinates."""
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
     from matplotlib.colors import Normalize
@@ -1634,33 +1644,15 @@ def plot_trace_resolution_detector_maps(
     if len(table) == 0:
         raise ValueError("trace resolution diagnostic table is empty.")
     image_plane_ids = sorted({int(value) for value in table["image_plane_id"]})
-    ncols = min(3, max(1, len(image_plane_ids)))
-    nrows = int(np.ceil(len(image_plane_ids) / ncols))
-    fig, axes = plt.subplots(
-        nrows,
-        ncols,
-        figsize=(4.4 * ncols, 3.8 * nrows),
-        squeeze=False,
-        constrained_layout=True,
-    )
-    values = np.asarray(table[value_column], dtype=float)
-    if value_column.endswith("_R"):
-        values = values / 1000.0
-        colorbar_label = "Resolving power R [10^3]"
-    elif value_column == "element_width_pix":
-        colorbar_label = "Spectral FWHM [pix]"
-    else:
-        colorbar_label = value_column
+    fig, axes = _detector_grid_axes(len(image_plane_ids), row_height=3.8)
+    values = np.asarray(values, dtype=float)
     finite_values = values[np.isfinite(values)]
     if finite_values.size == 0:
-        raise ValueError(f"{value_column!r} contains no finite values.")
+        raise ValueError("trace diagnostic values contain no finite values.")
     if vmin is None:
         vmin = float(np.nanmin(finite_values))
     if vmax is None:
         vmax = float(np.nanmax(finite_values))
-    if value_column == "element_width_pix" and nyquist_width_pix is not None:
-        vmin = min(vmin, float(nyquist_width_pix))
-        vmax = max(vmax, float(nyquist_width_pix))
     if vmin == vmax:
         pad = 0.5 if vmin == 0 else 0.1 * abs(vmin)
         vmin, vmax = vmin - pad, vmax + pad
@@ -1668,9 +1660,12 @@ def plot_trace_resolution_detector_maps(
 
     colormap = plt.get_cmap(cmap).copy()
     artist = None
+    image_plane_array = np.asarray(table["image_plane_id"], dtype=int)
 
     for ax, image_plane_id in zip(axes.flat, image_plane_ids, strict=False):
-        rows = table[np.asarray(table["image_plane_id"], dtype=int) == image_plane_id]
+        plane_mask = image_plane_array == image_plane_id
+        rows = table[plane_mask]
+        row_values = values[plane_mask]
         nx = int(rows["detector_naxis1"][0])
         ny = int(rows["detector_naxis2"][0])
         if nx <= 0 or ny <= 0:
@@ -1679,8 +1674,11 @@ def plot_trace_resolution_detector_maps(
             nx = int(np.ceil(np.nanmax(x))) + 1
             ny = int(np.ceil(np.nanmax(y))) + 1
 
-        for trace_id in sorted({str(value) for value in rows["trace_id"]}):
-            trace_rows = rows[np.asarray(rows["trace_id"], dtype=str) == trace_id]
+        trace_ids = np.asarray(rows["trace_id"], dtype=str)
+        for trace_id in sorted({str(value) for value in trace_ids}):
+            trace_mask = trace_ids == trace_id
+            trace_rows = rows[trace_mask]
+            trace_values = row_values[trace_mask]
             sort_column = (
                 "sample_index" if "sample_index" in trace_rows.colnames
                 else "wave_nm"
@@ -1688,9 +1686,7 @@ def plot_trace_resolution_detector_maps(
             order = np.argsort(np.asarray(trace_rows[sort_column], dtype=float))
             xpix = np.asarray(trace_rows["detector_x_pix"], dtype=float)[order]
             ypix = np.asarray(trace_rows["detector_y_pix"], dtype=float)[order]
-            trace_values = np.asarray(trace_rows[value_column], dtype=float)[order]
-            if value_column.endswith("_R"):
-                trace_values = trace_values / 1000.0
+            trace_values = trace_values[order]
             good = (
                 np.isfinite(xpix) & np.isfinite(ypix) & np.isfinite(trace_values)
             )
@@ -1716,15 +1712,27 @@ def plot_trace_resolution_detector_maps(
             artist = collection
 
         channels = sorted({str(value) for value in rows["channel"]})
-        resolving_power = float(np.nanmedian(
-            np.asarray(rows["resolving_power_R"], dtype=float),
-        ))
+        resolving_power = np.asarray(rows["resolving_power_R"], dtype=float)
+        element_width = np.asarray(rows["spectral_element_width_pix"], dtype=float)
         seeing = float(np.nanmedian(np.asarray(rows["seeing_fwhm_arcsec"], dtype=float)))
         spatial = float(np.nanmedian(np.asarray(rows["spatial_fwhm_pix"], dtype=float)))
+        if title_kind == "resolving_power":
+            diagnostic = (
+                f"R {np.nanmin(resolving_power) / 1000.0:.1f}-"
+                f"{np.nanmax(resolving_power) / 1000.0:.1f}k"
+            )
+        elif title_kind == "sampling":
+            width_min = float(np.nanmin(element_width))
+            width_max = float(np.nanmax(element_width))
+            if np.isclose(width_min, width_max):
+                diagnostic = f"{width_min:.1f} pix/resel"
+            else:
+                diagnostic = f"{width_min:.1f}-{width_max:.1f} pix/resel"
+        else:
+            raise ValueError(f"Unknown trace title kind: {title_kind!r}")
         ax.set_title(
             f"{'/'.join(channels)} (id {image_plane_id})\n"
-            f"R {resolving_power / 1000.0:.1f}k, "
-            f"{seeing:.2f}\" FWHM / {spatial:.1f} pix",
+            f"{diagnostic}, {seeing:.2f}\" FWHM/{spatial:.1f} pix",
             pad=8,
         )
         ax.set_xlabel("Detector x [pix]")
@@ -1738,12 +1746,95 @@ def plot_trace_resolution_detector_maps(
         ax.axis("off")
     if artist is None:
         raise ValueError("No finite trace samples fall on a detector image plane.")
-    cbar = fig.colorbar(artist, ax=axes.ravel().tolist(), shrink=0.86)
+    cbar = fig.colorbar(
+        artist,
+        ax=axes.ravel().tolist()[:len(image_plane_ids)],
+        shrink=0.86,
+        pad=0.02,
+    )
     cbar.set_label(colorbar_label)
+    return fig, axes, cbar
+
+
+def _add_resolving_power_sampling_axis(cbar: Any, table: Table) -> None:
+    """Add a typical spectral-element pixel scale to an R colorbar."""
+    wave_nm = np.asarray(table["wave_nm"], dtype=float)
+    dispersion_nm_pix = np.asarray(table["dispersion_nm_pix"], dtype=float)
+    scale_values = wave_nm / dispersion_nm_pix
+    scale_values = scale_values[np.isfinite(scale_values) & (scale_values > 0)]
+    if scale_values.size == 0:
+        return
+    typical_wave_over_dispersion = float(np.nanmedian(scale_values))
+
+    def r_k_to_pix(value):
+        value = np.asarray(value, dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return typical_wave_over_dispersion / (value * 1000.0)
+
+    def pix_to_r_k(value):
+        value = np.asarray(value, dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return typical_wave_over_dispersion / (value * 1000.0)
+
+    cbar.ax.yaxis.set_ticks_position("left")
+    cbar.ax.yaxis.set_label_position("left")
+    secondary = cbar.ax.secondary_yaxis(
+        "right",
+        functions=(r_k_to_pix, pix_to_r_k),
+    )
+    secondary.set_ylabel("Typical spectral element [pix]", labelpad=10)
+
+
+def plot_trace_resolving_power_detector_maps(
+    table: Table,
+    *,
+    cmap: str = "viridis",
+    vmin: float | None = None,
+    vmax: float | None = None,
+):
+    """Plot local trace resolving power in detector coordinates."""
+    values = np.asarray(table["resolving_power_R"], dtype=float) / 1000.0
+    fig, axes, cbar = _plot_trace_detector_maps(
+        table,
+        values,
+        colorbar_label="Resolving power R [10^3]",
+        title_kind="resolving_power",
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+    )
+    _add_resolving_power_sampling_axis(cbar, table)
+    return fig, axes
+
+
+def plot_trace_sampling_detector_maps(
+    table: Table,
+    *,
+    cmap: str = "viridis",
+    vmin: float | None = None,
+    vmax: float | None = None,
+    nyquist_width_pix: float | None = 2.0,
+):
+    """Plot local spectral-element sampling width in detector coordinates."""
+    values = np.asarray(table["spectral_element_width_pix"], dtype=float)
+    finite_values = values[np.isfinite(values)]
+    if finite_values.size and nyquist_width_pix is not None:
+        if vmin is None:
+            vmin = min(float(np.nanmin(finite_values)), float(nyquist_width_pix))
+        if vmax is None:
+            vmax = max(float(np.nanmax(finite_values)), float(nyquist_width_pix))
+    fig, axes, cbar = _plot_trace_detector_maps(
+        table,
+        values,
+        colorbar_label="Spectral element [pix]",
+        title_kind="sampling",
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+    )
     if (
-        value_column == "element_width_pix"
-        and nyquist_width_pix is not None
-        and vmin <= nyquist_width_pix <= vmax
+        nyquist_width_pix is not None
+        and cbar.vmin <= nyquist_width_pix <= cbar.vmax
     ):
         cbar.ax.axhline(nyquist_width_pix, color="white", lw=1.4)
         cbar.ax.set_title(f"Nyquist: {nyquist_width_pix:g} pix", fontsize=8, pad=8)

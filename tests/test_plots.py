@@ -58,8 +58,12 @@ def test_validation_reexports_plot_helpers():
     assert validation.plot_slit_width_loss is plots.plot_slit_width_loss
     assert validation.plot_slit_pair_geometry is plots.plot_slit_pair_geometry
     assert (
-        validation.plot_trace_resolution_detector_maps
-        is plots.plot_trace_resolution_detector_maps
+        validation.plot_trace_resolving_power_detector_maps
+        is plots.plot_trace_resolving_power_detector_maps
+    )
+    assert (
+        validation.plot_trace_sampling_detector_maps
+        is plots.plot_trace_sampling_detector_maps
     )
     assert (
         validation.plot_readout_cross_dispersion_cut
@@ -500,7 +504,7 @@ def test_trace_resolution_detector_map_plot_smoke():
             "wave_nm": 1000.0,
             "dispersion_nm_pix": 0.05,
             "resolving_power_R": 20000.0,
-            "element_width_pix": 4.2,
+            "spectral_element_width_pix": 4.2,
             "seeing_fwhm_arcsec": 0.6,
             "spatial_fwhm_pix": 4.0,
         },
@@ -515,14 +519,20 @@ def test_trace_resolution_detector_map_plot_smoke():
             "wave_nm": 1005.0,
             "dispersion_nm_pix": 0.05,
             "resolving_power_R": 20100.0,
-            "element_width_pix": 4.3,
+            "spectral_element_width_pix": 4.3,
             "seeing_fwhm_arcsec": 0.6,
             "spatial_fwhm_pix": 4.0,
         },
     ])
 
-    fig, axes = plots.plot_trace_resolution_detector_maps(table)
+    fig, axes = plots.plot_trace_resolving_power_detector_maps(table)
 
     assert axes[0, 0].collections
     assert "B (id 0)" in axes[0, 0].get_title()
+    fig.clf()
+
+    fig, axes = plots.plot_trace_sampling_detector_maps(table)
+
+    assert axes[0, 0].collections
+    assert "pix/resel" in axes[0, 0].get_title()
     fig.clf()

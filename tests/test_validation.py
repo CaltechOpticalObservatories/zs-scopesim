@@ -1233,22 +1233,24 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
     assert len(table) == 3
     np.testing.assert_allclose(table["dispersion_nm_pix"], [10.0, 10.0, 10.0])
     np.testing.assert_allclose(table["resolving_power_R"], [25.0, 26.25, 27.5])
-    np.testing.assert_allclose(table["element_width_pix"], [4.0, 4.0, 4.0])
+    np.testing.assert_allclose(
+        table["spectral_element_width_pix"],
+        [4.0, 4.0, 4.0],
+    )
     np.testing.assert_allclose(table["spatial_fwhm_pix"], [5.0, 5.0, 5.0])
 
     summary = val.trace_resolution_summary_table(table)
     assert list(summary["channel"]) == ["B"]
     np.testing.assert_allclose(summary["trace_R_median"], [26.25])
-    np.testing.assert_allclose(summary["nominal_fwhm_pix"], [4.0])
+    np.testing.assert_allclose(summary["spectral_element_width_median_pix"], [4.0])
 
     display_table = val.trace_resolution_summary_display_table(summary)
     assert list(display_table.columns) == [
-        "ch", "id", "orders", "wave nm", "disp nm/pix", "R nyq k",
-        "R fwhm k", "spec pix", "design R k", "slit arcsec",
-        "seeing arcsec", "spat pix",
+        "ch", "id", "orders", "wave nm", "disp nm/pix", "R k",
+        "nyq R k", "pix/resel", "seeing",
     ]
-    assert display_table.loc[0, "R fwhm k"] == "0.0"
-    assert display_table.loc[0, "spec pix"] == "4.00"
+    assert display_table.loc[0, "R k"] == "0.0"
+    assert display_table.loc[0, "pix/resel"] == "4.00"
 
 
 def test_detector_background_budget_table_combines_detector_terms():

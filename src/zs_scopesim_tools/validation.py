@@ -26,7 +26,8 @@ from .plots import (
     plot_slit_pair_geometry,
     plot_slit_width_loss,
     plot_source,
-    plot_trace_resolution_detector_maps,
+    plot_trace_resolving_power_detector_maps,
+    plot_trace_sampling_detector_maps,
     plot_transmission_sanity,
 )
 
@@ -910,14 +911,32 @@ def trace_resolution_diagnostic_table(
             design_res = _finite_float(trace.meta.get("design_res", np.nan))
             if np.isfinite(nominal_fwhm_pix) and nominal_fwhm_pix > 0:
                 resolving_power = wave_nm / (nominal_fwhm_pix * dispersion_nm_pix)
-                element_width_pix = np.full(wave_nm.size, nominal_fwhm_pix)
+                resolution_note = (
+                    "R uses local detector dispersion and the active "
+                    "analytical slit-projection metadata."
+                )
             else:
                 resolving_power = nyquist_resolving_power
-                element_width_pix = np.full(wave_nm.size, 2.0)
+                resolution_note = (
+                    "R is the local Nyquist resolving power because this "
+                    "trace has no slit-projection metadata."
+                )
+            with np.errstate(divide="ignore", invalid="ignore"):
+                spectral_element_width_pix = (
+                    wave_nm / (resolving_power * dispersion_nm_pix)
+                )
             psf_fwhm = fwhm_func(wave, zenith_angle, seeing).to_value(u.arcsec)
             spatial_fwhm_pix = psf_fwhm / pixel_scale_arcsec
+            center_on_detector = (
+                (coords["detector_x"] >= 0)
+                & (coords["detector_x"] <= detector_naxis1)
+                & (coords["detector_y"] >= 0)
+                & (coords["detector_y"] <= detector_naxis2)
+            )
 
             for idx in range(wave_nm.size):
+                if not center_on_detector[idx]:
+                    continue
                 rows.append({
                     "channel": label,
                     "aperture_id": int(aperture_id),
@@ -938,7 +957,9 @@ def trace_resolution_diagnostic_table(
                         nyquist_resolving_power[idx],
                     ),
                     "resolving_power_R": float(resolving_power[idx]),
-                    "element_width_pix": float(element_width_pix[idx]),
+                    "spectral_element_width_pix": float(
+                        spectral_element_width_pix[idx],
+                    ),
                     "design_resolving_power_R": design_res,
                     "nominal_fwhm_pix": nominal_fwhm_pix,
                     "nominal_slit_width_arcsec": nominal_slit_width,
@@ -948,11 +969,7 @@ def trace_resolution_diagnostic_table(
                         effect_name(psf_effect)
                         if psf_effect is not None else "diagnostic"
                     ),
-                    "note": (
-                        "R is local trace resolving power from detector "
-                        "dispersion. With analytical FWHMPIX metadata it uses "
-                        "that nominal slit FWHM; otherwise it is Nyquist R."
-                    ),
+                    "note": resolution_note,
                 })
     return Table(rows=sorted(rows, key=lambda row: row["image_plane_id"]))
 
@@ -973,17 +990,41 @@ def trace_resolution_summary_table(table: Table) -> Table:
             "n_traces": len({str(value) for value in group["trace_id"]}),
             "wave_min_nm": float(np.nanmin(np.asarray(group["wave_nm"], dtype=float))),
             "wave_max_nm": float(np.nanmax(np.asarray(group["wave_nm"], dtype=float))),
+            "dispersion_min_nm_pix": float(np.nanmin(
+                np.asarray(group["dispersion_nm_pix"], dtype=float),
+            )),
             "dispersion_median_nm_pix": float(np.nanmedian(
                 np.asarray(group["dispersion_nm_pix"], dtype=float),
+            )),
+            "dispersion_max_nm_pix": float(np.nanmax(
+                np.asarray(group["dispersion_nm_pix"], dtype=float),
+            )),
+            "nyquist_R_min": float(np.nanmin(
+                np.asarray(group["nyquist_resolving_power_R"], dtype=float),
             )),
             "nyquist_R_median": float(np.nanmedian(
                 np.asarray(group["nyquist_resolving_power_R"], dtype=float),
             )),
+            "nyquist_R_max": float(np.nanmax(
+                np.asarray(group["nyquist_resolving_power_R"], dtype=float),
+            )),
+            "trace_R_min": float(np.nanmin(
+                np.asarray(group["resolving_power_R"], dtype=float),
+            )),
             "trace_R_median": float(np.nanmedian(
                 np.asarray(group["resolving_power_R"], dtype=float),
             )),
-            "element_width_median_pix": float(np.nanmedian(
-                np.asarray(group["element_width_pix"], dtype=float),
+            "trace_R_max": float(np.nanmax(
+                np.asarray(group["resolving_power_R"], dtype=float),
+            )),
+            "spectral_element_width_min_pix": float(np.nanmin(
+                np.asarray(group["spectral_element_width_pix"], dtype=float),
+            )),
+            "spectral_element_width_median_pix": float(np.nanmedian(
+                np.asarray(group["spectral_element_width_pix"], dtype=float),
+            )),
+            "spectral_element_width_max_pix": float(np.nanmax(
+                np.asarray(group["spectral_element_width_pix"], dtype=float),
             )),
             "design_R_median": float(np.nanmedian(
                 np.asarray(group["design_resolving_power_R"], dtype=float),
@@ -1007,6 +1048,20 @@ def trace_resolution_summary_table(table: Table) -> Table:
     return Table(rows=sorted(rows, key=lambda row: row["image_plane_id"]))
 
 
+def _compact_range(
+    minimum: Any,
+    maximum: Any,
+    *,
+    precision: int,
+    scale: float = 1.0,
+) -> str:
+    minimum = float(minimum) / scale
+    maximum = float(maximum) / scale
+    if np.isclose(minimum, maximum, rtol=1e-4, atol=10 ** -precision):
+        return f"{minimum:.{precision}f}"
+    return f"{minimum:.{precision}f}-{maximum:.{precision}f}"
+
+
 def trace_resolution_summary_display_table(table: Table):
     """Return a compact, rounded trace-resolution summary for notebooks."""
     import pandas as pd
@@ -1021,14 +1076,32 @@ def trace_resolution_summary_display_table(table: Table):
                 f"{float(row['wave_min_nm']):.0f}-"
                 f"{float(row['wave_max_nm']):.0f}"
             ),
-            "disp nm/pix": f"{float(row['dispersion_median_nm_pix']):.4f}",
-            "R nyq k": f"{float(row['nyquist_R_median']) / 1000.0:.1f}",
-            "R fwhm k": f"{float(row['trace_R_median']) / 1000.0:.1f}",
-            "spec pix": f"{float(row['element_width_median_pix']):.2f}",
-            "design R k": f"{float(row['design_R_median']) / 1000.0:.1f}",
-            "slit arcsec": f"{float(row['nominal_slit_width_arcsec']):.2f}",
-            "seeing arcsec": f"{float(row['seeing_fwhm_median_arcsec']):.2f}",
-            "spat pix": f"{float(row['spatial_fwhm_median_pix']):.1f}",
+            "disp nm/pix": _compact_range(
+                row["dispersion_min_nm_pix"],
+                row["dispersion_max_nm_pix"],
+                precision=4,
+            ),
+            "R k": _compact_range(
+                row["trace_R_min"],
+                row["trace_R_max"],
+                precision=1,
+                scale=1000.0,
+            ),
+            "nyq R k": _compact_range(
+                row["nyquist_R_min"],
+                row["nyquist_R_max"],
+                precision=1,
+                scale=1000.0,
+            ),
+            "pix/resel": _compact_range(
+                row["spectral_element_width_min_pix"],
+                row["spectral_element_width_max_pix"],
+                precision=2,
+            ),
+            "seeing": (
+                f"{float(row['seeing_fwhm_median_arcsec']):.2f}\"/"
+                f"{float(row['spatial_fwhm_median_pix']):.1f} pix"
+            ),
         })
     return pd.DataFrame(rows)
 
