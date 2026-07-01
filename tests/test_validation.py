@@ -638,6 +638,28 @@ def test_build_transmission_sanity_data_can_auto_select_enabled_qe():
     assert channel["order_detector_qe_methods"] == ["spectral throughput"]
 
 
+def test_build_transmission_sanity_data_skips_orders_outside_wave_grid():
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain([
+        FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        ),
+    ])
+    trace_list = val.get_effect(train, "trace_list_analytical")
+    trace_list.spectral_traces["B_0"] = FakeTrace("B_0", 0, 2, 0.30, 0.31)
+
+    data = val.build_transmission_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    channel = data["channels"][0]
+    assert "B_0" not in channel["orders"]
+    assert "B_1" in channel["orders"]
+    val.validate_transmission_sanity_data(data)
+
+
 def test_build_transmission_sanity_data_includes_extra_optical_selector():
     wave_nm = np.array([350.0, 360.0]) * u.nm
     train = FakeScienceTrain(

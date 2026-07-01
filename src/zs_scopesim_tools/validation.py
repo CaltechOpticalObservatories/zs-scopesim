@@ -3671,6 +3671,8 @@ def build_transmission_sanity_data(
                 trace_eff.efficiency_generator(trace.trace_id, wave),
             )
             mask = (wave >= trace.wave_min * u.um) & (wave <= trace.wave_max * u.um)
+            if not np.any(mask):
+                continue
             order_eff = np.where(mask, order_eff, np.nan)
             order_qe, qe_method = evaluate_trace_detector_qe(
                 detector_qe, trace, wave, image_plane=image_plane,
