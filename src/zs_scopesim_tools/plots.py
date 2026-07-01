@@ -1620,13 +1620,16 @@ def plot_readout_cross_dispersion_cut(
 def plot_trace_resolution_detector_maps(
     table: Table,
     *,
-    value_column: str = "resolving_power_R",
+    value_column: str = "element_width_pix",
     cmap: str = "viridis",
     vmin: float | None = None,
     vmax: float | None = None,
+    nyquist_width_pix: float | None = 2.0,
 ):
-    """Plot trace resolving power as masked detector-plane images."""
+    """Plot trace resolution diagnostics directly in detector coordinates."""
     import matplotlib.pyplot as plt
+    from matplotlib.collections import LineCollection
+    from matplotlib.colors import Normalize
 
     if len(table) == 0:
         raise ValueError("trace resolution diagnostic table is empty.")
@@ -1640,24 +1643,31 @@ def plot_trace_resolution_detector_maps(
         squeeze=False,
         constrained_layout=True,
     )
-    values_k = np.asarray(table[value_column], dtype=float) / 1000.0
-    finite_values = values_k[np.isfinite(values_k)]
+    values = np.asarray(table[value_column], dtype=float)
+    if value_column.endswith("_R"):
+        values = values / 1000.0
+        colorbar_label = "Resolving power R [10^3]"
+    elif value_column == "element_width_pix":
+        colorbar_label = "Spectral FWHM [pix]"
+    else:
+        colorbar_label = value_column
+    finite_values = values[np.isfinite(values)]
     if finite_values.size == 0:
         raise ValueError(f"{value_column!r} contains no finite values.")
     if vmin is None:
-        vmin = float(np.nanpercentile(finite_values, 1))
+        vmin = float(np.nanmin(finite_values))
     if vmax is None:
-        vmax = float(np.nanpercentile(finite_values, 99))
+        vmax = float(np.nanmax(finite_values))
+    if value_column == "element_width_pix" and nyquist_width_pix is not None:
+        vmin = min(vmin, float(nyquist_width_pix))
+        vmax = max(vmax, float(nyquist_width_pix))
     if vmin == vmax:
-        vmin, vmax = vmin * 0.95, vmax * 1.05
+        pad = 0.5 if vmin == 0 else 0.1 * abs(vmin)
+        vmin, vmax = vmin - pad, vmax + pad
+    norm = Normalize(vmin=vmin, vmax=vmax)
 
     colormap = plt.get_cmap(cmap).copy()
-    colormap.set_bad((0, 0, 0, 0))
-    image = None
-    median_lambda_over_dispersion = np.nanmedian(
-        np.asarray(table["wave_nm"], dtype=float)
-        / np.asarray(table["dispersion_nm_pix"], dtype=float)
-    )
+    artist = None
 
     for ax, image_plane_id in zip(axes.flat, image_plane_ids, strict=False):
         rows = table[np.asarray(table["image_plane_id"], dtype=int) == image_plane_id]
@@ -1668,49 +1678,73 @@ def plot_trace_resolution_detector_maps(
             y = np.asarray(rows["detector_y_pix"], dtype=float)
             nx = int(np.ceil(np.nanmax(x))) + 1
             ny = int(np.ceil(np.nanmax(y))) + 1
-        detector_map = np.full((ny, nx), np.nan, dtype=np.float32)
-        xpix = np.rint(np.asarray(rows["detector_x_pix"], dtype=float)).astype(int)
-        ypix = np.rint(np.asarray(rows["detector_y_pix"], dtype=float)).astype(int)
-        row_values = np.asarray(rows[value_column], dtype=float) / 1000.0
-        valid = (
-            np.isfinite(row_values)
-            & (xpix >= 0) & (xpix < nx)
-            & (ypix >= 0) & (ypix < ny)
-        )
-        detector_map[ypix[valid], xpix[valid]] = row_values[valid]
-        image = ax.imshow(
-            detector_map,
-            origin="lower",
-            cmap=colormap,
-            vmin=vmin,
-            vmax=vmax,
-            interpolation="nearest",
-        )
+
+        for trace_id in sorted({str(value) for value in rows["trace_id"]}):
+            trace_rows = rows[np.asarray(rows["trace_id"], dtype=str) == trace_id]
+            sort_column = (
+                "sample_index" if "sample_index" in trace_rows.colnames
+                else "wave_nm"
+            )
+            order = np.argsort(np.asarray(trace_rows[sort_column], dtype=float))
+            xpix = np.asarray(trace_rows["detector_x_pix"], dtype=float)[order]
+            ypix = np.asarray(trace_rows["detector_y_pix"], dtype=float)[order]
+            trace_values = np.asarray(trace_rows[value_column], dtype=float)[order]
+            if value_column.endswith("_R"):
+                trace_values = trace_values / 1000.0
+            good = (
+                np.isfinite(xpix) & np.isfinite(ypix) & np.isfinite(trace_values)
+            )
+            xpix = xpix[good]
+            ypix = ypix[good]
+            trace_values = trace_values[good]
+            if xpix.size == 0:
+                continue
+            artist = ax.scatter(
+                xpix, ypix, c=trace_values, cmap=colormap, norm=norm,
+                s=4, linewidths=0, zorder=3,
+            )
+            if xpix.size < 2:
+                continue
+            points = np.column_stack([xpix, ypix])
+            segments = np.stack([points[:-1], points[1:]], axis=1)
+            segment_values = 0.5 * (trace_values[:-1] + trace_values[1:])
+            collection = LineCollection(
+                segments, cmap=colormap, norm=norm, linewidths=1.1, zorder=2,
+            )
+            collection.set_array(segment_values)
+            ax.add_collection(collection)
+            artist = collection
+
         channels = sorted({str(value) for value in rows["channel"]})
+        resolving_power = float(np.nanmedian(
+            np.asarray(rows["resolving_power_R"], dtype=float),
+        ))
         seeing = float(np.nanmedian(np.asarray(rows["seeing_fwhm_arcsec"], dtype=float)))
         spatial = float(np.nanmedian(np.asarray(rows["spatial_fwhm_pix"], dtype=float)))
         ax.set_title(
-            f"{'/'.join(channels)} image plane {image_plane_id}\n"
-            f"seeing FWHM {seeing:.2f} arcsec = {spatial:.1f} pix",
+            f"{'/'.join(channels)} (id {image_plane_id})\n"
+            f"R {resolving_power / 1000.0:.1f}k, "
+            f"{seeing:.2f}\" FWHM / {spatial:.1f} pix",
             pad=8,
         )
         ax.set_xlabel("Detector x [pix]")
         ax.set_ylabel("Detector y [pix]")
+        ax.set_xlim(0, nx)
+        ax.set_ylim(0, ny)
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(alpha=0.15, lw=0.5)
 
     for ax in axes.flat[len(image_plane_ids):]:
         ax.axis("off")
-    cbar = fig.colorbar(image, ax=axes.ravel().tolist(), shrink=0.86)
-    cbar.set_label("Resolving power R [10^3]")
-    if np.isfinite(median_lambda_over_dispersion) and median_lambda_over_dispersion > 0:
-        def r_k_to_width(r_k):
-            return median_lambda_over_dispersion / (np.asarray(r_k) * 1000.0)
-
-        def width_to_r_k(width):
-            return median_lambda_over_dispersion / (np.asarray(width) * 1000.0)
-
-        secondary = cbar.ax.secondary_yaxis(
-            "right",
-            functions=(r_k_to_width, width_to_r_k),
-        )
-        secondary.set_ylabel("Implied spectral FWHM [pix]")
+    if artist is None:
+        raise ValueError("No finite trace samples fall on a detector image plane.")
+    cbar = fig.colorbar(artist, ax=axes.ravel().tolist(), shrink=0.86)
+    cbar.set_label(colorbar_label)
+    if (
+        value_column == "element_width_pix"
+        and nyquist_width_pix is not None
+        and vmin <= nyquist_width_pix <= vmax
+    ):
+        cbar.ax.axhline(nyquist_width_pix, color="white", lw=1.4)
+        cbar.ax.set_title(f"Nyquist: {nyquist_width_pix:g} pix", fontsize=8, pad=8)
     return fig, axes

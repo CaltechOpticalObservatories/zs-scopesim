@@ -1241,6 +1241,15 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
     np.testing.assert_allclose(summary["trace_R_median"], [26.25])
     np.testing.assert_allclose(summary["nominal_fwhm_pix"], [4.0])
 
+    display_table = val.trace_resolution_summary_display_table(summary)
+    assert list(display_table.columns) == [
+        "ch", "id", "orders", "wave nm", "disp nm/pix", "R nyq k",
+        "R fwhm k", "spec pix", "design R k", "slit arcsec",
+        "seeing arcsec", "spat pix",
+    ]
+    assert display_table.loc[0, "R fwhm k"] == "0.0"
+    assert display_table.loc[0, "spec pix"] == "4.00"
+
 
 def test_detector_background_budget_table_combines_detector_terms():
     diffuse_data = {

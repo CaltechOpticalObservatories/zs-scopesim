@@ -500,6 +500,7 @@ def test_trace_resolution_detector_map_plot_smoke():
             "wave_nm": 1000.0,
             "dispersion_nm_pix": 0.05,
             "resolving_power_R": 20000.0,
+            "element_width_pix": 4.2,
             "seeing_fwhm_arcsec": 0.6,
             "spatial_fwhm_pix": 4.0,
         },
@@ -514,6 +515,7 @@ def test_trace_resolution_detector_map_plot_smoke():
             "wave_nm": 1005.0,
             "dispersion_nm_pix": 0.05,
             "resolving_power_R": 20100.0,
+            "element_width_pix": 4.3,
             "seeing_fwhm_arcsec": 0.6,
             "spatial_fwhm_pix": 4.0,
         },
@@ -521,6 +523,6 @@ def test_trace_resolution_detector_map_plot_smoke():
 
     fig, axes = plots.plot_trace_resolution_detector_maps(table)
 
-    assert axes[0, 0].images[0].get_array().shape == (10, 12)
-    assert "B image plane 0" in axes[0, 0].get_title()
+    assert axes[0, 0].collections
+    assert "B (id 0)" in axes[0, 0].get_title()
     fig.clf()

@@ -1007,6 +1007,32 @@ def trace_resolution_summary_table(table: Table) -> Table:
     return Table(rows=sorted(rows, key=lambda row: row["image_plane_id"]))
 
 
+def trace_resolution_summary_display_table(table: Table):
+    """Return a compact, rounded trace-resolution summary for notebooks."""
+    import pandas as pd
+
+    rows: list[dict[str, Any]] = []
+    for row in table:
+        rows.append({
+            "ch": str(row["channel"]),
+            "id": int(row["image_plane_id"]),
+            "orders": int(row["n_traces"]),
+            "wave nm": (
+                f"{float(row['wave_min_nm']):.0f}-"
+                f"{float(row['wave_max_nm']):.0f}"
+            ),
+            "disp nm/pix": f"{float(row['dispersion_median_nm_pix']):.4f}",
+            "R nyq k": f"{float(row['nyquist_R_median']) / 1000.0:.1f}",
+            "R fwhm k": f"{float(row['trace_R_median']) / 1000.0:.1f}",
+            "spec pix": f"{float(row['element_width_median_pix']):.2f}",
+            "design R k": f"{float(row['design_R_median']) / 1000.0:.1f}",
+            "slit arcsec": f"{float(row['nominal_slit_width_arcsec']):.2f}",
+            "seeing arcsec": f"{float(row['seeing_fwhm_median_arcsec']):.2f}",
+            "spat pix": f"{float(row['spatial_fwhm_median_pix']):.1f}",
+        })
+    return pd.DataFrame(rows)
+
+
 def _finite_float(value: Any) -> float:
     try:
         value = float(value)
