@@ -260,6 +260,24 @@ class FakeDiffuseEffect:
         return self.rate
 
 
+class FakeConfiguredPostDiffuseEffect:
+    include = True
+    meta = {
+        "name": "configured_post_diffuse",
+        "filename": "optics/LIST_fake.dat",
+        "emission_phase": "post_disperser",
+    }
+
+    def __init__(self, downstream=0.25):
+        self._surface_list = FakeSurfaceList()
+        self._detector_qe = FakeDetectorQE()
+        self._positional_qe = None
+        self.downstream = downstream
+
+    def _downstream_throughput_values(self, wave):
+        return np.full(wave.size, self.downstream)
+
+
 class FakeSelector:
     display_name = "post_echelle_diffuse_background_selector"
     include = True
@@ -800,6 +818,44 @@ def test_post_disperser_diffuse_data_applies_downstream_extra_selector(monkeypat
     )
 
 
+def test_post_disperser_diffuse_data_prefers_configured_effect_downstream(
+    monkeypatch,
+):
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain(
+        [FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        )],
+        optical_selectors=[FakeNamedSelector(
+            "post_echelle_diffuse_background_selector",
+            "image_plane_id",
+            {2: FakeConfiguredPostDiffuseEffect(downstream=0.25)},
+        )],
+    )
+    monkeypatch.setattr(
+        val,
+        "_image_plane_pixel_area",
+        lambda _ztrain, _id: 1 * u.arcsec**2,
+    )
+    monkeypatch.setattr(val, "_telescope_area", lambda _ztrain: 1 * u.m**2)
+
+    data = val.build_post_disperser_diffuse_background_data(
+        train,
+        wave_nm=wave_nm,
+        qe_selector_name=None,
+    )
+
+    spectrum = data["channels"][0]["spectra"]["camera"]
+    unblocked = data["channels"][0]["spectra_without_blocking"]["camera"]
+    np.testing.assert_allclose(unblocked.value, [1.0, 1.0])
+    np.testing.assert_allclose(spectrum.value, [0.25, 0.25])
+    assert data["channels"][0]["total_rate_without_blocking_ph_s_pix"] > (
+        data["channels"][0]["total_rate_ph_s_pix"]
+    )
+
+
 def test_detector_qe_accounting_table_reports_paths(monkeypatch):
     wave_nm = np.array([350.0, 360.0]) * u.nm
     train = FakeScienceTrain([
@@ -1279,6 +1335,70 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
     ]
     assert display_table.loc[0, "R k"] == "0.0"
     assert display_table.loc[0, "pix/resel"] == "19.1-21.0"
+
+
+def test_trace_resolution_diagnostic_table_requires_full_slit_on_detector(
+    monkeypatch,
+):
+    class EdgeTrace(FakeGeometryTrace):
+        trace_id = "B_edge"
+        wave_min = 0.0
+        wave_max = 2.0
+        table = Table({"s": [-1.0, 0.0, 1.0]})
+
+        def xilam2x(self, xi, lam):
+            return np.zeros(np.asarray(lam, dtype=float).shape)
+
+        def xilam2y(self, xi, lam):
+            return 0.2 + 0.01 * np.asarray(xi, dtype=float) - 0.1 * np.asarray(
+                lam,
+                dtype=float,
+            )
+
+    class EdgeTraceList:
+        spectral_traces = {"B_edge": EdgeTrace()}
+
+    header = fits.Header({
+        "NAXIS": 2,
+        "NAXIS1": 20,
+        "NAXIS2": 50,
+        "CTYPE1D": "LINEAR",
+        "CTYPE2D": "LINEAR",
+        "CUNIT1D": "mm",
+        "CUNIT2D": "mm",
+        "CRVAL1D": 0.0,
+        "CRVAL2D": 0.0,
+        "CRPIX1D": 1.0,
+        "CRPIX2D": 1.0,
+        "CDELT1D": 0.01,
+        "CDELT2D": 0.01,
+    })
+    train = type("FakeTraceResolutionTrain", (), {})()
+    train.cmds = {"!OBS.airmass": 1.0, "!OBS.seeing": 0.5}
+    train.image_planes = [FakeImagePlane(header)]
+    train.optics_manager = type("FakeOptics", (), {
+        "all_effects": [
+            named_effect(EdgeTraceList(), "trace_list_analytical"),
+        ],
+    })()
+    monkeypatch.setattr(
+        val,
+        "_image_plane_pixel_area",
+        lambda _ztrain, _image_plane_id: 0.01 * u.arcsec**2,
+    )
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            None,
+        ),
+    )
+
+    table = val.trace_resolution_diagnostic_table(train, samples_per_trace=3)
+
+    assert list(table["sample_index"]) == [0, 1]
+    assert list(table["footprint_samples_on_detector"]) == [3, 3]
 
 
 def test_detector_background_budget_table_combines_detector_terms():

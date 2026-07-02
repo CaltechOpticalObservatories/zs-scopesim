@@ -969,12 +969,12 @@ def trace_resolution_diagnostic_table(
 
             for idx in range(wave_nm.size):
                 on_detector = footprint_on_detector[:, idx]
-                if not np.any(on_detector):
+                if not np.all(on_detector):
                     continue
-                x_mm = float(np.nanmean(coords["detector_x_mm"][on_detector, idx]))
-                y_mm = float(np.nanmean(coords["detector_y_mm"][on_detector, idx]))
-                detector_x = float(np.nanmean(coords["detector_x"][on_detector, idx]))
-                detector_y = float(np.nanmean(coords["detector_y"][on_detector, idx]))
+                x_mm = float(np.nanmean(coords["detector_x_mm"][:, idx]))
+                y_mm = float(np.nanmean(coords["detector_y_mm"][:, idx]))
+                detector_x = float(np.nanmean(coords["detector_x"][:, idx]))
+                detector_y = float(np.nanmean(coords["detector_y"][:, idx]))
                 dlam_dx_value = float(np.nanmean(np.asarray(
                     dlam_dx(x_mm, y_mm),
                     dtype=float,
@@ -1466,6 +1466,11 @@ def build_post_disperser_diffuse_background_data(
         ztrain, qe_selector_name, active_only=active_only,
     )
     trace_list = get_effect(ztrain, "trace_list_analytical")
+    post_diffuse_selector = _optional_effect(
+        ztrain,
+        "post_echelle_diffuse_background_selector",
+        active_only=active_only,
+    )
     traces_for_aperture = traces_by_aperture(trace_list)
 
     aperture_ids = [
@@ -1486,33 +1491,48 @@ def build_post_disperser_diffuse_background_data(
             if image_plane_id < len(ztrain.image_planes)
             else None
         )
-        qe_values = effective_diffuse_qe(
-            detector_qe,
+        effect_data = _post_disperser_diffuse_data_from_effect(
+            post_diffuse_selector,
+            image_plane_id,
+            image_plane,
             wave,
-            positional_qe=positional_qe_by_aperture.get(aperture_id),
-            footprint=image_plane,
+            component_metadata=component_metadata,
         )
-        components = channel_optical_components(
-            ztrain, aperture_id, qe_selector=qe_selector,
-        )
-        surface_rows = optical_surface_rows(
-            components, wave, component_metadata=component_metadata,
-        )
-        spectra, surface_details = optical_surface_post_disperser_diffuse_terms(
-            surface_rows,
-            wave,
-            qe_values=qe_values,
-        )
-        unblocked_rows = _rows_excluding_components(
-            surface_rows, blocked_components,
-        )
-        spectra_unblocked, _surface_details_unblocked = (
-            optical_surface_post_disperser_diffuse_terms(
-                unblocked_rows,
+        if effect_data is None:
+            qe_values = effective_diffuse_qe(
+                detector_qe,
+                wave,
+                positional_qe=positional_qe_by_aperture.get(aperture_id),
+                footprint=image_plane,
+            )
+            components = channel_optical_components(
+                ztrain, aperture_id, qe_selector=qe_selector,
+            )
+            surface_rows = optical_surface_rows(
+                components, wave, component_metadata=component_metadata,
+            )
+            spectra, surface_details = optical_surface_post_disperser_diffuse_terms(
+                surface_rows,
                 wave,
                 qe_values=qe_values,
             )
-        )
+            unblocked_rows = _rows_excluding_components(
+                surface_rows, blocked_components,
+            )
+            spectra_unblocked, _surface_details_unblocked = (
+                optical_surface_post_disperser_diffuse_terms(
+                    unblocked_rows,
+                    wave,
+                    qe_values=qe_values,
+                )
+            )
+            detector_qe_accounting = detector_qe_accounting_summary(detector_qe)
+        else:
+            spectra = effect_data["spectra"]
+            spectra_unblocked = effect_data["spectra_without_blocking"]
+            surface_details = effect_data["details"]
+            qe_values = effect_data["detector_qe"]
+            detector_qe_accounting = effect_data["detector_qe_accounting"]
         rates = OrderedDict(
             (name, integrate_spectral_background(
                 spectrum,
@@ -1567,13 +1587,91 @@ def build_post_disperser_diffuse_background_data(
             "total_rate_without_blocking_ph_s_pix": total_rate_unblocked,
             "blocking_delta_rate_ph_s_pix": total_rate_unblocked - total_rate,
             "detector_qe": qe_values,
-            "detector_qe_accounting": detector_qe_accounting_summary(detector_qe),
+            "detector_qe_accounting": detector_qe_accounting,
             "pixel_area": image_pixel_area,
             "telescope_area": telescope_area,
             "detector_qe_note": "throughput only; detector emissivity is not modeled",
         }
 
     return {"wave_nm": wave_nm, "channels": channels, "details": Table(rows=details)}
+
+
+def _optional_effect(
+    ztrain: Any,
+    display_name: str,
+    *,
+    active_only: bool = True,
+) -> Any | None:
+    effects = (
+        active_effects(ztrain)
+        if active_only else ztrain.optics_manager.all_effects
+    )
+    matches = [eff for eff in effects if effect_name(eff) == display_name]
+    if len(matches) > 1:
+        raise ValueError(
+            f"Expected at most one active effect named {display_name!r}; found "
+            f"{len(matches)}."
+        )
+    return matches[0] if matches else None
+
+
+def _post_disperser_diffuse_data_from_effect(
+    selector: Any | None,
+    image_plane_id: int,
+    image_plane: Any,
+    wave: u.Quantity,
+    *,
+    component_metadata: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    if selector is None or not hasattr(selector, "wheel_effects"):
+        return None
+    if image_plane_id not in selector.wheel_effects:
+        return None
+
+    effect = resolve_effect(selector, image_plane_id)
+    if not all(
+        hasattr(effect, attr)
+        for attr in ("_surface_list", "_detector_qe", "_downstream_throughput_values")
+    ):
+        return None
+
+    qe_values = effective_diffuse_qe(
+        effect._detector_qe,
+        wave,
+        positional_qe=getattr(effect, "_positional_qe", None),
+        footprint=image_plane,
+    )
+    surface_rows = optical_surface_rows(
+        [{
+            "selector": selector,
+            "selector_name": effect_name(selector),
+            "effect": effect._surface_list,
+        }],
+        wave,
+        component_metadata=component_metadata,
+    )
+    spectra_unblocked, surface_details = optical_surface_post_disperser_diffuse_terms(
+        surface_rows,
+        wave,
+        qe_values=qe_values,
+        emission_phase=effect.meta.get("emission_phase", "post_disperser"),
+    )
+    downstream = effect._downstream_throughput_values(wave)
+    spectra = OrderedDict(
+        (name, spectrum * downstream)
+        for name, spectrum in spectra_unblocked.items()
+    )
+    for row in surface_details:
+        row["downstream_throughput_applied"] = bool(np.any(downstream != 1.0))
+    return {
+        "spectra": spectra,
+        "spectra_without_blocking": spectra_unblocked,
+        "details": surface_details,
+        "detector_qe": qe_values,
+        "detector_qe_accounting": detector_qe_accounting_summary(
+            effect._detector_qe,
+        ),
+    }
 
 
 def detector_qe_accounting_table(
