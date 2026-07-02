@@ -210,6 +210,12 @@ def test_transmission_plot_uses_active_slit_for_total_throughput():
                         "instrument": np.array([0.4, 0.6]),
                         "total_with_telescope_no_slit": np.array([0.2, 0.3]),
                     },
+                    "B2": {
+                        "disperser": np.array([np.nan, 0.65]),
+                        "detector_qe": np.array([np.nan, 0.85]),
+                        "instrument": np.array([np.nan, 0.55]),
+                        "total_with_telescope_no_slit": np.array([np.nan, 0.32]),
+                    },
                 },
             },
             3: {
@@ -277,6 +283,14 @@ def test_transmission_plot_uses_active_slit_for_total_throughput():
     assert "active slit" in labels
     assert "trace QE median" in labels
     assert "spectrograph optics" in labels
+    qe_median = next(
+        line for line in summary_ax.lines if line.get_label() == "trace QE median"
+    )
+    np.testing.assert_allclose(qe_median.get_ydata(), [0.7, 0.825])
+    assert any(
+        np.allclose(line.get_ydata(), [np.nan, 0.85], equal_nan=True)
+        for line in summary_ax.lines
+    )
     b_total = next(line for line in summary_ax.lines if line.get_label() == "B total")
     np.testing.assert_allclose(b_total.get_ydata(), [0.1, 0.15])
     fig.clf()

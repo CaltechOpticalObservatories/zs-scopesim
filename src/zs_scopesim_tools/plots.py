@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -778,7 +779,13 @@ def _order_statistic(
     ]
     if not arrays:
         raise ValueError(f"Channel {channel['label']} has no order {key!r} curves.")
-    return reducer(np.vstack(arrays), axis=0)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="All-NaN slice encountered",
+            category=RuntimeWarning,
+        )
+        return reducer(np.vstack(arrays), axis=0)
 
 
 def _spectrograph_optics_total(channel: Mapping[str, Any]) -> np.ndarray:
@@ -865,25 +872,25 @@ def plot_transmission_sanity(
             ax.plot(
                 wave,
                 order["disperser"],
-                lw=0.6,
+                lw=1,
                 color="tab:orange",
-                alpha=0.25,
+                alpha=0.32,
                 label="disperser/order" if idx == 0 else None,
             )
             ax.plot(
                 wave,
                 order["detector_qe"],
-                lw=0.6,
+                lw=1.1,
                 color="tab:red",
-                alpha=0.22,
+                alpha=0.8,
                 label="trace QE" if idx == 0 else None,
             )
             ax.plot(
                 wave,
                 order["instrument"],
                 lw=0.85,
-                color="0.1",
-                alpha=0.32,
+                color="tab:brown",
+                alpha=0.8,
                 label="instrument/order" if idx == 0 else None,
             )
         ax.set_title(f"{channel['label']} (aperture {aperture_id})")
@@ -958,6 +965,15 @@ def plot_transmission_sanity(
         for idx, order in enumerate(channel["orders"].values()):
             instrument_label = f"{label} instrument" if idx == 0 else None
             total_label = f"{label} total" if idx == 0 else None
+            summary_ax.plot(
+                wave,
+                order["detector_qe"],
+                lw=0.55,
+                ls=(0, (3, 1, 1, 1)),
+                color=color,
+                alpha=0.22,
+                label=None,
+            )
             summary_ax.plot(
                 wave,
                 order["instrument"],

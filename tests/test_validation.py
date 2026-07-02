@@ -656,6 +656,34 @@ def test_build_transmission_sanity_data_can_auto_select_enabled_qe():
     assert channel["order_detector_qe_methods"] == ["spectral throughput"]
 
 
+def test_build_transmission_sanity_data_masks_order_qe_to_trace_span():
+    wave_nm = np.array([290.0, 350.0, 410.0]) * u.nm
+    train = FakeScienceTrain([
+        FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        ),
+    ])
+
+    data = val.build_transmission_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    order = data["channels"][0]["orders"]["B_1"]
+    np.testing.assert_allclose(
+        order["detector_qe"],
+        [np.nan, 0.5, np.nan],
+        equal_nan=True,
+    )
+    np.testing.assert_allclose(
+        order["disperser"],
+        [np.nan, 0.9, np.nan],
+        equal_nan=True,
+    )
+    val.validate_transmission_sanity_data(data)
+
+
 def test_build_transmission_sanity_data_skips_orders_outside_wave_grid():
     wave_nm = np.array([350.0, 360.0]) * u.nm
     train = FakeScienceTrain([

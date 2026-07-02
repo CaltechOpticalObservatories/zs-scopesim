@@ -3864,6 +3864,7 @@ def build_transmission_sanity_data(
             order_qe, qe_method = evaluate_trace_detector_qe(
                 detector_qe, trace, wave, image_plane=image_plane,
             )
+            order_qe = np.where(mask, order_qe, np.nan)
             qe_methods.add(qe_method)
             orders[trace.trace_id] = {
                 "disperser": order_eff,
