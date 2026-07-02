@@ -53,6 +53,7 @@ def test_validation_reexports_plot_helpers():
         validation.plot_detector_background_budget
         is plots.plot_detector_background_budget
     )
+    assert validation.plot_detector_image_grid is plots.plot_detector_image_grid
     assert validation.plot_slit_adc_psf_scenes is plots.plot_slit_adc_psf_scenes
     assert validation.plot_slit_loss_by_arm is plots.plot_slit_loss_by_arm
     assert validation.plot_slit_width_loss is plots.plot_slit_width_loss
@@ -486,6 +487,42 @@ def test_readout_overview_can_share_color_scale():
     assert axes[0, 1].images[0].get_clim() == (0.0, 103.0)
     assert "mean" in axes[0, 0].texts[0].get_text()
     fig.clf()
+
+
+def test_detector_image_grid_uses_independent_panel_scales():
+    images = [
+        np.array([[0.0, 1.0], [2.0, 3.0]]),
+        np.array([[100.0, 101.0], [102.0, 103.0]]),
+    ]
+
+    fig, axes = plots.plot_detector_image_grid(
+        images,
+        titles=["YJ", "H"],
+        clip=None,
+        shared_scale=False,
+        colorbar_mode="per-panel",
+        colorbar_label="S/N",
+    )
+
+    assert axes[0, 0].images[0].get_clim() == (0.0, 3.0)
+    assert axes[0, 1].images[0].get_clim() == (0.0, 103.0)
+    fig.clf()
+
+
+def test_detector_image_grid_rejects_shared_colorbar_without_shared_scale():
+    images = [
+        np.array([[0.0, 1.0], [2.0, 3.0]]),
+        np.array([[100.0, 101.0], [102.0, 103.0]]),
+    ]
+
+    with np.testing.assert_raises_regex(ValueError, "requires one shared scale"):
+        plots.plot_detector_image_grid(
+            images,
+            titles=["YJ", "H"],
+            clip=None,
+            shared_scale=False,
+            colorbar_mode="shared",
+        )
 
 
 def test_readout_delta_overview_uses_absolute_clip_from_zero():

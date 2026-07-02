@@ -16,6 +16,7 @@ from scopesim.utils import from_currsys
 
 from .plots import (
     plot_detector_background_budget,
+    plot_detector_image_grid,
     plot_emissivity_sanity,
     plot_post_disperser_diffuse_background,
     plot_readout_delta_overview,

@@ -1470,8 +1470,20 @@ def _plot_detector_image_grid(
     colorbar_mode: str = "per-panel",
     colorbar_label: str | None = None,
 ):
+    if not images:
+        raise ValueError("At least one detector image is required.")
+    if len(titles) != len(images):
+        raise ValueError(
+            f"titles and images must have the same length: {len(titles)} != {len(images)}"
+        )
+    if colorbar_mode not in {"per-panel", "shared"}:
+        raise ValueError("colorbar_mode must be 'per-panel' or 'shared'.")
     fig, axes = _detector_grid_axes(len(images))
     scale_groups = _readout_scale_groups(shared_scale, titles, len(images))
+    if colorbar_mode == "shared" and len(scale_groups) != 1:
+        raise ValueError(
+            "colorbar_mode='shared' requires one shared scale group for all images."
+        )
     scale_limits = _readout_group_limits(
         images,
         scale_groups,
@@ -1541,9 +1553,41 @@ def _plot_detector_image_grid(
     if colorbar_mode == "shared":
         cbar = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.86)
         cbar.set_label(colorbar_label or f"clip {clip_label}")
-    elif colorbar_mode != "per-panel":
-        raise ValueError("colorbar_mode must be 'per-panel' or 'shared'.")
     return fig, axes
+
+
+def plot_detector_image_grid(
+    images: Sequence[np.ndarray],
+    titles: Sequence[str] | None = None,
+    *,
+    clip: float | None = 0.995,
+    shared_scale: bool | Sequence[Sequence[int | str]] = False,
+    colorbar_mode: str = "per-panel",
+    colorbar_label: str | None = None,
+    cmap: str = "viridis",
+    title_suffix: str = "",
+    symmetric: bool = False,
+    zero_floor: bool = True,
+    annotate_stats: bool = False,
+):
+    """Plot detector-shaped image arrays with explicit scale/colorbar control."""
+    image_arrays = [np.asarray(image, dtype=float) for image in images]
+    titles = list(titles) if titles is not None else [
+        f"detector {idx}" for idx in range(len(image_arrays))
+    ]
+    return _plot_detector_image_grid(
+        image_arrays,
+        titles,
+        clip=clip,
+        symmetric=symmetric,
+        cmap=cmap,
+        title_suffix=title_suffix,
+        annotate_stats=annotate_stats,
+        zero_floor=zero_floor,
+        shared_scale=shared_scale,
+        colorbar_mode=colorbar_mode,
+        colorbar_label=colorbar_label,
+    )
 
 
 def plot_readout_overview(
@@ -1553,6 +1597,9 @@ def plot_readout_overview(
     clip: float | None = 0.995,
     shared_scale: bool | Sequence[Sequence[int | str]] = False,
     annotate_stats: bool = False,
+    colorbar_mode: str = "per-panel",
+    colorbar_label: str | None = None,
+    cmap: str = "cividis",
 ):
     """Plot detector readout images from a ScopeSim readout result."""
     readouts = list(hdul)
@@ -1563,10 +1610,12 @@ def plot_readout_overview(
         titles,
         clip=clip,
         symmetric=False,
-        cmap="cividis",
+        cmap=cmap,
         zero_floor=True,
         shared_scale=shared_scale,
         annotate_stats=annotate_stats,
+        colorbar_mode=colorbar_mode,
+        colorbar_label=colorbar_label,
     )
 
 
@@ -1578,6 +1627,8 @@ def plot_readout_delta_overview(
     clip: float | None = 0.995,
     title_suffix: str = " Source - Empty",
     shared_scale: bool | Sequence[Sequence[int | str]] = False,
+    colorbar_mode: str = "per-panel",
+    colorbar_label: str | None = None,
 ):
     """Plot source-minus-reference detector readout images."""
     signal_readouts = list(signal_hdul)
@@ -1602,6 +1653,8 @@ def plot_readout_delta_overview(
         annotate_delta=True,
         zero_floor=True,
         shared_scale=shared_scale,
+        colorbar_mode=colorbar_mode,
+        colorbar_label=colorbar_label,
     )
 
 
