@@ -1326,24 +1326,43 @@ def _readout_display_limits(
     *,
     symmetric: bool,
     zero_floor: bool = False,
+    vmin: float | None = None,
+    vmax: float | None = None,
 ) -> tuple[float, float, str]:
     finite = data[np.isfinite(data)]
     if finite.size == 0:
         return (-1.0, 1.0, "no finite data") if symmetric else (0.0, 1.0, "no finite data")
+
+    explicit_vmin = vmin is not None
+    explicit_vmax = vmax is not None
+    if explicit_vmin:
+        vmin = float(vmin)
+    if explicit_vmax:
+        vmax = float(vmax)
 
     if clip is None:
         if symmetric:
             limit = float(np.nanmax(np.abs(finite)))
             if not np.isfinite(limit) or limit <= 0:
                 limit = 1.0
-            return -limit, limit, "unclipped"
-        vmin = float(np.nanmin(finite))
-        if zero_floor:
-            vmin = 0.0
-        vmax = float(np.nanmax(finite))
+            vmin = -limit if vmin is None else vmin
+            vmax = limit if vmax is None else vmax
+            label = "limits" if explicit_vmin or explicit_vmax else "unclipped"
+            if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+                raise ValueError(f"Invalid display limits: vmin={vmin}, vmax={vmax}")
+            return vmin, vmax, label
+        if vmin is None:
+            vmin = float(np.nanmin(finite))
+            if zero_floor:
+                vmin = 0.0
+        if vmax is None:
+            vmax = float(np.nanmax(finite))
+        label = "limits" if explicit_vmin or explicit_vmax else "unclipped"
         if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+            if explicit_vmin or explicit_vmax:
+                raise ValueError(f"Invalid display limits: vmin={vmin}, vmax={vmax}")
             vmax = vmin + 1.0
-        return vmin, vmax, "unclipped"
+        return vmin, vmax, label
 
     clip = float(clip)
     if not np.isfinite(clip) or clip <= 0:
@@ -1354,23 +1373,31 @@ def _readout_display_limits(
             limit = float(np.nanquantile(np.abs(finite), clip))
             label = f"{_clip_fraction_label(clip)} |value|"
         else:
-            vmin = 0.0 if zero_floor else float(np.nanmin(finite))
-            vmax = float(np.nanquantile(finite, clip))
+            if vmin is None:
+                vmin = 0.0 if zero_floor else float(np.nanmin(finite))
+            if vmax is None:
+                vmax = float(np.nanquantile(finite, clip))
             label = _clip_fraction_label(clip)
             if not np.isfinite(vmax) or vmax <= vmin:
                 vmax = float(np.nanmax(finite))
             if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+                if explicit_vmin or explicit_vmax:
+                    raise ValueError(f"Invalid display limits: vmin={vmin}, vmax={vmax}")
                 vmax = vmin + 1.0
             return vmin, vmax, label
     else:
         limit = clip
         label = f"{clip:.4g}"
         if not symmetric:
-            vmin = 0.0 if zero_floor else min(float(np.nanmin(finite)), 0.0)
-            vmax = clip
+            if vmin is None:
+                vmin = 0.0 if zero_floor else min(float(np.nanmin(finite)), 0.0)
+            if vmax is None:
+                vmax = clip
             if not np.isfinite(vmax) or vmax <= vmin:
                 vmax = float(np.nanmax(finite))
             if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+                if explicit_vmin or explicit_vmax:
+                    raise ValueError(f"Invalid display limits: vmin={vmin}, vmax={vmax}")
                 vmax = vmin + 1.0
             return vmin, vmax, label
 
@@ -1378,7 +1405,11 @@ def _readout_display_limits(
         limit = float(np.nanmax(np.abs(finite)))
     if not np.isfinite(limit) or limit <= 0:
         limit = 1.0
-    return -limit, limit, label
+    vmin = -limit if vmin is None else vmin
+    vmax = limit if vmax is None else vmax
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        raise ValueError(f"Invalid display limits: vmin={vmin}, vmax={vmax}")
+    return vmin, vmax, label
 
 
 def _detector_grid_axes(n_images: int, *, row_height: float = 3.6):
@@ -1431,6 +1462,8 @@ def _readout_group_limits(
     clip: float | None,
     symmetric: bool,
     zero_floor: bool,
+    vmin: float | None,
+    vmax: float | None,
 ) -> dict[int, tuple[float, float, str, bool]]:
     limits: dict[int, tuple[float, float, str, bool]] = {}
     for group in groups:
@@ -1443,15 +1476,17 @@ def _readout_group_limits(
             combined = np.concatenate(finite_values)
         else:
             combined = np.array([], dtype=float)
-        vmin, vmax, clip_label = _readout_display_limits(
+        group_vmin, group_vmax, clip_label = _readout_display_limits(
             combined,
             clip,
             symmetric=symmetric,
             zero_floor=zero_floor,
+            vmin=vmin,
+            vmax=vmax,
         )
         is_shared = len(group) > 1
         for idx in group:
-            limits[idx] = (vmin, vmax, clip_label, is_shared)
+            limits[idx] = (group_vmin, group_vmax, clip_label, is_shared)
     return limits
 
 
@@ -1469,6 +1504,8 @@ def _plot_detector_image_grid(
     shared_scale: bool | Sequence[Sequence[int | str]] = False,
     colorbar_mode: str = "per-panel",
     colorbar_label: str | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
 ):
     if not images:
         raise ValueError("At least one detector image is required.")
@@ -1490,6 +1527,8 @@ def _plot_detector_image_grid(
         clip=clip,
         symmetric=symmetric,
         zero_floor=zero_floor,
+        vmin=vmin,
+        vmax=vmax,
     )
     for idx, (ax, title, data) in enumerate(
         zip(axes.flat, titles, images, strict=False),
@@ -1569,6 +1608,8 @@ def plot_detector_image_grid(
     symmetric: bool = False,
     zero_floor: bool = True,
     annotate_stats: bool = False,
+    vmin: float | None = None,
+    vmax: float | None = None,
 ):
     """Plot detector-shaped image arrays with explicit scale/colorbar control."""
     image_arrays = [np.asarray(image, dtype=float) for image in images]
@@ -1587,6 +1628,8 @@ def plot_detector_image_grid(
         shared_scale=shared_scale,
         colorbar_mode=colorbar_mode,
         colorbar_label=colorbar_label,
+        vmin=vmin,
+        vmax=vmax,
     )
 
 
@@ -1600,6 +1643,9 @@ def plot_readout_overview(
     colorbar_mode: str = "per-panel",
     colorbar_label: str | None = None,
     cmap: str = "cividis",
+    zero_floor: bool = True,
+    vmin: float | None = None,
+    vmax: float | None = None,
 ):
     """Plot detector readout images from a ScopeSim readout result."""
     readouts = list(hdul)
@@ -1611,11 +1657,13 @@ def plot_readout_overview(
         clip=clip,
         symmetric=False,
         cmap=cmap,
-        zero_floor=True,
+        zero_floor=zero_floor,
         shared_scale=shared_scale,
         annotate_stats=annotate_stats,
         colorbar_mode=colorbar_mode,
         colorbar_label=colorbar_label,
+        vmin=vmin,
+        vmax=vmax,
     )
 
 
@@ -1629,6 +1677,9 @@ def plot_readout_delta_overview(
     shared_scale: bool | Sequence[Sequence[int | str]] = False,
     colorbar_mode: str = "per-panel",
     colorbar_label: str | None = None,
+    zero_floor: bool = True,
+    vmin: float | None = None,
+    vmax: float | None = None,
 ):
     """Plot source-minus-reference detector readout images."""
     signal_readouts = list(signal_hdul)
@@ -1651,10 +1702,12 @@ def plot_readout_delta_overview(
         cmap="magma",
         title_suffix=title_suffix,
         annotate_delta=True,
-        zero_floor=True,
+        zero_floor=zero_floor,
         shared_scale=shared_scale,
         colorbar_mode=colorbar_mode,
         colorbar_label=colorbar_label,
+        vmin=vmin,
+        vmax=vmax,
     )
 
 

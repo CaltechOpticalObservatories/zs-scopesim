@@ -489,6 +489,36 @@ def test_readout_overview_can_share_color_scale():
     fig.clf()
 
 
+def test_readout_overview_can_use_data_floor_for_biased_frames():
+    class FakeHDU:
+        data = np.arange(100, 200, dtype=float).reshape(10, 10)
+
+    fig, axes = plots.plot_readout_overview(
+        [FakeHDU()],
+        titles=["B"],
+        clip=None,
+        zero_floor=False,
+    )
+
+    assert axes[0, 0].images[0].get_clim() == (100.0, 199.0)
+    fig.clf()
+
+
+def test_detector_image_grid_accepts_explicit_display_limits():
+    images = [np.arange(100, dtype=float).reshape(10, 10)]
+
+    fig, axes = plots.plot_detector_image_grid(
+        images,
+        titles=["B"],
+        clip=0.5,
+        vmin=10.0,
+        vmax=20.0,
+    )
+
+    assert axes[0, 0].images[0].get_clim() == (10.0, 20.0)
+    fig.clf()
+
+
 def test_detector_image_grid_uses_independent_panel_scales():
     images = [
         np.array([[0.0, 1.0], [2.0, 3.0]]),
