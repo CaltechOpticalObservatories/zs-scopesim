@@ -4,7 +4,6 @@ import numpy as np
 from astropy import units as u
 from astropy.io import fits
 from astropy.table import Table
-from synphot import Empirical1D, SourceSpectrum
 from synphot.units import PHOTLAM
 
 from zs_scopesim_tools import validation as val
@@ -1313,7 +1312,12 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
         "CDELT2D": 0.01,
     })
     train = type("FakeTraceResolutionTrain", (), {})()
-    train.cmds = {"!OBS.airmass": 1.0, "!OBS.seeing": 0.5}
+    train.cmds = {
+        "!OBS.airmass": 1.0,
+        "!OBS.seeing": 0.5,
+        "!INST.vis_curr_slit": 0.7,
+        "!INST.nir_curr_slit": 0.7,
+    }
     train.image_planes = [FakeImagePlane(header)]
     train.optics_manager = type("FakeOptics", (), {
         "all_effects": [
@@ -1358,7 +1362,7 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
 
     display_table = val.trace_resolution_summary_display_table(summary)
     assert list(display_table.columns) == [
-        "ch", "id", "orders", "wave nm", "disp nm/pix", "R k",
+        "ch", "id", "orders", "wave nm", "slit", "disp nm/pix", "R k",
         "nyq R k", "pix/resel", "seeing",
     ]
     assert display_table.loc[0, "R k"] == "0.0"
@@ -1402,7 +1406,12 @@ def test_trace_resolution_diagnostic_table_requires_full_slit_on_detector(
         "CDELT2D": 0.01,
     })
     train = type("FakeTraceResolutionTrain", (), {})()
-    train.cmds = {"!OBS.airmass": 1.0, "!OBS.seeing": 0.5}
+    train.cmds = {
+        "!OBS.airmass": 1.0,
+        "!OBS.seeing": 0.5,
+        "!INST.vis_curr_slit": 0.7,
+        "!INST.nir_curr_slit": 0.7,
+    }
     train.image_planes = [FakeImagePlane(header)]
     train.optics_manager = type("FakeOptics", (), {
         "all_effects": [
@@ -1549,69 +1558,6 @@ def test_readout_delta_summary_table_reports_source_minus_reference():
     assert list(table["nonzero_pixels"]) == [4]
 
 
-def test_source_photon_crosscheck_table_uses_resolution_element_and_throughput():
-    class FakeField:
-        def __init__(self, spectrum):
-            self.field = Table({
-                "x": [0.0, 1.0],
-                "y": [0.0, 0.0],
-                "ref": [0, 0],
-                "weight": [1.0, 2.0],
-            })
-            self.spectra = {0: spectrum}
-
-    class FakeSource:
-        def __init__(self, spectrum):
-            self.fields = [FakeField(spectrum)]
-
-    spectrum = SourceSpectrum(
-        Empirical1D,
-        points=[3900.0, 4100.0],
-        lookup_table=[1.0, 1.0],
-    )
-    source = FakeSource(spectrum)
-    ztrain = FakeBudgetTrain()
-    ztrain.cmds = {
-        "!TEL.area": "1 m2",
-        "!SIM.spectral.spectral_resolution": 40000.0,
-    }
-    transmission = {
-        "wave_nm": np.array([399.99, 400.0, 400.01]) * u.nm,
-        "channels": {
-            0: {
-                "label": "B",
-                "orders": {
-                    "B_1": {
-                        "total": np.array([0.5, 0.5, 0.5]),
-                    },
-                },
-            },
-        },
-    }
-    budget = Table({
-        "channel": ["B"],
-        "exposure_time_s": [10.0],
-    })
-
-    table = val.source_photon_crosscheck_table(
-        source,
-        ztrain,
-        transmission,
-        detector_budget=budget,
-    )
-
-    assert list(table["channel"]) == ["B"]
-    np.testing.assert_allclose(table["resolution_element_nm"], [0.01])
-    # 1 PHOTLAM over 0.1 A, 1 m2 telescope, summed weight 3, throughput 0.5.
-    np.testing.assert_allclose(
-        table["source_ph_s_resel_at_telescope"], [3000.0],
-    )
-    np.testing.assert_allclose(
-        table["source_ph_s_resel_at_detector"], [1500.0],
-    )
-    np.testing.assert_allclose(table["source_e_resel"], [15000.0])
-
-
 def test_resolution_element_footprint_table_derives_channel_scales(monkeypatch):
     train = FakeScienceTrain([
         FakeNamedSelector(
@@ -1677,26 +1623,3 @@ def test_resolution_element_snr_summary_table_scales_positive_median():
     np.testing.assert_allclose(table["median_positive_pixel_snr"], [2.0])
     np.testing.assert_allclose(table["median_resel_snr"], [6.0])
     assert list(table["positive_snr_pixels"]) == [3]
-
-
-def test_source_photon_crosscheck_table_rejects_missing_transmission():
-    class FakeSource:
-        fields = []
-
-    ztrain = FakeBudgetTrain()
-    ztrain.cmds = {
-        "!TEL.area": "1 m2",
-        "!SIM.spectral.spectral_resolution": 40000.0,
-    }
-    transmission = {
-        "wave_nm": np.array([400.0, 401.0]) * u.nm,
-        "channels": {
-            0: {
-                "label": "B",
-                "orders": {"B_1": {"total": np.array([np.nan, np.nan])}},
-            },
-        },
-    }
-
-    with np.testing.assert_raises_regex(ValueError, "no finite transmission"):
-        val.source_photon_crosscheck_table(FakeSource(), ztrain, transmission)

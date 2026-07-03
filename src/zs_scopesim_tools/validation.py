@@ -949,6 +949,7 @@ def trace_resolution_diagnostic_table(
             nominal_slit_width = _finite_float(
                 trace.meta.get("nominal_slit_width", np.nan),
             )
+            current_slit_arcsec = _current_slit_arcsec(ztrain, label)
             design_res = _finite_float(trace.meta.get("design_res", np.nan))
             psf_fwhm = fwhm_func(wave, zenith_angle, seeing).to_value(u.arcsec)
             spatial_fwhm_pix = psf_fwhm / pixel_scale_arcsec
@@ -958,15 +959,27 @@ def trace_resolution_diagnostic_table(
                 & (coords["detector_y"] >= 0)
                 & (coords["detector_y"] <= detector_naxis2)
             )
-            resolution_note = (
-                "R uses local detector dispersion and the active analytical "
-                "slit-projection metadata."
-                if np.isfinite(nominal_fwhm_pix) and nominal_fwhm_pix > 0
-                else (
+            if (
+                np.isfinite(nominal_fwhm_pix)
+                and nominal_fwhm_pix > 0
+                and np.isfinite(nominal_slit_width)
+                and nominal_slit_width > 0
+                and np.isfinite(current_slit_arcsec)
+                and current_slit_arcsec > 0
+            ):
+                spectral_element_width_pix = (
+                    nominal_fwhm_pix * current_slit_arcsec / nominal_slit_width
+                )
+                resolution_note = (
+                    "R uses local detector dispersion and scales the nominal "
+                    "slit-projection metadata to the active selected slit."
+                )
+            else:
+                spectral_element_width_pix = 2.0
+                resolution_note = (
                     "R is the local Nyquist resolving power because this trace "
                     "has no slit-projection metadata."
                 )
-            )
 
             for idx in range(wave_nm.size):
                 on_detector = footprint_on_detector[:, idx]
@@ -992,11 +1005,10 @@ def trace_resolution_diagnostic_table(
                 nyquist_resolving_power = wave_nm[idx] / (
                     2.0 * dispersion_nm_pix
                 )
-                if np.isfinite(nominal_fwhm_pix) and nominal_fwhm_pix > 0:
+                if np.isfinite(spectral_element_width_pix) and spectral_element_width_pix > 0:
                     resolving_power = wave_nm[idx] / (
-                        nominal_fwhm_pix * dispersion_nm_pix
+                        spectral_element_width_pix * dispersion_nm_pix
                     )
-                    spectral_element_width_pix = nominal_fwhm_pix
                 else:
                     resolving_power = nyquist_resolving_power
                     spectral_element_width_pix = 2.0
@@ -1022,6 +1034,7 @@ def trace_resolution_diagnostic_table(
                     "design_resolving_power_R": design_res,
                     "nominal_fwhm_pix": nominal_fwhm_pix,
                     "nominal_slit_width_arcsec": nominal_slit_width,
+                    "active_slit_width_arcsec": current_slit_arcsec,
                     "seeing_fwhm_arcsec": float(psf_fwhm[idx]),
                     "spatial_fwhm_pix": float(spatial_fwhm_pix[idx]),
                     "footprint_samples_on_detector": int(np.sum(on_detector)),
@@ -1125,6 +1138,9 @@ def trace_resolution_summary_table(table: Table) -> Table:
             "nominal_slit_width_arcsec": float(np.nanmedian(
                 np.asarray(group["nominal_slit_width_arcsec"], dtype=float),
             )),
+            "active_slit_width_arcsec": float(np.nanmedian(
+                np.asarray(group["active_slit_width_arcsec"], dtype=float),
+            )),
             "seeing_fwhm_median_arcsec": float(np.nanmedian(
                 np.asarray(group["seeing_fwhm_arcsec"], dtype=float),
             )),
@@ -1166,6 +1182,7 @@ def trace_resolution_summary_display_table(table: Table):
                 f"{float(row['wave_min_nm']):.0f}-"
                 f"{float(row['wave_max_nm']):.0f}"
             ),
+            "slit": f"{float(row['active_slit_width_arcsec']):.2f}\"",
             "disp nm/pix": _compact_range(
                 row["dispersion_min_nm_pix"],
                 row["dispersion_max_nm_pix"],
@@ -3170,102 +3187,6 @@ def science_truth_crosscheck_table(
     return Table(rows=rows)
 
 
-def source_photon_crosscheck_table(
-    source: Any,
-    ztrain: Any,
-    transmission_data: Mapping[str, Any],
-    *,
-    detector_budget: Table | None = None,
-    spectral_resolution: float | None = None,
-) -> Table:
-    """Return source photon anchors per resolution element by channel.
-
-    The source term is integrated over one ``lambda / R`` interval at each
-    channel midpoint and multiplied by a representative order throughput from
-    the transmission sanity data. It is intended as a scale check, not an
-    extracted-spectrum model.
-    """
-    if spectral_resolution is None:
-        spectral_resolution = _required_cmd_float(
-            ztrain.cmds, "!SIM.spectral.spectral_resolution",
-        )
-    if not np.isfinite(spectral_resolution) or spectral_resolution <= 0:
-        raise ValueError(
-            "Spectral resolution must be finite and positive for source photon "
-            f"crosschecks; got {spectral_resolution!r}."
-        )
-    telescope_area = _telescope_area(ztrain)
-    budget_by_channel = _budget_by_channel(detector_budget)
-    wave = u.Quantity(transmission_data["wave_nm"]).to_value(u.nm)
-
-    rows: list[dict[str, Any]] = []
-    for aperture_id, channel in transmission_data["channels"].items():
-        finite_ranges = []
-        for order in channel["orders"].values():
-            total = np.asarray(order["total"], dtype=float)
-            finite = np.isfinite(total)
-            if np.any(finite):
-                finite_ranges.append((np.nanmin(wave[finite]), np.nanmax(wave[finite])))
-        if not finite_ranges:
-            raise ValueError(
-                f"Channel {channel['label']!r} has no finite transmission orders."
-            )
-        wave_mid_nm = 0.5 * (
-            min(range_[0] for range_ in finite_ranges)
-            + max(range_[1] for range_ in finite_ranges)
-        )
-        resolution_element_nm = wave_mid_nm / spectral_resolution
-        wave_min = (wave_mid_nm - 0.5 * resolution_element_nm) * u.nm
-        wave_max = (wave_mid_nm + 0.5 * resolution_element_nm) * u.nm
-        source_rate = _source_photons_in_range(
-            source, wave_min, wave_max, telescope_area,
-        )
-
-        throughput_values = []
-        for order in channel["orders"].values():
-            total = np.asarray(order["total"], dtype=float)
-            finite = np.isfinite(total)
-            if not np.any(finite):
-                continue
-            if (
-                wave_mid_nm < np.nanmin(wave[finite])
-                or wave_mid_nm > np.nanmax(wave[finite])
-            ):
-                continue
-            throughput_values.append(
-                float(np.interp(wave_mid_nm, wave[finite], total[finite])),
-            )
-        if not throughput_values:
-            raise ValueError(
-                f"Channel {channel['label']!r} has no order covering "
-                f"{wave_mid_nm:.6g} nm."
-            )
-        throughput = float(np.nanmax(throughput_values))
-        detector_rate = source_rate * throughput
-        budget = budget_by_channel.get(str(channel["label"]))
-        exposure_time = (
-            float(budget["exposure_time_s"]) if budget is not None else np.nan
-        )
-        rows.append({
-            "aperture_id": int(aperture_id),
-            "channel": str(channel["label"]),
-            "wavelength_mid_nm": wave_mid_nm,
-            "spectral_resolution_R": float(spectral_resolution),
-            "resolution_element_nm": resolution_element_nm,
-            "source_ph_s_resel_at_telescope": source_rate,
-            "representative_order_throughput": throughput,
-            "source_ph_s_resel_at_detector": detector_rate,
-            "exposure_time_s": exposure_time,
-            "source_e_resel": detector_rate * exposure_time,
-            "note": (
-                "Back-of-envelope source scale at channel midpoint; detector "
-                "image visibility still depends on trace mapping, slit loss, "
-                "PSF, extraction aperture, and background."
-            ),
-        })
-    return Table(rows=rows)
-
-
 def _zenith_angle_from_airmass(airmass: float) -> u.Quantity:
     airmass = max(1.0, float(airmass))
     return (
@@ -3507,62 +3428,6 @@ def readout_delta_summary_table(
             "nonzero_pixels": int(np.count_nonzero(delta)),
         })
     return Table(rows=rows)
-
-
-def _budget_by_channel(detector_budget: Table | None) -> dict[str, Any]:
-    if detector_budget is None:
-        return {}
-    return {str(row["channel"]): row for row in detector_budget}
-
-
-def _source_photons_in_range(
-    source: Any,
-    wave_min: u.Quantity,
-    wave_max: u.Quantity,
-    telescope_area: u.Quantity,
-) -> float:
-    from scopesim.source.source_utils import photons_in_range
-
-    total = 0.0
-    for spectrum, weight in _source_spectrum_weights(source):
-        photons = photons_in_range(
-            [spectrum],
-            wave_min.to(u.um),
-            wave_max.to(u.um),
-            area=telescope_area,
-        )[0]
-        total += float(photons.to_value(u.ph / u.s)) * weight
-    return total
-
-
-def _source_spectrum_weights(source: Any) -> list[tuple[Any, float]]:
-    weighted: list[tuple[Any, float]] = []
-    for field in getattr(source, "fields", []):
-        spectra = getattr(field, "spectra", {}) or {}
-        table = getattr(field, "field", None)
-        if hasattr(table, "colnames") and "ref" in table.colnames:
-            refs = np.asarray(table["ref"], dtype=int)
-            weights = (
-                np.asarray(table["weight"], dtype=float)
-                if "weight" in table.colnames
-                else np.ones(len(table), dtype=float)
-            )
-            for ref in np.unique(refs):
-                spectrum = spectra.get(int(ref), spectra.get(ref))
-                if spectrum is None:
-                    continue
-                weighted.append((
-                    spectrum,
-                    float(np.sum(weights[refs == ref])),
-                ))
-            continue
-
-        spectrum = getattr(field, "spectrum", None)
-        if spectrum is not None:
-            data = getattr(field, "data", None)
-            weight = float(np.nansum(data)) if data is not None else 1.0
-            weighted.append((spectrum, weight))
-    return weighted
 
 
 def _post_diffuse_channels_by_image_plane(

@@ -1345,8 +1345,8 @@ def _readout_display_limits(
     *,
     symmetric: bool,
     zero_floor: bool = False,
-    vmin: float | None = None,
-    vmax: float | None = None,
+    vmin: Any = None,
+    vmax: Any = None,
 ) -> tuple[float, float, str]:
     finite = data[np.isfinite(data)]
     if finite.size == 0:
@@ -1431,6 +1431,76 @@ def _readout_display_limits(
     return vmin, vmax, label
 
 
+def _is_scalar_limit(value: Any) -> bool:
+    return value is None or isinstance(value, str) or np.ndim(value) == 0
+
+
+def _readout_panel_limits(
+    value: Any,
+    titles: Sequence[str],
+    n_images: int,
+    name: str,
+) -> list[float | None]:
+    if isinstance(value, Mapping):
+        panel_values: list[float | None] = []
+        for idx, title in enumerate(titles):
+            item = value.get(title, value.get(idx, None))
+            panel_values.append(None if item is None else float(item))
+        return panel_values
+
+    if _is_scalar_limit(value):
+        return [None if value is None else float(value)] * n_images
+
+    values = list(value)
+    if len(values) != n_images:
+        raise ValueError(
+            f"{name} sequence must have one value per image: "
+            f"{len(values)} != {n_images}"
+        )
+    return [None if item is None else float(item) for item in values]
+
+
+def _readout_group_limit_value(
+    values: Sequence[float | None],
+    group: Sequence[int],
+    reducer: Any,
+) -> float | None:
+    explicit = [values[idx] for idx in group if values[idx] is not None]
+    if not explicit:
+        return None
+    return float(reducer(explicit))
+
+
+def _readout_image_norm(
+    data: np.ndarray,
+    *,
+    image_scale: str,
+    vmin: float,
+    vmax: float,
+):
+    from matplotlib.colors import LogNorm, Normalize, PowerNorm, SymLogNorm
+
+    scale = image_scale.lower()
+    if scale == "linear":
+        return Normalize(vmin=vmin, vmax=vmax)
+    if scale == "log":
+        finite_positive = data[np.isfinite(data) & (data > 0)]
+        if finite_positive.size == 0:
+            raise ValueError("image_scale='log' requires positive finite image data.")
+        positive_floor = float(np.nanmin(finite_positive))
+        return LogNorm(vmin=max(vmin, positive_floor), vmax=vmax)
+    if scale == "sqrt":
+        if vmin < 0:
+            raise ValueError(
+                "image_scale='sqrt' requires a non-negative display range; "
+                "use zero_floor=True or image_scale='symlog' for signed data."
+            )
+        return PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax)
+    if scale == "symlog":
+        return SymLogNorm(linthresh=1.0, vmin=vmin, vmax=vmax)
+    raise ValueError("image_scale must be 'linear', 'log', 'sqrt', or 'symlog'.")
+
+
 def _detector_grid_axes(n_images: int, *, row_height: float = 3.6):
     import matplotlib.pyplot as plt
 
@@ -1481,14 +1551,17 @@ def _readout_scale_groups(
 
 def _readout_group_limits(
     images: Sequence[np.ndarray],
+    titles: Sequence[str],
     groups: Sequence[Sequence[int]],
     *,
     clip: float | None,
     symmetric: bool,
     zero_floor: bool,
-    vmin: float | None,
-    vmax: float | None,
+    vmin: Any,
+    vmax: Any,
 ) -> dict[int, tuple[float, float, str, bool]]:
+    panel_vmins = _readout_panel_limits(vmin, titles, len(images), "vmin")
+    panel_vmaxs = _readout_panel_limits(vmax, titles, len(images), "vmax")
     limits: dict[int, tuple[float, float, str, bool]] = {}
     for group in groups:
         finite_values = [
@@ -1500,13 +1573,15 @@ def _readout_group_limits(
             combined = np.concatenate(finite_values)
         else:
             combined = np.array([], dtype=float)
+        group_vmin_arg = _readout_group_limit_value(panel_vmins, group, min)
+        group_vmax_arg = _readout_group_limit_value(panel_vmaxs, group, max)
         group_vmin, group_vmax, clip_label = _readout_display_limits(
             combined,
             clip,
             symmetric=symmetric,
             zero_floor=zero_floor,
-            vmin=vmin,
-            vmax=vmax,
+            vmin=group_vmin_arg,
+            vmax=group_vmax_arg,
         )
         is_shared = len(group) > 1
         for idx in group:
@@ -1528,8 +1603,10 @@ def _plot_detector_image_grid(
     shared_scale: bool | Sequence[Sequence[int | str]] = False,
     colorbar_mode: str = "per-panel",
     colorbar_label: str | None = None,
-    vmin: float | None = None,
-    vmax: float | None = None,
+    vmin: Any = None,
+    vmax: Any = None,
+    image_scale: str = "linear",
+    image_interpolation: str = "nearest",
 ):
     if not images:
         raise ValueError("At least one detector image is required.")
@@ -1547,6 +1624,7 @@ def _plot_detector_image_grid(
         )
     scale_limits = _readout_group_limits(
         images,
+        titles,
         scale_groups,
         clip=clip,
         symmetric=symmetric,
@@ -1558,13 +1636,19 @@ def _plot_detector_image_grid(
         zip(axes.flat, titles, images, strict=False),
     ):
         vmin, vmax, clip_label, is_shared = scale_limits[idx]
+        norm = _readout_image_norm(
+            data,
+            image_scale=image_scale,
+            vmin=vmin,
+            vmax=vmax,
+        )
         im = ax.imshow(
             data,
             origin="lower",
-            vmin=vmin,
-            vmax=vmax,
+            norm=norm,
             cmap=cmap,
-            interpolation="nearest",
+            interpolation=image_interpolation,
+            resample=True,
         )
         ax.set_title(f"{title}{title_suffix}", pad=8)
         if annotate_delta or annotate_stats:
@@ -1609,13 +1693,17 @@ def _plot_detector_image_grid(
         ax.axis("off")
         if colorbar_mode == "per-panel":
             cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.025)
-            label = colorbar_label or f"{'shared ' if is_shared else ''}clip {clip_label}"
+            scale_label = "" if image_scale == "linear" else f", {image_scale}"
+            label = colorbar_label or (
+                f"{'shared ' if is_shared else ''}clip {clip_label}{scale_label}"
+            )
             cbar.set_label(label)
     for ax in axes.flat[len(images):]:
         ax.axis("off")
     if colorbar_mode == "shared":
         cbar = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.86)
-        cbar.set_label(colorbar_label or f"clip {clip_label}")
+        scale_label = "" if image_scale == "linear" else f", {image_scale}"
+        cbar.set_label(colorbar_label or f"clip {clip_label}{scale_label}")
     _center_detector_axes(axes, len(images))
     return fig, axes
 
@@ -1633,8 +1721,10 @@ def plot_detector_image_grid(
     symmetric: bool = False,
     zero_floor: bool = True,
     annotate_stats: bool = False,
-    vmin: float | None = None,
-    vmax: float | None = None,
+    vmin: Any = None,
+    vmax: Any = None,
+    image_scale: str = "linear",
+    image_interpolation: str = "nearest",
 ):
     """Plot detector-shaped image arrays with explicit scale/colorbar control."""
     image_arrays = [np.asarray(image, dtype=float) for image in images]
@@ -1655,6 +1745,8 @@ def plot_detector_image_grid(
         colorbar_label=colorbar_label,
         vmin=vmin,
         vmax=vmax,
+        image_scale=image_scale,
+        image_interpolation=image_interpolation,
     )
 
 
@@ -1669,8 +1761,10 @@ def plot_readout_overview(
     colorbar_label: str | None = None,
     cmap: str = "cividis",
     zero_floor: bool = True,
-    vmin: float | None = None,
-    vmax: float | None = None,
+    vmin: Any = None,
+    vmax: Any = None,
+    image_scale: str = "linear",
+    image_interpolation: str = "nearest",
 ):
     """Plot detector readout images from a ScopeSim readout result."""
     readouts = list(hdul)
@@ -1689,6 +1783,8 @@ def plot_readout_overview(
         colorbar_label=colorbar_label,
         vmin=vmin,
         vmax=vmax,
+        image_scale=image_scale,
+        image_interpolation=image_interpolation,
     )
 
 
@@ -1704,8 +1800,10 @@ def plot_readout_delta_overview(
     colorbar_label: str | None = None,
     cmap: str = "magma",
     zero_floor: bool = True,
-    vmin: float | None = None,
-    vmax: float | None = None,
+    vmin: Any = None,
+    vmax: Any = None,
+    image_scale: str = "linear",
+    image_interpolation: str = "nearest",
 ):
     """Plot source-minus-reference detector readout images."""
     signal_readouts = list(signal_hdul)
@@ -1725,6 +1823,8 @@ def plot_readout_delta_overview(
         colorbar_label=colorbar_label,
         vmin=vmin,
         vmax=vmax,
+        image_scale=image_scale,
+        image_interpolation=image_interpolation,
     )
 
 
@@ -1804,16 +1904,20 @@ def show_and_save_hdul(
     hdul_colorbar_label: str | None = None,
     hdul_cmap: str = "viridis",
     hdul_zero_floor: bool = False,
-    hdul_vmin: float | None = None,
-    hdul_vmax: float | None = None,
+    hdul_vmin: Any = None,
+    hdul_vmax: Any = None,
+    hdul_image_scale: str = "linear",
+    hdul_image_interpolation: str = "nearest",
     delta_clip: float | None = 0.995,
     delta_shared_scale: bool | Sequence[Sequence[int | str]] = False,
     delta_colorbar_mode: str = "per-panel",
     delta_colorbar_label: str | None = None,
     delta_cmap: str = "magma",
     delta_zero_floor: bool = True,
-    delta_vmin: float | None = None,
-    delta_vmax: float | None = None,
+    delta_vmin: Any = None,
+    delta_vmax: Any = None,
+    delta_image_scale: str = "linear",
+    delta_image_interpolation: str = "nearest",
     delta_title_suffix: str = " - reference",
     cross_dispersion_central_columns: int = 50,
 ) -> dict[str, Any]:
@@ -1885,6 +1989,8 @@ def show_and_save_hdul(
             zero_floor=hdul_zero_floor,
             vmin=hdul_vmin,
             vmax=hdul_vmax,
+            image_scale=hdul_image_scale,
+            image_interpolation=hdul_image_interpolation,
         )
         figures["hdul"] = fig_hdul
 
@@ -1902,6 +2008,8 @@ def show_and_save_hdul(
             zero_floor=delta_zero_floor,
             vmin=delta_vmin,
             vmax=delta_vmax,
+            image_scale=delta_image_scale,
+            image_interpolation=delta_image_interpolation,
         )
         figures["delta"] = fig_delta
 

@@ -519,6 +519,60 @@ def test_detector_image_grid_accepts_explicit_display_limits():
     fig.clf()
 
 
+def test_detector_image_grid_accepts_per_panel_display_limits():
+    images = [
+        np.array([[0.0, 1.0], [2.0, 3.0]]),
+        np.array([[100.0, 101.0], [102.0, 103.0]]),
+    ]
+
+    fig, axes = plots.plot_detector_image_grid(
+        images,
+        titles=["YJ", "H"],
+        clip=None,
+        vmin=[0.0, 100.0],
+        vmax=[4.0, 104.0],
+    )
+
+    assert axes[0, 0].images[0].get_clim() == (0.0, 4.0)
+    assert axes[0, 1].images[0].get_clim() == (100.0, 104.0)
+    fig.clf()
+
+
+def test_detector_image_grid_accepts_title_mapped_display_limits():
+    images = [
+        np.array([[0.0, 1.0], [2.0, 3.0]]),
+        np.array([[100.0, 101.0], [102.0, 103.0]]),
+    ]
+
+    fig, axes = plots.plot_detector_image_grid(
+        images,
+        titles=["YJ", "H"],
+        clip=None,
+        vmax={"YJ": 5.0, "H": 105.0},
+    )
+
+    assert axes[0, 0].images[0].get_clim() == (0.0, 5.0)
+    assert axes[0, 1].images[0].get_clim() == (0.0, 105.0)
+    fig.clf()
+
+
+def test_detector_image_grid_supports_display_scale_and_interpolation():
+    images = [np.array([[0.0, 1.0], [4.0, 9.0]])]
+
+    fig, axes = plots.plot_detector_image_grid(
+        images,
+        titles=["B"],
+        clip=None,
+        image_scale="sqrt",
+        image_interpolation="hanning",
+    )
+
+    image = axes[0, 0].images[0]
+    assert image.norm.__class__.__name__ == "PowerNorm"
+    assert image.get_interpolation() == "hanning"
+    fig.clf()
+
+
 def test_detector_image_grid_uses_independent_panel_scales():
     images = [
         np.array([[0.0, 1.0], [2.0, 3.0]]),
@@ -644,6 +698,39 @@ def test_show_and_save_hdul_saves_hdul_reference_and_delta(tmp_path):
     for figure in result["figures"].values():
         if figure is not None:
             plt.close(figure)
+
+
+def test_show_and_save_hdul_passes_display_scale_and_panel_limits():
+    from astropy.io import fits
+    import matplotlib.pyplot as plt
+
+    signal = [
+        fits.HDUList([
+            fits.PrimaryHDU(),
+            fits.ImageHDU(data=np.full((4, 4), value, dtype=float)),
+        ])
+        for value in (10.0, 20.0)
+    ]
+
+    result = plots.show_and_save_hdul(
+        signal,
+        label="case",
+        titles=["B", "G"],
+        show_hdul=True,
+        save_hdul=False,
+        save_figures=False,
+        hdul_clip=None,
+        hdul_vmax=[12.0, 25.0],
+        hdul_image_scale="sqrt",
+        hdul_image_interpolation="hanning",
+    )
+
+    axes = result["figures"]["hdul"].axes
+    plotted = [ax.images[0] for ax in axes if ax.images]
+    assert [image.get_clim() for image in plotted] == [(10.0, 12.0), (20.0, 25.0)]
+    assert {image.norm.__class__.__name__ for image in plotted} == {"PowerNorm"}
+    assert {image.get_interpolation() for image in plotted} == {"hanning"}
+    plt.close(result["figures"]["hdul"])
 
 
 def test_trace_resolution_detector_map_plot_smoke():
