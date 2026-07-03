@@ -450,7 +450,7 @@ def test_readout_delta_overview_plot_smoke():
     )
 
     assert axes.shape == (1, 1)
-    assert "Source - Empty" in axes[0, 0].get_title()
+    assert " - reference" in axes[0, 0].get_title()
     assert "max |delta| 2" in axes[0, 0].texts[0].get_text()
     fig.clf()
 
@@ -555,6 +555,27 @@ def test_detector_image_grid_rejects_shared_colorbar_without_shared_scale():
         )
 
 
+def test_detector_image_grid_centers_mixed_aspect_axes():
+    images = [
+        np.zeros((8, 4), dtype=float),
+        np.zeros((8, 4), dtype=float),
+        np.zeros((8, 4), dtype=float),
+        np.zeros((4, 4), dtype=float),
+        np.zeros((4, 4), dtype=float),
+        np.zeros((4, 4), dtype=float),
+    ]
+
+    fig, axes = plots.plot_detector_image_grid(
+        images,
+        titles=["B", "G", "R", "YJ", "H", "K"],
+        clip=None,
+        colorbar_mode="per-panel",
+    )
+
+    assert [ax.get_anchor() for ax in axes.flat[:6]] == ["C"] * 6
+    fig.clf()
+
+
 def test_readout_delta_overview_uses_absolute_clip_from_zero():
     class FakeHDU:
         def __init__(self, data):
@@ -570,6 +591,59 @@ def test_readout_delta_overview_uses_absolute_clip_from_zero():
     assert axes[0, 0].images[0].get_clim() == (0.0, 5.0)
     assert "min delta -10" in axes[0, 0].texts[0].get_text()
     fig.clf()
+
+
+def test_show_and_save_hdul_saves_hdul_reference_and_delta(tmp_path):
+    from astropy.io import fits
+    import matplotlib.pyplot as plt
+
+    plt.close("all")
+
+    signal = [
+        fits.HDUList([
+            fits.PrimaryHDU(),
+            fits.ImageHDU(data=np.full((4, 4), value, dtype=float)),
+        ])
+        for value in (10.0, 20.0)
+    ]
+    reference = [
+        fits.HDUList([
+            fits.PrimaryHDU(),
+            fits.ImageHDU(data=np.full((4, 4), value, dtype=float)),
+        ])
+        for value in (3.0, 5.0)
+    ]
+
+    result = plots.show_and_save_hdul(
+        signal,
+        label="case",
+        titles=["B", "G"],
+        reference_hdul=reference,
+        output_dir=tmp_path,
+        show_hdul=False,
+        show_delta=True,
+        show_cross_dispersion=True,
+        save_hdul=True,
+        save_reference=True,
+        save_delta=True,
+        delta_clip=None,
+    )
+
+    assert result["figures"]["hdul"] is None
+    assert result["figures"]["delta"] is not None
+    assert result["figures"]["cross_dispersion"] is not None
+    assert len(result["files"]["hdul"]) == 2
+    assert len(result["files"]["reference"]) == 2
+    assert len(result["files"]["delta"]) == 2
+    assert len(result["files"]["figures"]) == 2
+    for paths in result["files"].values():
+        for path in paths:
+            assert path.exists()
+    with fits.open(result["files"]["delta"][0]) as hdul:
+        np.testing.assert_allclose(hdul[1].data, 7.0)
+    for figure in result["figures"].values():
+        if figure is not None:
+            plt.close(figure)
 
 
 def test_trace_resolution_detector_map_plot_smoke():
@@ -610,6 +684,7 @@ def test_trace_resolution_detector_map_plot_smoke():
 
     assert axes[0, 0].collections
     assert "B (id 0)" in axes[0, 0].get_title()
+    assert axes[0, 0].get_anchor() == "C"
     fig.clf()
 
     fig, axes = plots.plot_trace_sampling_detector_maps(table)

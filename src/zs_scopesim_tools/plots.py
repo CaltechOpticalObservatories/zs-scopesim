@@ -5,6 +5,7 @@ from __future__ import annotations
 import warnings
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -1308,12 +1309,30 @@ def plot_slit_width_loss(data: Mapping[str, Any]):
 
 
 def _readout_image_data(channel_hdul: Any) -> np.ndarray:
+    return np.asarray(_readout_image_hdu(channel_hdul).data, dtype=float)
+
+
+def _readout_image_hdu(channel_hdul: Any) -> Any:
     image_hdu = (
         channel_hdul
         if hasattr(channel_hdul, "data")
         else channel_hdul[1]
     )
-    return np.asarray(image_hdu.data, dtype=float)
+    return image_hdu
+
+
+def _readout_delta_images(signal_hdul: Any, reference_hdul: Any) -> list[np.ndarray]:
+    signal_readouts = list(signal_hdul)
+    reference_readouts = list(reference_hdul)
+    if len(signal_readouts) != len(reference_readouts):
+        raise ValueError(
+            "signal_hdul and reference_hdul contain different readout counts: "
+            f"{len(signal_readouts)} != {len(reference_readouts)}"
+        )
+    return [
+        _readout_image_data(signal) - _readout_image_data(reference)
+        for signal, reference in zip(signal_readouts, reference_readouts, strict=True)
+    ]
 
 
 def _clip_fraction_label(clip: float) -> str:
@@ -1425,6 +1444,11 @@ def _detector_grid_axes(n_images: int, *, row_height: float = 3.6):
         constrained_layout=True,
     )
     return fig, axes
+
+
+def _center_detector_axes(axes: Any, n_images: int) -> None:
+    for ax in axes.flat[:n_images]:
+        ax.set_anchor("C")
 
 
 def _readout_scale_groups(
@@ -1592,6 +1616,7 @@ def _plot_detector_image_grid(
     if colorbar_mode == "shared":
         cbar = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.86)
         cbar.set_label(colorbar_label or f"clip {clip_label}")
+    _center_detector_axes(axes, len(images))
     return fig, axes
 
 
@@ -1673,33 +1698,25 @@ def plot_readout_delta_overview(
     titles: list[str] | None = None,
     *,
     clip: float | None = 0.995,
-    title_suffix: str = " Source - Empty",
+    title_suffix: str = " - reference",
     shared_scale: bool | Sequence[Sequence[int | str]] = False,
     colorbar_mode: str = "per-panel",
     colorbar_label: str | None = None,
+    cmap: str = "magma",
     zero_floor: bool = True,
     vmin: float | None = None,
     vmax: float | None = None,
 ):
     """Plot source-minus-reference detector readout images."""
     signal_readouts = list(signal_hdul)
-    reference_readouts = list(reference_hdul)
-    if len(signal_readouts) != len(reference_readouts):
-        raise ValueError(
-            "signal_hdul and reference_hdul contain different readout counts: "
-            f"{len(signal_readouts)} != {len(reference_readouts)}"
-        )
     titles = titles or [f"detector {idx}" for idx in range(len(signal_readouts))]
-    images = [
-        _readout_image_data(signal) - _readout_image_data(reference)
-        for signal, reference in zip(signal_readouts, reference_readouts, strict=True)
-    ]
+    images = _readout_delta_images(signal_readouts, reference_hdul)
     return _plot_detector_image_grid(
         images,
         titles,
         clip=clip,
         symmetric=False,
-        cmap="magma",
+        cmap=cmap,
         title_suffix=title_suffix,
         annotate_delta=True,
         zero_floor=zero_floor,
@@ -1711,19 +1728,22 @@ def plot_readout_delta_overview(
     )
 
 
-def plot_readout_cross_dispersion_cut(
-    hdul: Any,
-    titles: list[str] | None = None,
+def plot_detector_cross_dispersion_cut(
+    images: Sequence[np.ndarray],
+    titles: Sequence[str] | None = None,
     *,
     central_columns: int = 50,
+    title_suffix: str = "",
 ):
     """Plot row profiles from the median of central detector columns."""
     import matplotlib.pyplot as plt
 
-    readouts = list(hdul)
-    titles = titles or [f"detector {idx}" for idx in range(len(readouts))]
-    ncols = min(3, max(1, len(readouts)))
-    nrows = int(np.ceil(len(readouts) / ncols))
+    image_arrays = [np.asarray(image, dtype=float) for image in images]
+    titles = list(titles) if titles is not None else [
+        f"detector {idx}" for idx in range(len(image_arrays))
+    ]
+    ncols = min(3, max(1, len(image_arrays)))
+    nrows = int(np.ceil(len(image_arrays) / ncols))
     fig, axes = plt.subplots(
         nrows,
         ncols,
@@ -1731,21 +1751,223 @@ def plot_readout_cross_dispersion_cut(
         squeeze=False,
         constrained_layout=True,
     )
-    for ax, title, channel_hdul in zip(axes.flat, titles, readouts, strict=False):
-        data = _readout_image_data(channel_hdul)
+    for ax, title, data in zip(axes.flat, titles, image_arrays, strict=False):
         nx = data.shape[1]
         ncut = max(1, min(int(central_columns), 50, nx))
         x0 = nx // 2 - ncut // 2
         x1 = x0 + ncut
         profile = np.nanmedian(data[:, x0:x1], axis=1)
         ax.plot(np.arange(profile.size), profile, lw=1.8, color="tab:blue")
-        ax.set_title(f"{title} central {ncut} cols", pad=8)
+        ax.set_title(f"{title}{title_suffix} central {ncut} cols", pad=8)
         ax.set_xlabel("Detector row [pix]")
         ax.set_ylabel("Median counts")
         ax.grid(alpha=0.25)
-    for ax in axes.flat[len(readouts):]:
+    for ax in axes.flat[len(image_arrays):]:
         ax.axis("off")
     return fig, axes
+
+
+def plot_readout_cross_dispersion_cut(
+    hdul: Any,
+    titles: list[str] | None = None,
+    *,
+    central_columns: int = 50,
+):
+    """Plot row profiles from the median of central detector columns."""
+    readouts = list(hdul)
+    titles = titles or [f"detector {idx}" for idx in range(len(readouts))]
+    images = [_readout_image_data(channel_hdul) for channel_hdul in readouts]
+    return plot_detector_cross_dispersion_cut(
+        images,
+        titles=titles,
+        central_columns=central_columns,
+    )
+
+
+def show_and_save_hdul(
+    hdul: Any,
+    *,
+    label: str,
+    titles: Sequence[str] | None = None,
+    reference_hdul: Any | None = None,
+    output_dir: str | Path | None = None,
+    show_hdul: bool | None = None,
+    show_delta: bool | None = None,
+    show_cross_dispersion: bool = False,
+    save_hdul: bool = True,
+    save_reference: bool = False,
+    save_delta: bool | None = None,
+    save_figures: bool = True,
+    hdul_clip: float | None = None,
+    hdul_shared_scale: bool | Sequence[Sequence[int | str]] = False,
+    hdul_colorbar_mode: str = "per-panel",
+    hdul_colorbar_label: str | None = None,
+    hdul_cmap: str = "viridis",
+    hdul_zero_floor: bool = False,
+    hdul_vmin: float | None = None,
+    hdul_vmax: float | None = None,
+    delta_clip: float | None = 0.995,
+    delta_shared_scale: bool | Sequence[Sequence[int | str]] = False,
+    delta_colorbar_mode: str = "per-panel",
+    delta_colorbar_label: str | None = None,
+    delta_cmap: str = "magma",
+    delta_zero_floor: bool = True,
+    delta_vmin: float | None = None,
+    delta_vmax: float | None = None,
+    delta_title_suffix: str = " - reference",
+    cross_dispersion_central_columns: int = 50,
+) -> dict[str, Any]:
+    """Show and optionally save a detector readout, reference, and delta."""
+    readouts = list(hdul)
+    reference_readouts = list(reference_hdul) if reference_hdul is not None else None
+    titles = list(titles) if titles is not None else [
+        f"detector {idx}" for idx in range(len(readouts))
+    ]
+    if len(titles) != len(readouts):
+        raise ValueError(
+            f"titles and hdul must have the same length: {len(titles)} != {len(readouts)}"
+        )
+    if reference_readouts is not None and len(reference_readouts) != len(readouts):
+        raise ValueError(
+            "reference_hdul and hdul contain different readout counts: "
+            f"{len(reference_readouts)} != {len(readouts)}"
+        )
+
+    if show_hdul is None:
+        show_hdul = reference_hdul is None
+    if show_delta is None:
+        show_delta = reference_hdul is not None
+    if save_delta is None:
+        save_delta = reference_hdul is not None
+    if reference_hdul is None and (show_delta or save_reference or save_delta):
+        raise ValueError("reference_hdul is required to show or save reference/delta outputs.")
+
+    files: dict[str, list[Path]] = {
+        "hdul": [],
+        "reference": [],
+        "delta": [],
+        "figures": [],
+    }
+    figures: dict[str, Any] = {
+        "hdul": None,
+        "delta": None,
+        "cross_dispersion": None,
+    }
+
+    needs_output_dir = (
+        save_hdul
+        or save_reference
+        or save_delta
+        or (save_figures and (show_hdul or show_delta or show_cross_dispersion))
+    )
+    readout_dir = None
+    if needs_output_dir:
+        if output_dir is None:
+            raise ValueError("output_dir is required when saving outputs.")
+        readout_dir = Path(output_dir) / "readouts" / label
+        readout_dir.mkdir(parents=True, exist_ok=True)
+
+    delta_images = (
+        _readout_delta_images(readouts, reference_readouts)
+        if reference_readouts is not None else None
+    )
+
+    if show_hdul:
+        fig_hdul, _axes = plot_readout_overview(
+            readouts,
+            titles=titles,
+            clip=hdul_clip,
+            shared_scale=hdul_shared_scale,
+            annotate_stats=True,
+            colorbar_mode=hdul_colorbar_mode,
+            colorbar_label=hdul_colorbar_label,
+            cmap=hdul_cmap,
+            zero_floor=hdul_zero_floor,
+            vmin=hdul_vmin,
+            vmax=hdul_vmax,
+        )
+        figures["hdul"] = fig_hdul
+
+    if show_delta:
+        fig_delta, _axes = plot_readout_delta_overview(
+            readouts,
+            reference_readouts,
+            titles=titles,
+            clip=delta_clip,
+            title_suffix=delta_title_suffix,
+            shared_scale=delta_shared_scale,
+            colorbar_mode=delta_colorbar_mode,
+            colorbar_label=delta_colorbar_label,
+            cmap=delta_cmap,
+            zero_floor=delta_zero_floor,
+            vmin=delta_vmin,
+            vmax=delta_vmax,
+        )
+        figures["delta"] = fig_delta
+
+    if show_cross_dispersion:
+        if delta_images is None:
+            cut_images = [_readout_image_data(channel_hdul) for channel_hdul in readouts]
+            cut_suffix = ""
+        else:
+            cut_images = delta_images
+            cut_suffix = delta_title_suffix
+        fig_cut, _axes = plot_detector_cross_dispersion_cut(
+            cut_images,
+            titles=titles,
+            central_columns=cross_dispersion_central_columns,
+            title_suffix=cut_suffix,
+        )
+        figures["cross_dispersion"] = fig_cut
+
+    if readout_dir is not None and save_figures:
+        for figure_name, figure in figures.items():
+            if figure is None:
+                continue
+            figure_path = readout_dir / f"{label}_{figure_name}.png"
+            figure.savefig(figure_path, dpi=300)
+            files["figures"].append(figure_path)
+
+    if readout_dir is not None and save_hdul:
+        for title, channel_hdul in zip(titles, readouts, strict=True):
+            path = readout_dir / f"{label}_hdul_{title}.fits"
+            if hasattr(channel_hdul, "writeto"):
+                channel_hdul.writeto(path, overwrite=True)
+            else:
+                _readout_image_hdu(channel_hdul).writeto(path, overwrite=True)
+            files["hdul"].append(path)
+
+    if readout_dir is not None and save_reference:
+        for title, channel_hdul in zip(titles, reference_readouts, strict=True):
+            path = readout_dir / f"{label}_reference_{title}.fits"
+            if hasattr(channel_hdul, "writeto"):
+                channel_hdul.writeto(path, overwrite=True)
+            else:
+                _readout_image_hdu(channel_hdul).writeto(path, overwrite=True)
+            files["reference"].append(path)
+
+    if readout_dir is not None and save_delta:
+        from astropy.io import fits
+
+        for title, image, channel_hdul in zip(titles, delta_images, readouts, strict=True):
+            header = getattr(_readout_image_hdu(channel_hdul), "header", None)
+            image_hdu = fits.ImageHDU(
+                data=np.asarray(image, dtype=float),
+                header=header.copy() if header is not None else None,
+                name="DELTA",
+            )
+            path = readout_dir / f"{label}_delta_{title}.fits"
+            fits.HDUList([fits.PrimaryHDU(), image_hdu]).writeto(
+                path,
+                overwrite=True,
+            )
+            files["delta"].append(path)
+
+    return {
+        "figures": figures,
+        "files": files,
+        "directory": readout_dir,
+    }
 
 
 def _plot_trace_detector_maps(
@@ -1877,6 +2099,7 @@ def _plot_trace_detector_maps(
         pad=0.02,
     )
     cbar.set_label(colorbar_label)
+    _center_detector_axes(axes, len(image_plane_ids))
     return fig, axes, cbar
 
 
