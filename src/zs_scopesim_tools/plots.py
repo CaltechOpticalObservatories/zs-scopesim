@@ -1857,8 +1857,10 @@ def _plot_trace_detector_maps(
             f"{diagnostic}, {seeing:.2f}\" FWHM/{spatial:.1f} pix",
             pad=8,
         )
-        ax.set_xlabel("Detector x [pix]")
-        ax.set_ylabel("Detector y [pix]")
+        if image_plane_id in (0,3):
+            ax.set_ylabel("Pixel")
+        if image_plane_id >2:
+            ax.set_xlabel("Pixel")
         ax.set_xlim(0, nx)
         ax.set_ylim(0, ny)
         ax.set_aspect("equal", adjustable="box")
@@ -1904,7 +1906,7 @@ def _add_resolving_power_sampling_axis(cbar: Any, table: Table) -> None:
         "right",
         functions=(r_k_to_pix, pix_to_r_k),
     )
-    secondary.set_ylabel("Typical spectral element [pix]", labelpad=10)
+    secondary.set_ylabel("Spectral FWHM [pix]", labelpad=10)
 
 
 def plot_trace_resolving_power_detector_maps(
@@ -1919,7 +1921,7 @@ def plot_trace_resolving_power_detector_maps(
     fig, axes, cbar = _plot_trace_detector_maps(
         table,
         values,
-        colorbar_label="Resolving power R [10^3]",
+        colorbar_label="Resolving power [k]",
         title_kind="resolving_power",
         cmap=cmap,
         vmin=vmin,
