@@ -594,6 +594,9 @@ def test_detector_image_grid_uses_independent_panel_scales():
 
 
 def test_detector_image_grid_rejects_shared_colorbar_without_shared_scale():
+    import matplotlib.pyplot as plt
+
+    plt.close("all")
     images = [
         np.array([[0.0, 1.0], [2.0, 3.0]]),
         np.array([[100.0, 101.0], [102.0, 103.0]]),
@@ -678,15 +681,16 @@ def test_show_and_save_hdul_saves_hdul_reference_and_delta(tmp_path):
         show_hdul=False,
         show_delta=True,
         show_cross_dispersion=True,
-        save_hdul=True,
-        save_reference=True,
-        save_delta=True,
+        save=True,
+        figure_title="Case Delta",
         delta_clip=None,
     )
 
     assert result["figures"]["hdul"] is None
     assert result["figures"]["delta"] is not None
     assert result["figures"]["cross_dispersion"] is not None
+    assert result["figures"]["delta"]._suptitle.get_text() == "Case Delta"
+    assert result["figures"]["cross_dispersion"]._suptitle.get_text() == "Case Delta"
     assert len(result["files"]["hdul"]) == 2
     assert len(result["files"]["reference"]) == 2
     assert len(result["files"]["delta"]) == 2
@@ -718,20 +722,77 @@ def test_show_and_save_hdul_passes_display_scale_and_panel_limits():
         label="case",
         titles=["B", "G"],
         show_hdul=True,
-        save_hdul=False,
-        save_figures=False,
+        save=False,
+        figure_title="Panel Limits",
         hdul_clip=None,
         hdul_vmax=[12.0, 25.0],
         hdul_image_scale="sqrt",
         hdul_image_interpolation="hanning",
     )
 
+    assert result["directory"] is None
+    assert result["files"] == {"hdul": [], "reference": [], "delta": [], "figures": []}
+    assert result["figures"]["hdul"]._suptitle.get_text() == "Panel Limits"
     axes = result["figures"]["hdul"].axes
     plotted = [ax.images[0] for ax in axes if ax.images]
     assert [image.get_clim() for image in plotted] == [(10.0, 12.0), (20.0, 25.0)]
     assert {image.norm.__class__.__name__ for image in plotted} == {"PowerNorm"}
     assert {image.get_interpolation() for image in plotted} == {"hanning"}
     plt.close(result["figures"]["hdul"])
+
+
+def test_show_and_save_hdul_save_false_overrides_specific_save_flags(tmp_path):
+    from astropy.io import fits
+
+    signal = [
+        fits.HDUList([
+            fits.PrimaryHDU(),
+            fits.ImageHDU(data=np.full((4, 4), 10.0, dtype=float)),
+        ])
+    ]
+    reference = [
+        fits.HDUList([
+            fits.PrimaryHDU(),
+            fits.ImageHDU(data=np.full((4, 4), 3.0, dtype=float)),
+        ])
+    ]
+
+    result = plots.show_and_save_hdul(
+        signal,
+        label="case",
+        titles=["B"],
+        reference_hdul=reference,
+        output_dir=tmp_path,
+        show_hdul=True,
+        show_delta=True,
+        save=False,
+        save_hdul=True,
+        save_reference=True,
+        save_delta=True,
+        save_figures=True,
+    )
+
+    assert result["directory"] is None
+    assert result["files"] == {"hdul": [], "reference": [], "delta": [], "figures": []}
+    assert not (tmp_path / "readouts").exists()
+
+
+def test_show_and_save_hdul_saves_array_inputs(tmp_path):
+    from astropy.io import fits
+
+    result = plots.show_and_save_hdul(
+        [np.full((4, 4), 5.0, dtype=float)],
+        label="array_case",
+        titles=["B"],
+        output_dir=tmp_path,
+        show_hdul=False,
+        save=True,
+        save_figures=False,
+    )
+
+    assert len(result["files"]["hdul"]) == 1
+    with fits.open(result["files"]["hdul"][0]) as hdul:
+        np.testing.assert_allclose(hdul[0].data, 5.0)
 
 
 def test_trace_resolution_detector_map_plot_smoke():

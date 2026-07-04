@@ -1327,6 +1327,33 @@ def _readout_image_hdu(channel_hdul: Any) -> Any:
     return image_hdu
 
 
+def _write_readout_product(path: Path, channel_hdul: Any) -> None:
+    if isinstance(channel_hdul, np.ndarray):
+        from astropy.io import fits
+
+        fits.PrimaryHDU(data=np.asarray(channel_hdul, dtype=float)).writeto(
+            path,
+            overwrite=True,
+        )
+        return
+
+    if hasattr(channel_hdul, "writeto"):
+        channel_hdul.writeto(path, overwrite=True)
+        return
+
+    image_hdu = _readout_image_hdu(channel_hdul)
+    if hasattr(image_hdu, "writeto"):
+        image_hdu.writeto(path, overwrite=True)
+        return
+
+    from astropy.io import fits
+
+    fits.HDUList([
+        fits.PrimaryHDU(),
+        fits.ImageHDU(data=_readout_image_data(channel_hdul)),
+    ]).writeto(path, overwrite=True)
+
+
 def _readout_delta_images(signal_hdul: Any, reference_hdul: Any) -> list[np.ndarray]:
     signal_readouts = list(signal_hdul)
     reference_readouts = list(reference_hdul)
@@ -1896,6 +1923,11 @@ def plot_readout_cross_dispersion_cut(
     )
 
 
+def _set_figure_suptitle(figure: Any, title: str | None) -> None:
+    if title:
+        figure.suptitle(title)
+
+
 def show_and_save_hdul(
     hdul: Any,
     *,
@@ -1908,10 +1940,15 @@ def show_and_save_hdul(
     show_hdul: bool | None = None,
     show_delta: bool | None = None,
     show_cross_dispersion: bool = False,
-    save_hdul: bool = True,
-    save_reference: bool = False,
+    save: bool = True,
+    save_hdul: bool | None = None,
+    save_reference: bool | None = None,
     save_delta: bool | None = None,
-    save_figures: bool = True,
+    save_figures: bool | None = None,
+    figure_title: str | None = None,
+    hdul_figure_title: str | None = None,
+    delta_figure_title: str | None = None,
+    cross_dispersion_figure_title: str | None = None,
     hdul_clip: float | None = None,
     hdul_shared_scale: bool | Sequence[Sequence[int | str]] = False,
     hdul_colorbar_mode: str = "per-panel",
@@ -1938,7 +1975,12 @@ def show_and_save_hdul(
     cross_dispersion_central_columns: int = 50,
     cross_dispersion_ylabel: str = "Median value",
 ) -> dict[str, Any]:
-    """Show and optionally save a detector readout, reference, and delta."""
+    """Show and optionally save a detector readout, reference, and delta.
+
+    ``save=True`` saves all products relevant to the call. ``save=False``
+    disables all writes; the specific ``save_*`` flags only narrow
+    ``save=True``.
+    """
     hdul_clip = _view_value(hdul_view, "clip", default=hdul_clip)
     hdul_shared_scale = _view_value(
         hdul_view, "shared_scale", default=hdul_shared_scale,
@@ -2010,8 +2052,22 @@ def show_and_save_hdul(
         show_hdul = reference_hdul is None
     if show_delta is None:
         show_delta = reference_hdul is not None
-    if save_delta is None:
-        save_delta = reference_hdul is not None
+
+    if not save:
+        save_hdul = False
+        save_reference = False
+        save_delta = False
+        save_figures = False
+    else:
+        if save_hdul is None:
+            save_hdul = True
+        if save_reference is None:
+            save_reference = reference_hdul is not None
+        if save_delta is None:
+            save_delta = reference_hdul is not None
+        if save_figures is None:
+            save_figures = True
+
     if reference_hdul is None and (show_delta or save_reference or save_delta):
         raise ValueError("reference_hdul is required to show or save reference/delta outputs.")
 
@@ -2061,6 +2117,7 @@ def show_and_save_hdul(
             image_scale=hdul_image_scale,
             image_interpolation=hdul_image_interpolation,
         )
+        _set_figure_suptitle(fig_hdul, hdul_figure_title or figure_title)
         figures["hdul"] = fig_hdul
 
     if show_delta:
@@ -2081,6 +2138,7 @@ def show_and_save_hdul(
             image_scale=delta_image_scale,
             image_interpolation=delta_image_interpolation,
         )
+        _set_figure_suptitle(fig_delta, delta_figure_title or figure_title)
         figures["delta"] = fig_delta
 
     if show_cross_dispersion:
@@ -2097,6 +2155,10 @@ def show_and_save_hdul(
             title_suffix=cut_suffix,
             ylabel=cross_dispersion_ylabel,
         )
+        _set_figure_suptitle(
+            fig_cut,
+            cross_dispersion_figure_title or figure_title,
+        )
         figures["cross_dispersion"] = fig_cut
 
     if readout_dir is not None and save_figures:
@@ -2110,19 +2172,13 @@ def show_and_save_hdul(
     if readout_dir is not None and save_hdul:
         for title, channel_hdul in zip(titles, readouts, strict=True):
             path = readout_dir / f"{label}_hdul_{title}.fits"
-            if hasattr(channel_hdul, "writeto"):
-                channel_hdul.writeto(path, overwrite=True)
-            else:
-                _readout_image_hdu(channel_hdul).writeto(path, overwrite=True)
+            _write_readout_product(path, channel_hdul)
             files["hdul"].append(path)
 
     if readout_dir is not None and save_reference:
         for title, channel_hdul in zip(titles, reference_readouts, strict=True):
             path = readout_dir / f"{label}_reference_{title}.fits"
-            if hasattr(channel_hdul, "writeto"):
-                channel_hdul.writeto(path, overwrite=True)
-            else:
-                _readout_image_hdu(channel_hdul).writeto(path, overwrite=True)
+            _write_readout_product(path, channel_hdul)
             files["reference"].append(path)
 
     if readout_dir is not None and save_delta:
