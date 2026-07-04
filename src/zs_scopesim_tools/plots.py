@@ -1309,10 +1309,16 @@ def plot_slit_width_loss(data: Mapping[str, Any]):
 
 
 def _readout_image_data(channel_hdul: Any) -> np.ndarray:
+    if isinstance(channel_hdul, np.ndarray):
+        return np.asarray(channel_hdul, dtype=float)
     return np.asarray(_readout_image_hdu(channel_hdul).data, dtype=float)
 
 
 def _readout_image_hdu(channel_hdul: Any) -> Any:
+    if isinstance(channel_hdul, np.ndarray):
+        from astropy.io import fits
+
+        return fits.ImageHDU(data=np.asarray(channel_hdul, dtype=float))
     image_hdu = (
         channel_hdul
         if hasattr(channel_hdul, "data")
@@ -1495,10 +1501,19 @@ def _readout_image_norm(
                 "image_scale='sqrt' requires a non-negative display range; "
                 "use zero_floor=True or image_scale='symlog' for signed data."
             )
-        return PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax)
+        return PowerNorm(gamma=0.5, vmin=vmin, vmax=vmax, clip=True)
     if scale == "symlog":
         return SymLogNorm(linthresh=1.0, vmin=vmin, vmax=vmax)
     raise ValueError("image_scale must be 'linear', 'log', 'sqrt', or 'symlog'.")
+
+
+def _view_value(view: Mapping[str, Any] | None, *keys: str, default: Any = None) -> Any:
+    if view is None:
+        return default
+    for key in keys:
+        if key in view:
+            return view[key]
+    return default
 
 
 def _detector_grid_axes(n_images: int, *, row_height: float = 3.6):
@@ -1606,7 +1621,7 @@ def _plot_detector_image_grid(
     vmin: Any = None,
     vmax: Any = None,
     image_scale: str = "linear",
-    image_interpolation: str = "nearest",
+    image_interpolation: str = "hanning",
 ):
     if not images:
         raise ValueError("At least one detector image is required.")
@@ -1656,23 +1671,19 @@ def _plot_detector_image_grid(
             max_abs = np.nanmax(np.abs(finite)) if finite.size else 0.0
             max_pos = np.nanmax(finite) if finite.size else 0.0
             min_delta = np.nanmin(finite) if finite.size else 0.0
-            neg_sum = np.nansum(np.clip(data, None, 0))
             mean_value = np.nanmean(finite) if finite.size else 0.0
             median_value = np.nanmedian(finite) if finite.size else 0.0
             if annotate_delta:
                 annotation = (
-                    f"max +delta {max_pos:.3g}\n"
-                    f"min delta {min_delta:.3g}\n"
-                    f"neg sum {neg_sum:.3g}\n"
-                    f"max |delta| {max_abs:.3g}\n"
-                    f"clip {clip_label}"
+                    f"max {max_pos:.3g}\n"
+                    f"min {min_delta:.3g}\n"
+                    f"|max| {max_abs:.3g}"
                 )
             else:
                 annotation = (
-                    f"mean {mean_value:.3g}\n"
                     f"median {median_value:.3g}\n"
-                    f"max {max_pos:.3g}\n"
-                    f"clip {clip_label}"
+                    f"mean {mean_value:.3g}\n"
+                    f"max {max_pos:.3g}"
                 )
             ax.text(
                 0.02,
@@ -1693,17 +1704,14 @@ def _plot_detector_image_grid(
         ax.axis("off")
         if colorbar_mode == "per-panel":
             cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.025)
-            scale_label = "" if image_scale == "linear" else f", {image_scale}"
-            label = colorbar_label or (
-                f"{'shared ' if is_shared else ''}clip {clip_label}{scale_label}"
-            )
-            cbar.set_label(label)
+            if colorbar_label:
+                cbar.set_label(colorbar_label)
     for ax in axes.flat[len(images):]:
         ax.axis("off")
     if colorbar_mode == "shared":
         cbar = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.86)
-        scale_label = "" if image_scale == "linear" else f", {image_scale}"
-        cbar.set_label(colorbar_label or f"clip {clip_label}{scale_label}")
+        if colorbar_label:
+            cbar.set_label(colorbar_label)
     _center_detector_axes(axes, len(images))
     return fig, axes
 
@@ -1724,7 +1732,7 @@ def plot_detector_image_grid(
     vmin: Any = None,
     vmax: Any = None,
     image_scale: str = "linear",
-    image_interpolation: str = "nearest",
+    image_interpolation: str = "hanning",
 ):
     """Plot detector-shaped image arrays with explicit scale/colorbar control."""
     image_arrays = [np.asarray(image, dtype=float) for image in images]
@@ -1764,7 +1772,7 @@ def plot_readout_overview(
     vmin: Any = None,
     vmax: Any = None,
     image_scale: str = "linear",
-    image_interpolation: str = "nearest",
+    image_interpolation: str = "hanning",
 ):
     """Plot detector readout images from a ScopeSim readout result."""
     readouts = list(hdul)
@@ -1803,7 +1811,8 @@ def plot_readout_delta_overview(
     vmin: Any = None,
     vmax: Any = None,
     image_scale: str = "linear",
-    image_interpolation: str = "nearest",
+    image_interpolation: str = "hanning",
+    annotate_delta: bool = False,
 ):
     """Plot source-minus-reference detector readout images."""
     signal_readouts = list(signal_hdul)
@@ -1816,7 +1825,7 @@ def plot_readout_delta_overview(
         symmetric=False,
         cmap=cmap,
         title_suffix=title_suffix,
-        annotate_delta=True,
+        annotate_delta=annotate_delta,
         zero_floor=zero_floor,
         shared_scale=shared_scale,
         colorbar_mode=colorbar_mode,
@@ -1834,6 +1843,7 @@ def plot_detector_cross_dispersion_cut(
     *,
     central_columns: int = 50,
     title_suffix: str = "",
+    ylabel: str = "Median value",
 ):
     """Plot row profiles from the median of central detector columns."""
     import matplotlib.pyplot as plt
@@ -1860,7 +1870,7 @@ def plot_detector_cross_dispersion_cut(
         ax.plot(np.arange(profile.size), profile, lw=1.8, color="tab:blue")
         ax.set_title(f"{title}{title_suffix} central {ncut} cols", pad=8)
         ax.set_xlabel("Detector row [pix]")
-        ax.set_ylabel("Median counts")
+        ax.set_ylabel(ylabel)
         ax.grid(alpha=0.25)
     for ax in axes.flat[len(image_arrays):]:
         ax.axis("off")
@@ -1872,6 +1882,7 @@ def plot_readout_cross_dispersion_cut(
     titles: list[str] | None = None,
     *,
     central_columns: int = 50,
+    ylabel: str = "Median value",
 ):
     """Plot row profiles from the median of central detector columns."""
     readouts = list(hdul)
@@ -1881,6 +1892,7 @@ def plot_readout_cross_dispersion_cut(
         images,
         titles=titles,
         central_columns=central_columns,
+        ylabel=ylabel,
     )
 
 
@@ -1890,6 +1902,8 @@ def show_and_save_hdul(
     label: str,
     titles: Sequence[str] | None = None,
     reference_hdul: Any | None = None,
+    hdul_view: Mapping[str, Any] | None = None,
+    delta_view: Mapping[str, Any] | None = None,
     output_dir: str | Path | None = None,
     show_hdul: bool | None = None,
     show_delta: bool | None = None,
@@ -1907,7 +1921,8 @@ def show_and_save_hdul(
     hdul_vmin: Any = None,
     hdul_vmax: Any = None,
     hdul_image_scale: str = "linear",
-    hdul_image_interpolation: str = "nearest",
+    hdul_image_interpolation: str = "hanning",
+    hdul_annotate: bool = False,
     delta_clip: float | None = 0.995,
     delta_shared_scale: bool | Sequence[Sequence[int | str]] = False,
     delta_colorbar_mode: str = "per-panel",
@@ -1917,11 +1932,65 @@ def show_and_save_hdul(
     delta_vmin: Any = None,
     delta_vmax: Any = None,
     delta_image_scale: str = "linear",
-    delta_image_interpolation: str = "nearest",
+    delta_image_interpolation: str = "hanning",
+    delta_annotate: bool = False,
     delta_title_suffix: str = " - reference",
     cross_dispersion_central_columns: int = 50,
+    cross_dispersion_ylabel: str = "Median value",
 ) -> dict[str, Any]:
     """Show and optionally save a detector readout, reference, and delta."""
+    hdul_clip = _view_value(hdul_view, "clip", default=hdul_clip)
+    hdul_shared_scale = _view_value(
+        hdul_view, "shared_scale", default=hdul_shared_scale,
+    )
+    hdul_colorbar_mode = _view_value(
+        hdul_view, "colorbar_mode", default=hdul_colorbar_mode,
+    )
+    hdul_colorbar_label = _view_value(
+        hdul_view, "colorbar", "colorbar_label", default=hdul_colorbar_label,
+    )
+    hdul_cmap = _view_value(hdul_view, "cmap", default=hdul_cmap)
+    hdul_zero_floor = _view_value(
+        hdul_view, "zero_floor", default=hdul_zero_floor,
+    )
+    hdul_vmin = _view_value(hdul_view, "vmin", default=hdul_vmin)
+    hdul_vmax = _view_value(hdul_view, "vmax", default=hdul_vmax)
+    hdul_image_scale = _view_value(
+        hdul_view, "stretch", "image_scale", default=hdul_image_scale,
+    )
+    hdul_image_interpolation = _view_value(
+        hdul_view, "interpolation", "image_interpolation",
+        default=hdul_image_interpolation,
+    )
+    hdul_annotate = _view_value(hdul_view, "annotate", default=hdul_annotate)
+
+    delta_clip = _view_value(delta_view, "clip", default=delta_clip)
+    delta_shared_scale = _view_value(
+        delta_view, "shared_scale", default=delta_shared_scale,
+    )
+    delta_colorbar_mode = _view_value(
+        delta_view, "colorbar_mode", default=delta_colorbar_mode,
+    )
+    delta_colorbar_label = _view_value(
+        delta_view, "colorbar", "colorbar_label", default=delta_colorbar_label,
+    )
+    delta_cmap = _view_value(delta_view, "cmap", default=delta_cmap)
+    delta_zero_floor = _view_value(
+        delta_view, "zero_floor", default=delta_zero_floor,
+    )
+    delta_vmin = _view_value(delta_view, "vmin", default=delta_vmin)
+    delta_vmax = _view_value(delta_view, "vmax", default=delta_vmax)
+    delta_image_scale = _view_value(
+        delta_view, "stretch", "image_scale", default=delta_image_scale,
+    )
+    delta_image_interpolation = _view_value(
+        delta_view, "interpolation", "image_interpolation",
+        default=delta_image_interpolation,
+    )
+    delta_annotate = _view_value(
+        delta_view, "annotate", default=delta_annotate,
+    )
+
     readouts = list(hdul)
     reference_readouts = list(reference_hdul) if reference_hdul is not None else None
     titles = list(titles) if titles is not None else [
@@ -1982,7 +2051,7 @@ def show_and_save_hdul(
             titles=titles,
             clip=hdul_clip,
             shared_scale=hdul_shared_scale,
-            annotate_stats=True,
+            annotate_stats=hdul_annotate,
             colorbar_mode=hdul_colorbar_mode,
             colorbar_label=hdul_colorbar_label,
             cmap=hdul_cmap,
@@ -2002,6 +2071,7 @@ def show_and_save_hdul(
             clip=delta_clip,
             title_suffix=delta_title_suffix,
             shared_scale=delta_shared_scale,
+            annotate_delta=delta_annotate,
             colorbar_mode=delta_colorbar_mode,
             colorbar_label=delta_colorbar_label,
             cmap=delta_cmap,
@@ -2025,6 +2095,7 @@ def show_and_save_hdul(
             titles=titles,
             central_columns=cross_dispersion_central_columns,
             title_suffix=cut_suffix,
+            ylabel=cross_dispersion_ylabel,
         )
         figures["cross_dispersion"] = fig_cut
 

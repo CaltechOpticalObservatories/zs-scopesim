@@ -451,7 +451,7 @@ def test_readout_delta_overview_plot_smoke():
 
     assert axes.shape == (1, 1)
     assert " - reference" in axes[0, 0].get_title()
-    assert "max |delta| 2" in axes[0, 0].texts[0].get_text()
+    assert not axes[0, 0].texts
     fig.clf()
 
 
@@ -640,10 +640,11 @@ def test_readout_delta_overview_uses_absolute_clip_from_zero():
         [FakeHDU([[0, 0], [0, 0]])],
         titles=["B"],
         clip=5,
+        annotate_delta=True,
     )
 
     assert axes[0, 0].images[0].get_clim() == (0.0, 5.0)
-    assert "min delta -10" in axes[0, 0].texts[0].get_text()
+    assert "min -10" in axes[0, 0].texts[0].get_text()
     fig.clf()
 
 
