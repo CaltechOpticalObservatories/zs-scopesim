@@ -206,4 +206,6 @@ cmake-build-*/
 /dev_notebooks/zspec_K.fits
 /dev_notebooks/zspec_R.fits
 /dev_notebooks/zspec_YJ.fits
+/dev_notebooks/sims/
 /zshooter-exptime/
+/sims/
