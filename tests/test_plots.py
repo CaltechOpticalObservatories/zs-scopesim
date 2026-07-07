@@ -362,6 +362,62 @@ def test_slit_loss_plot_smoke():
     fig.clf()
 
 
+def test_slit_loss_legend_marks_arm_specific_current_extrema():
+    wave = np.linspace(310, 980, 5) * u.nm
+
+    def curve(role, width, current):
+        return {
+            "label": f"{role} slit",
+            "loss": np.linspace(0.1, 0.2, wave.size),
+            "psf_mode": "no_ao",
+            "psf_label": '0.65" NS',
+            "current_psf": True,
+            "slit_role": role,
+            "slit_label": f'{width:.2f}"',
+            "slit_width_arcsec": width * u.arcsec,
+            "current_slit": current,
+            "airmass": 1.1,
+            "airmass_label": "X=1.1",
+            "current_airmass": True,
+            "adc_state": "adc_residual",
+            "current_adc": True,
+        }
+
+    data = {
+        "psf_modes": {
+            "no_ao": {"label": '0.65" NS', "current": True},
+        },
+        "arms": {
+            "VIS": {
+                "wave_nm": wave,
+                "slit_width_arcsec": 0.33 * u.arcsec,
+                "selector_slit_widths_arcsec": [0.33, 0.70, 1.25] * u.arcsec,
+                "curves": {
+                    "vis_narrow": curve("narrowest", 0.33, True),
+                    "vis_wide": curve("widest", 1.25, False),
+                },
+            },
+            "NIR": {
+                "wave_nm": wave,
+                "slit_width_arcsec": 1.25 * u.arcsec,
+                "selector_slit_widths_arcsec": [0.33, 0.70, 1.25] * u.arcsec,
+                "curves": {
+                    "nir_narrow": curve("narrowest", 0.33, False),
+                    "nir_wide": curve("widest", 1.25, True),
+                },
+            },
+        },
+    }
+
+    fig, _axes = plots.plot_slit_loss_by_arm(data)
+    labels = [text.get_text() for text in fig.legends[0].texts]
+
+    assert '0.33"*' in labels
+    assert '1.25"^' in labels
+    assert "*/^ Current slit" in labels
+    fig.clf()
+
+
 def test_slit_width_loss_plot_smoke():
     slit_widths = np.linspace(0.2, 1.0, 5) * u.arcsec
     data = {

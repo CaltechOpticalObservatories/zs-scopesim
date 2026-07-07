@@ -1127,7 +1127,15 @@ def test_slit_loss_notebook_call_chain_handles_dimensionless_ao_tables():
     assert axes.shape == (1, 1)
     assert "no_ao_current_adc_residual" in data["arms"]["VIS"]["curves"]
     assert "ao_current_adc_residual" in data["arms"]["VIS"]["curves"]
-    assert len(axes[0, 0].lines) == 8
+    assert len(axes[0, 0].lines) == 6
+    fig.clf()
+
+    fig, axes = val.plot_slit_loss_by_arm(
+        data,
+        show_airmass_states=True,
+        show_adc_states=True,
+    )
+    assert len(axes[0, 0].lines) == 36
     fig.clf()
 
 

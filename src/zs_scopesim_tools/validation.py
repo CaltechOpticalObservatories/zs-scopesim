@@ -2464,6 +2464,7 @@ def _slit_loss_psf_modes(
         "style": "-",
         "beta": base_beta,
         "fwhm_func": base_fwhm_func,
+        "current": True,
         "note": base_note,
     }
 
@@ -2493,6 +2494,7 @@ def _slit_loss_psf_modes(
         "style": "--",
         "beta": float(getattr(effect, "alpha", beta) or beta),
         "fwhm_func": ao_fwhm,
+        "current": False,
         "note": (
             "AO design FWHM from active AOEnhanceablePSF. "
             "Dimensionless absolute AO tables are interpreted as arcsec, "
@@ -2501,6 +2503,109 @@ def _slit_loss_psf_modes(
         ),
     }
     return modes
+
+
+def _unique_float_values(values: u.Quantity, *, atol: float = 1.0e-9) -> list[float]:
+    finite = sorted(
+        float(value)
+        for value in u.Quantity(values).to_value(u.arcsec)
+        if np.isfinite(value)
+    )
+    unique: list[float] = []
+    for value in finite:
+        if not unique or not np.isclose(value, unique[-1], rtol=0.0, atol=atol):
+            unique.append(value)
+    return unique
+
+
+def _slit_loss_slit_specs(
+    selector_widths: u.Quantity,
+    current_slit: u.Quantity,
+) -> OrderedDict[str, dict[str, Any]]:
+    current = float(u.Quantity(current_slit).to_value(u.arcsec))
+    supported = _unique_float_values(selector_widths)
+    values = list(supported)
+    if not any(
+        np.isclose(value, current, rtol=0.0, atol=1.0e-6)
+        for value in values
+    ):
+        values.append(current)
+        values = sorted(values)
+
+    if len(values) > 2:
+        selected = [values[0], values[-1]]
+        if not any(
+            np.isclose(value, current, rtol=0.0, atol=1.0e-6)
+            for value in selected
+        ):
+            selected.insert(1, current)
+    else:
+        selected = values
+
+    specs: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    for value in sorted(selected):
+        current_match = np.isclose(value, current, rtol=0.0, atol=1.0e-6)
+        if len(supported) >= 2 and np.isclose(
+            value, supported[0], rtol=0.0, atol=1.0e-6,
+        ):
+            role = "narrowest"
+        elif len(supported) >= 2 and np.isclose(
+            value, supported[-1], rtol=0.0, atol=1.0e-6,
+        ):
+            role = "widest"
+        else:
+            role = "current"
+        key = (
+            "current"
+            if current_match
+            else f"{value:.3f}".rstrip("0").rstrip(".")
+        )
+        if key in specs:
+            continue
+        specs[key] = {
+            "label": f'{value:.2f}"',
+            "slit_width": value * u.arcsec,
+            "role": role,
+            "current": bool(current_match),
+        }
+    return specs
+
+
+def _airmass_label(airmass: float) -> str:
+    return f"X={airmass:.2f}".rstrip("0").rstrip(".")
+
+
+def _slit_loss_airmass_specs(
+    current_airmass: float,
+) -> OrderedDict[str, dict[str, Any]]:
+    current_airmass = max(1.0, float(current_airmass))
+    base = [
+        ("zenith", 1.0, "X=1"),
+        ("current", current_airmass, _airmass_label(current_airmass)),
+        ("z60", 2.0, "z=60 deg (X=2)"),
+    ]
+    specs: OrderedDict[str, dict[str, Any]] = OrderedDict()
+    for name, airmass, label in base:
+        zenith_angle = _zenith_angle_from_airmass(airmass)
+        match = None
+        for key, spec in specs.items():
+            if np.isclose(spec["airmass"], airmass, rtol=0.0, atol=1.0e-6):
+                match = key
+                break
+        if match is not None:
+            specs[match]["current"] |= name == "current"
+            if name == "current":
+                specs[match]["name"] = "current"
+                specs[match]["label"] = label
+            continue
+        specs[name] = {
+            "name": name,
+            "label": label,
+            "airmass": airmass,
+            "zenith_angle": zenith_angle,
+            "current": name == "current",
+        }
+    return specs
 
 
 def build_slit_adc_psf_scene_data(
@@ -2671,9 +2776,7 @@ def build_slit_loss_data(
     })
     seeing = _required_cmd_quantity(cmds, "!OBS.seeing", u.arcsec)
     airmass = max(1.0, _required_cmd_float(cmds, "!OBS.airmass"))
-    current_zenith_angle = (
-        np.degrees(np.arccos(np.clip(1.0 / airmass, 0.0, 1.0))) * u.deg
-    )
+    current_zenith_angle = _zenith_angle_from_airmass(airmass)
     psf_modes = _slit_loss_psf_modes(
         train_or_cmds,
         beta,
@@ -2683,38 +2786,18 @@ def build_slit_loss_data(
     adc_error, adc_note = _adc_zenith_angle_error(
         train_or_cmds, adc_zenith_angle_error,
     )
-    curve_specs = OrderedDict({
-        "current_adc_residual": {
-            "label": (
-                f"current airmass {airmass:.2f}, ADC residual"
-            ),
-            "zenith_angle": current_zenith_angle,
-            "mode": "adc",
-            "color": "tab:red",
-            "note": (
-                "Current observing airmass with the active ADC residual model. "
-                + adc_note
-            ),
-        },
-        "zenith": {
-            "label": "zenith",
-            "zenith_angle": 0.0 * u.deg,
+    airmass_specs = _slit_loss_airmass_specs(airmass)
+    adc_specs = OrderedDict({
+        "ad_only": {
+            "label": "ADC off",
             "mode": "ad",
-            "color": "tab:blue",
-            "note": "No chromatic displacement at zenith.",
-        },
-        "elevation_60_ad_only": {
-            "label": "60 deg elevation, AD only",
-            "zenith_angle": 30.0 * u.deg,
-            "mode": "ad",
-            "color": "tab:orange",
+            "current": False,
             "note": "Full atmospheric dispersion before slit clipping.",
         },
-        "elevation_60_adc_residual": {
-            "label": "60 deg elevation, ADC residual",
-            "zenith_angle": 30.0 * u.deg,
+        "adc_residual": {
+            "label": "ADC on",
             "mode": "adc",
-            "color": "tab:green",
+            "current": True,
             "note": adc_note,
         },
     })
@@ -2727,48 +2810,107 @@ def build_slit_loss_data(
             n_wave,
         ) * u.nm
         slit_width = _required_cmd_quantity(cmds, slit_key, u.arcsec)
+        selector_slits = _slit_selector_widths_for_key(train_or_cmds, slit_key)
+        slit_specs = _slit_loss_slit_specs(selector_slits, slit_width)
         curves: OrderedDict[str, dict[str, Any]] = OrderedDict()
         for psf_name, psf_spec in psf_modes.items():
-            for curve_name, spec in curve_specs.items():
-                zenith_angle = spec["zenith_angle"]
-                ad_shift = _atmospheric_refraction_shift(
-                    wave, zenith_angle, cmds, wave_ref=wave_ref,
-                )
-                if spec["mode"] == "adc":
-                    shifts = ad_shift - _atmospheric_refraction_shift(
-                        wave,
-                        zenith_angle + adc_error,
-                        cmds,
-                        wave_ref=wave_ref,
+            for slit_name, slit_spec in slit_specs.items():
+                for airmass_name, airmass_spec in airmass_specs.items():
+                    zenith_angle = airmass_spec["zenith_angle"]
+                    ad_shift = _atmospheric_refraction_shift(
+                        wave, zenith_angle, cmds, wave_ref=wave_ref,
                     )
-                else:
-                    shifts = ad_shift
-                throughput = _slit_throughput_curve(
-                    wave,
-                    shifts,
-                    seeing=seeing,
-                    zenith_angle=zenith_angle,
-                    slit_width=slit_width,
-                    slit_length=slit_length,
-                    beta=psf_spec["beta"],
-                    grid_step=grid_step,
-                    fwhm_func=psf_spec["fwhm_func"],
+                    for adc_name, adc_spec in adc_specs.items():
+                        if adc_spec["mode"] == "adc":
+                            shifts = ad_shift - _atmospheric_refraction_shift(
+                                wave,
+                                zenith_angle + adc_error,
+                                cmds,
+                                wave_ref=wave_ref,
+                            )
+                        else:
+                            shifts = ad_shift
+                        throughput = _slit_throughput_curve(
+                            wave,
+                            shifts,
+                            seeing=seeing,
+                            zenith_angle=zenith_angle,
+                            slit_width=slit_spec["slit_width"],
+                            slit_length=slit_length,
+                            beta=psf_spec["beta"],
+                            grid_step=grid_step,
+                            fwhm_func=psf_spec["fwhm_func"],
+                        )
+                        key = (
+                            f"{psf_name}_slit_{slit_name}_airmass_"
+                            f"{airmass_name}_{adc_name}"
+                        )
+                        curves[key] = {
+                            "label": (
+                                f"{psf_spec['label']}, "
+                                f"{slit_spec['label']} slit, "
+                                f"{airmass_spec['label']}, {adc_spec['label']}"
+                            ),
+                            "throughput": throughput,
+                            "loss": 1.0 - throughput,
+                            "shift_arcsec": shifts,
+                            "linestyle": psf_spec["style"],
+                            "psf_mode": psf_name,
+                            "psf_label": psf_spec["label"],
+                            "current_psf": bool(psf_spec.get("current", False)),
+                            "psf_note": psf_spec["note"],
+                            "slit_name": slit_name,
+                            "slit_label": slit_spec["label"],
+                            "slit_role": slit_spec["role"],
+                            "slit_width_arcsec": slit_spec["slit_width"],
+                            "current_slit": bool(slit_spec["current"]),
+                            "airmass_name": airmass_spec["name"],
+                            "airmass_label": airmass_spec["label"],
+                            "airmass": float(airmass_spec["airmass"]),
+                            "zenith_angle_deg": zenith_angle.to(u.deg),
+                            "current_airmass": bool(airmass_spec["current"]),
+                            "adc_state": adc_name,
+                            "adc_label": adc_spec["label"],
+                            "current_adc": bool(adc_spec["current"]),
+                            "note": adc_spec["note"],
+                        }
+
+        alias_airmass_keys = {
+            "current": next(
+                key for key, spec in airmass_specs.items() if spec["current"]
+            ),
+            "zenith": next(
+                key for key, spec in airmass_specs.items()
+                if np.isclose(spec["airmass"], 1.0, rtol=0.0, atol=1.0e-6)
+            ),
+            "z60": next(
+                key for key, spec in airmass_specs.items()
+                if np.isclose(spec["airmass"], 2.0, rtol=0.0, atol=1.0e-6)
+            ),
+        }
+        for psf_name in psf_modes:
+            for old_name, slit_name, airmass_name, adc_name in (
+                ("current_adc_residual", "current", "current", "adc_residual"),
+                ("zenith", "current", "zenith", "ad_only"),
+                ("elevation_60_ad_only", "current", "z60", "ad_only"),
+                ("elevation_60_adc_residual", "current", "z60", "adc_residual"),
+            ):
+                airmass_key = alias_airmass_keys[airmass_name]
+                target = (
+                    f"{psf_name}_slit_{slit_name}_airmass_"
+                    f"{airmass_key}_{adc_name}"
                 )
-                curves[f"{psf_name}_{curve_name}"] = {
-                    "label": f"{psf_spec['label']}, {spec['label']}",
-                    "throughput": throughput,
-                    "loss": 1.0 - throughput,
-                    "shift_arcsec": shifts,
-                    "color": spec["color"],
-                    "linestyle": psf_spec["style"],
-                    "psf_mode": psf_name,
-                    "psf_note": psf_spec["note"],
-                    "note": spec["note"],
-                }
+                if target in curves:
+                    curves[f"{psf_name}_{old_name}"] = {
+                        **curves[target],
+                        "alias_for": target,
+                    }
         arm_data[arm_name] = {
             "wave_nm": wave,
             "slit_width_arcsec": slit_width,
             "slit_length_arcsec": u.Quantity(slit_length).to(u.arcsec),
+            "selector_slit_widths_arcsec": selector_slits,
+            "slit_variants": slit_specs,
             "curves": curves,
         }
 
@@ -2778,6 +2920,8 @@ def build_slit_loss_data(
         "airmass": airmass,
         "current_zenith_angle_deg": current_zenith_angle.to(u.deg),
         "psf_modes": psf_modes,
+        "airmass_modes": airmass_specs,
+        "adc_modes": adc_specs,
         "wave_ref_nm": u.Quantity(wave_ref).to(u.nm),
         "adc_zenith_angle_error_deg": adc_error,
         "notes": [

@@ -925,33 +925,22 @@ def plot_transmission_sanity(
     for channel in data["channels"].values():
         label = channel["label"]
         color = channel_colors[label]
-        slit_transmission = (
-            _slit_transmission_for_channel(
-                channel, slit_loss_data, wave, slit_curve_name,
-            )
-            if slit_loss_data is not None
-            else np.ones_like(wave)
-        )
+        if slit_loss_data is not None:
+            slit_transmission = _slit_transmission_for_channel(channel, slit_loss_data, wave, slit_curve_name)
+        else:
+            slit_transmission = np.ones_like(wave)
         summary_components = (
-            ("telescope", channel["telescope_throughput"], ":"),
-            ("dichroic", channel["dichroic_total"], "-."),
-            (
-                "spectrograph optics",
-                _spectrograph_optics_total(channel),
-                (0, (5, 2)),
-            ),
-            ("active slit", slit_transmission, (0, (1, 2))),
-            (
-                "trace QE median",
-                _order_statistic(channel, "detector_qe", np.nanmedian),
-                (0, (3, 1, 1, 1)),
-            ),
+            ("telescope", channel["telescope_throughput"], ":", 1.1),
+            ("dichroic", channel["dichroic_total"], "-.",summary_component_linewidth),
+            ("spectrograph optics", _spectrograph_optics_total(channel), (0, (5, 2)),summary_component_linewidth),
+            ("active slit", slit_transmission, (0, (1, 2)), 1.1),
+            ("trace QE median", _order_statistic(channel, "detector_qe", np.nanmedian), (0, (3, 1, 1, 1)),summary_component_linewidth),
         )
-        for component_name, values, linestyle in summary_components:
+        for component_name, values, linestyle, linewidth in summary_components:
             summary_ax.plot(
                 wave,
                 values,
-                lw=summary_component_linewidth,
+                lw=linewidth,
                 ls=linestyle,
                 color=color,
                 alpha=summary_component_alpha,
@@ -1144,11 +1133,317 @@ def plot_slit_adc_psf_scenes(data: Mapping[str, Any]):
     return fig, axes
 
 
-def plot_slit_loss_by_arm(data: Mapping[str, Any]):
+def _slit_loss_curve_psf_key(curve: Mapping[str, Any]) -> str:
+    if "psf_mode" in curve:
+        return str(curve["psf_mode"])
+    label = str(curve.get("label", "curve"))
+    return label.split(",", 1)[0]
+
+
+def _slit_loss_curve_slit_width(
+    curve: Mapping[str, Any],
+    arm: Mapping[str, Any],
+) -> float:
+    width = curve.get("slit_width_arcsec", arm.get("slit_width_arcsec"))
+    return float(u.Quantity(width).to_value(u.arcsec))
+
+
+def _slit_loss_curve_airmass_key(curve: Mapping[str, Any]) -> float | None:
+    if "airmass" not in curve:
+        return None
+    return round(float(curve["airmass"]), 6)
+
+
+def _slit_loss_curve_slit_role(curve: Mapping[str, Any]) -> str:
+    return str(curve.get("slit_role", "current"))
+
+
+def _slit_loss_curve_adc_state(curve: Mapping[str, Any]) -> str:
+    return str(curve.get("adc_state", "adc_residual"))
+
+
+def _slit_loss_airmass_alpha(curve: Mapping[str, Any]) -> float:
+    if "airmass" not in curve:
+        return 0.95
+    if curve.get("current_airmass", False):
+        return 0.98
+    if float(curve["airmass"]) <= 1.000001:
+        return 0.34
+    return 0.56
+
+
+def _format_slit_value(value: float) -> str:
+    return f'{value:.2f}"'
+
+
+def _format_slit_values_by_arm(values: Mapping[str, float]) -> str:
+    finite = [
+        float(value)
+        for value in values.values()
+        if np.isfinite(value)
+    ]
+    if not finite:
+        return "--"
+    if all(np.isclose(value, finite[0], rtol=0.0, atol=1.0e-6) for value in finite):
+        return _format_slit_value(finite[0])
+    return "/".join(_format_slit_value(value) for value in finite)
+
+
+def _arm_marker_map(arms: Mapping[str, Any]) -> dict[str, str]:
+    preferred = {"VIS": "*", "NIR": "^"}
+    fallback = ["*", "^", "+", "x"]
+    markers = {}
+    for idx, arm_name in enumerate(arms):
+        markers[arm_name] = preferred.get(
+            str(arm_name).upper(),
+            fallback[idx % len(fallback)],
+        )
+    return markers
+
+
+def _slit_role_for_arm(arm: Mapping[str, Any]) -> str:
+    current = float(u.Quantity(arm["slit_width_arcsec"]).to_value(u.arcsec))
+    if "selector_slit_widths_arcsec" not in arm:
+        return "current"
+    selector = u.Quantity(
+        arm["selector_slit_widths_arcsec"],
+    ).to_value(u.arcsec)
+    selector = np.asarray(selector, dtype=float)
+    selector = selector[np.isfinite(selector)]
+    if selector.size < 2:
+        return "current"
+    if np.isclose(current, np.nanmin(selector), rtol=0.0, atol=1.0e-6):
+        return "narrowest"
+    if np.isclose(current, np.nanmax(selector), rtol=0.0, atol=1.0e-6):
+        return "widest"
+    return "current"
+
+
+def _selected_slit_values_by_arm(arms: Mapping[str, Any]) -> dict[str, float]:
+    return {
+        arm_name: float(u.Quantity(arm["slit_width_arcsec"]).to_value(u.arcsec))
+        for arm_name, arm in arms.items()
+        if "slit_width_arcsec" in arm
+    }
+
+
+def _slit_role_values_by_arm(
+    arms: Mapping[str, Any],
+    visible_by_arm: Mapping[str, list[Mapping[str, Any]]],
+) -> OrderedDict[str, dict[str, float]]:
+    role_values: OrderedDict[str, dict[str, float]] = OrderedDict()
+    for role in ("narrowest", "current", "widest"):
+        role_values[role] = {}
+    for arm_name, arm in arms.items():
+        for curve in visible_by_arm.get(arm_name, []):
+            role = _slit_loss_curve_slit_role(curve)
+            role_values.setdefault(role, {})
+            role_values[role].setdefault(
+                arm_name,
+                _slit_loss_curve_slit_width(curve, arm),
+            )
+    return OrderedDict(
+        (role, values) for role, values in role_values.items() if values
+    )
+
+
+def _slit_legend_label(
+    role: str,
+    values_by_arm: Mapping[str, float],
+    selected_values: Mapping[str, float],
+    selected_roles: Mapping[str, str],
+    markers: Mapping[str, str],
+) -> tuple[str, set[str]]:
+    if role == "current":
+        selected_current = {
+            arm: value
+            for arm, value in selected_values.items()
+            if selected_roles.get(arm) == "current"
+        }
+        if selected_current:
+            value_label = _format_slit_values_by_arm(selected_current)
+            if len(selected_current) > 1:
+                finite = list(selected_current.values())
+                same = all(
+                    np.isclose(value, finite[0], rtol=0.0, atol=1.0e-6)
+                    for value in finite
+                )
+                suffix = "Selected slit" if same else "Current slit"
+                return f"{value_label} {suffix}", set()
+            arm_name = next(iter(selected_current))
+            marker = markers.get(arm_name, "")
+            return f"{value_label}{marker} Current slit", {marker} if marker else set()
+        return _format_slit_values_by_arm(values_by_arm), set()
+
+    value_label = _format_slit_values_by_arm(values_by_arm)
+    current_markers = {
+        markers[arm_name]
+        for arm_name in values_by_arm
+        if selected_roles.get(arm_name) == role
+        and arm_name in markers
+    }
+    marker_label = "".join(
+        markers[arm_name]
+        for arm_name in values_by_arm
+        if selected_roles.get(arm_name) == role
+        and arm_name in markers
+    )
+    return f"{value_label}{marker_label}", current_markers
+
+
+def _add_adc_off_ticks(
+    ax: Any,
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    color: Any,
+    alpha: float,
+    linewidth: float,
+    zorder: float,
+    tick_count: int = 13,
+) -> None:
+    from matplotlib.collections import LineCollection
+
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    finite = np.flatnonzero(np.isfinite(x) & np.isfinite(y))
+    if finite.size < 3:
+        return
+    candidates = finite[1:-1]
+    if candidates.size == 0:
+        return
+    count = min(tick_count, candidates.size)
+    indices = np.unique(
+        np.linspace(0, candidates.size - 1, count).round().astype(int),
+    )
+    tick_indices = candidates[indices]
+
+    x_min = float(np.nanmin(x[finite]))
+    x_span = float(np.nanmax(x[finite]) - x_min)
+    if not np.isfinite(x_span) or x_span <= 0:
+        return
+    y_min, y_span = 0.0, 1.0
+    half_len = 0.009
+    segments = []
+    for idx in tick_indices:
+        left = max(idx - 1, 0)
+        right = min(idx + 1, x.size - 1)
+        if not np.isfinite(y[left]) or not np.isfinite(y[right]):
+            continue
+        dx = (x[right] - x[left]) / x_span
+        dy = (y[right] - y[left]) / y_span
+        norm = np.hypot(dx, dy)
+        if not np.isfinite(norm) or norm <= 0:
+            continue
+        nx, ny = -dy / norm, dx / norm
+        x0 = (x[idx] - x_min) / x_span
+        y0 = (y[idx] - y_min) / y_span
+        p0 = (
+            x_min + (x0 - half_len * nx) * x_span,
+            y_min + (y0 - half_len * ny) * y_span,
+        )
+        p1 = (
+            x_min + (x0 + half_len * nx) * x_span,
+            y_min + (y0 + half_len * ny) * y_span,
+        )
+        segments.append([p0, p1])
+    if not segments:
+        return
+    ax.add_collection(LineCollection(
+        segments,
+        colors=[color],
+        linewidths=max(0.75, linewidth * 0.55),
+        alpha=alpha,
+        zorder=zorder + 0.2,
+        capstyle="round",
+    ))
+
+
+def _visible_slit_loss_curves(
+    arm: Mapping[str, Any],
+    *,
+    show_airmass_states: bool,
+    show_adc_states: bool,
+) -> list[Mapping[str, Any]]:
+    curves = []
+    for curve in arm["curves"].values():
+        if curve.get("alias_for"):
+            continue
+        if (
+            not show_airmass_states
+            and "current_airmass" in curve
+            and not curve["current_airmass"]
+        ):
+            continue
+        if (
+            not show_adc_states
+            and "current_adc" in curve
+            and not curve["current_adc"]
+        ):
+            continue
+        curves.append(curve)
+    return curves
+
+
+def plot_slit_loss_by_arm(
+    data: Mapping[str, Any],
+    *,
+    show_airmass_states: bool = False,
+    show_adc_states: bool = False,
+):
     """Plot centered point-source slit loss for each spectrograph arm."""
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
 
     arms = data["arms"]
+    visible_by_arm = OrderedDict(
+        (
+            arm_name,
+            _visible_slit_loss_curves(
+                arm,
+                show_airmass_states=show_airmass_states,
+                show_adc_states=show_adc_states,
+            ),
+        )
+        for arm_name, arm in arms.items()
+    )
+    all_visible = [
+        curve
+        for curves in visible_by_arm.values()
+        for curve in curves
+    ]
+    if not all_visible:
+        raise ValueError("No slit-loss curves remain after plot filters.")
+
+    cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    psf_order = list(data.get("psf_modes", {}))
+    for curve in all_visible:
+        key = _slit_loss_curve_psf_key(curve)
+        if key not in psf_order:
+            psf_order.append(key)
+    psf_colors = {
+        key: cycle[idx % len(cycle)]
+        for idx, key in enumerate(psf_order)
+    }
+
+    airmass_values = sorted({
+        value
+        for curve in all_visible
+        for value in [_slit_loss_curve_airmass_key(curve)]
+        if value is not None
+    })
+    slit_styles = {
+        "narrowest": (0, (1, 1.6)),
+        "current": "-",
+        "widest": (0, (6, 2.4)),
+    }
+    selected_slits = _selected_slit_values_by_arm(arms)
+    selected_roles = {
+        arm_name: _slit_role_for_arm(arm)
+        for arm_name, arm in arms.items()
+    }
+    arm_markers = _arm_marker_map(arms)
+    slit_role_values = _slit_role_values_by_arm(arms, visible_by_arm)
     fig, axes = plt.subplots(
         1,
         len(arms),
@@ -1156,47 +1451,228 @@ def plot_slit_loss_by_arm(data: Mapping[str, Any]):
         squeeze=False,
         constrained_layout=True,
     )
-    for ax, (arm_name, arm) in zip(axes.flat, arms.items(), strict=True):
+    for idx, (ax, (arm_name, arm)) in enumerate(
+        zip(axes.flat, arms.items(), strict=True),
+    ):
         wave = u.Quantity(arm["wave_nm"]).to_value(u.nm)
-        for curve_name, curve in arm["curves"].items():
-            ax.plot(
+        curves = sorted(
+            visible_by_arm[arm_name],
+            key=lambda curve: (
+                bool(curve.get("current_slit", False)),
+                bool(curve.get("current_airmass", False)),
+                bool(curve.get("current_adc", False)),
+            ),
+        )
+        for curve in curves:
+            psf_key = _slit_loss_curve_psf_key(curve)
+            slit_role = _slit_loss_curve_slit_role(curve)
+            adc_state = _slit_loss_curve_adc_state(curve)
+            current_curve = (
+                bool(curve.get("current_slit", False))
+                and bool(curve.get("current_airmass", False))
+                and bool(curve.get("current_adc", False))
+            )
+            linewidth = 2.7 if current_curve else 1.25
+            alpha = _slit_loss_airmass_alpha(curve)
+            zorder = 4.5 if current_curve else 2.0
+            color = psf_colors.get(psf_key, curve.get("color"))
+            line, = ax.plot(
                 wave,
                 curve["loss"],
-                lw=2.8,
-                color=curve.get("color"),
-                ls=curve.get("linestyle", "-"),
-                label=curve["label"],
+                lw=linewidth,
+                color=color,
+                ls=slit_styles.get(slit_role, "-"),
+                alpha=alpha,
+                label="_nolegend_",
+                zorder=zorder,
             )
-        ax.text(
-            0.02,
-            0.96,
-            f"slit {arm['slit_width_arcsec'].to_value(u.arcsec):.2f} arcsec\n"
-            f"seeing {data['seeing_arcsec'].to_value(u.arcsec):.2f} arcsec",
-            transform=ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=9,
-            bbox={
-                "boxstyle": "round,pad=0.22",
-                "fc": "white",
-                "ec": "0.75",
-                "alpha": 0.78,
-            },
-        )
+            if adc_state == "ad_only":
+                _add_adc_off_ticks(
+                    ax,
+                    wave,
+                    np.asarray(curve["loss"], dtype=float),
+                    color=line.get_color(),
+                    alpha=alpha,
+                    linewidth=linewidth,
+                    zorder=zorder,
+                )
+        title_bits = [f"{arm_name} slit loss"]
+        if "slit_width_arcsec" in arm:
+            active_slit = u.Quantity(arm["slit_width_arcsec"]).to_value(u.arcsec)
+            title_bits.append(
+                f'active slit {active_slit:.2f}"'
+            )
         ax.set_title(
-            f"{arm_name} Slit Loss",
+            "\n".join(title_bits),
             pad=8,
         )
         ax.set_xlabel("Wavelength [nm]")
-        ax.set_ylabel("Slit loss fraction")
+        if idx == 0:
+            ax.set_ylabel("Slit loss fraction")
+        else:
+            ax.set_ylabel("")
+            ax.tick_params(axis="y", labelleft=False)
         ax.set_ylim(0, 1)
         ax.grid(alpha=0.25)
 
-    handles, labels = axes.flat[0].get_legend_handles_labels()
+    def legend_heading(label: str):
+        return Line2D([0], [0], color="none", lw=0, label=label)
+
+    def legend_blank():
+        return Line2D([0], [0], color="none", lw=0, label=" ")
+
+    seeing_handles = [legend_heading("Seeing")]
+    for key in psf_order:
+        matches = [
+            curve
+            for curve in all_visible
+            if _slit_loss_curve_psf_key(curve) == key
+        ]
+        if not matches:
+            continue
+        mode_meta = data.get("psf_modes", {}).get(key, {})
+        label = str(mode_meta.get("label", matches[0].get("psf_label", key)))
+        current = bool(
+            mode_meta.get(
+                "current",
+                any(curve.get("current_psf", False) for curve in matches),
+            )
+        )
+        if current:
+            label = f"{label} current"
+        seeing_handles.append(
+            Line2D(
+                [0],
+                [0],
+                color=psf_colors[key],
+                lw=2.4,
+                label=label,
+            )
+        )
+
+    slit_handles = [legend_heading("Slit")]
+    slit_current_markers: set[str] = set()
+    for role, values_by_arm in slit_role_values.items():
+        label, markers_used = _slit_legend_label(
+            role,
+            values_by_arm,
+            selected_slits,
+            selected_roles,
+            arm_markers,
+        )
+        slit_current_markers.update(markers_used)
+        role_is_selected = any(
+            selected_roles.get(arm_name) == role
+            for arm_name in values_by_arm
+        )
+        slit_handles.append(
+            Line2D(
+                [0],
+                [0],
+                color=cycle[0],
+                lw=2.7 if role_is_selected else 1.5,
+                ls=slit_styles.get(role, "-"),
+                label=label,
+            )
+        )
+    if slit_current_markers:
+        ordered_markers = [
+            arm_markers[arm_name]
+            for arm_name in arms
+            if arm_markers.get(arm_name) in slit_current_markers
+        ]
+        if len(ordered_markers) > 1:
+            marker_note = f"{'/'.join(ordered_markers)} Current slit"
+        else:
+            marker = ordered_markers[0]
+            arm_name = next(
+                name for name, value in arm_markers.items()
+                if value == marker
+            )
+            marker_note = f"{marker} {arm_name} current slit"
+        slit_handles.append(
+            Line2D(
+                [0],
+                [0],
+                color="none",
+                lw=0,
+                label=marker_note,
+            )
+        )
+
+    airmass_handles = []
+    if airmass_values:
+        airmass_handles.append(legend_heading("Airmass"))
+        for value in airmass_values:
+            matches = [
+                curve
+                for curve in all_visible
+                if np.isclose(_slit_loss_curve_airmass_key(curve), value)
+            ]
+            label = str(matches[0].get("airmass_label", f"X={value:.2f}"))
+            if any(curve.get("current_airmass", False) for curve in matches):
+                label = f"{label} current"
+            airmass_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color=cycle[0],
+                    lw=2.2,
+                    alpha=_slit_loss_airmass_alpha(matches[0]),
+                    label=label,
+                )
+            )
+
+    adc_states = []
+    for curve in all_visible:
+        state = _slit_loss_curve_adc_state(curve)
+        if state and state not in adc_states:
+            adc_states.append(state)
+    adc_order = [state for state in ("adc_residual", "ad_only") if state in adc_states]
+    adc_order.extend(state for state in adc_states if state not in adc_order)
+    adc_handles = []
+    if adc_order:
+        adc_handles.append(legend_heading("ADC"))
+    for state in adc_order:
+        matches = [
+            curve
+            for curve in all_visible
+            if _slit_loss_curve_adc_state(curve) == state
+        ]
+        label = "on" if state == "adc_residual" else "off"
+        if state not in {"adc_residual", "ad_only"}:
+            label = str(matches[0].get("adc_label", state))
+        marker = "|" if state == "ad_only" else None
+        adc_handles.append(
+            Line2D(
+                [0],
+                [0],
+                color=cycle[0],
+                lw=2.2,
+                marker=marker,
+                markersize=8 if marker else 0,
+                markeredgewidth=1.1,
+                label=label,
+            )
+        )
+
+    legend_columns = [
+        column
+        for column in (seeing_handles, slit_handles, airmass_handles, adc_handles)
+        if column
+    ]
+    n_legend_columns = len(legend_columns)
+    n_legend_rows = max(len(column) for column in legend_columns)
+    handles = []
+    for row in range(n_legend_rows):
+        for column in legend_columns:
+            handles.append(column[row] if row < len(column) else legend_blank())
     fig.legend(
-        handles, labels, loc="outside lower center",
-        ncol=min(3, max(1, len(handles))),
-        frameon=False,
+        handles,
+        [handle.get_label() for handle in handles],
+        loc="outside lower center",
+        ncol=max(1, n_legend_columns),
+        fontsize="small",
     )
     return fig, axes
 
@@ -2385,6 +2861,8 @@ def plot_trace_resolving_power_detector_maps(
         vmin=vmin,
         vmax=vmax,
     )
+    for ax in axes:
+        ax.set_axis_off()
     _add_resolving_power_sampling_axis(cbar, table)
     return fig, axes
 
