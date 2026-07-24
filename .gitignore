@@ -83,6 +83,8 @@ target/
 .ipynb_checkpoints
 notebooks/validation_outputs/
 notebooks/science_validation_outputs/
+notebooks/**/*.fits
+notebooks/**/*.png
 
 # IPython
 profile_default/
