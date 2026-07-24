@@ -59,12 +59,8 @@ def test_validation_reexports_plot_helpers():
     assert validation.plot_slit_width_loss is plots.plot_slit_width_loss
     assert validation.plot_slit_pair_geometry is plots.plot_slit_pair_geometry
     assert (
-        validation.plot_trace_resolving_power_detector_maps
-        is plots.plot_trace_resolving_power_detector_maps
-    )
-    assert (
-        validation.plot_trace_sampling_detector_maps
-        is plots.plot_trace_sampling_detector_maps
+        validation.plot_resolving_power_echellogram
+        is plots.plot_resolving_power_echellogram
     )
     assert (
         validation.plot_readout_cross_dispersion_cut
@@ -851,20 +847,19 @@ def test_show_and_save_hdul_saves_array_inputs(tmp_path):
         np.testing.assert_allclose(hdul[0].data, 5.0)
 
 
-def test_trace_resolution_detector_map_plot_smoke():
+def test_resolving_power_echellogram_smoke():
     table = Table(rows=[
         {
             "channel": "B",
             "image_plane_id": 0,
             "trace_id": "B_1",
-            "detector_naxis1": 12,
-            "detector_naxis2": 10,
-            "detector_x_pix": 2.0,
-            "detector_y_pix": 3.0,
+            "sample_index": 0,
+            "detector_x_mm": -1.0,
+            "detector_y_mm": 0.2,
             "wave_nm": 1000.0,
             "dispersion_nm_pix": 0.05,
             "resolving_power_R": 20000.0,
-            "spectral_element_width_pix": 4.2,
+            "spectral_fwhm_pix": 4.2,
             "seeing_fwhm_arcsec": 0.6,
             "spatial_fwhm_pix": 4.0,
         },
@@ -872,28 +867,25 @@ def test_trace_resolution_detector_map_plot_smoke():
             "channel": "B",
             "image_plane_id": 0,
             "trace_id": "B_1",
-            "detector_naxis1": 12,
-            "detector_naxis2": 10,
-            "detector_x_pix": 3.0,
-            "detector_y_pix": 3.0,
+            "sample_index": 1,
+            "detector_x_mm": 1.0,
+            "detector_y_mm": 0.2,
             "wave_nm": 1005.0,
             "dispersion_nm_pix": 0.05,
             "resolving_power_R": 20100.0,
-            "spectral_element_width_pix": 4.3,
+            "spectral_fwhm_pix": 4.2,
             "seeing_fwhm_arcsec": 0.6,
             "spatial_fwhm_pix": 4.0,
         },
     ])
 
-    fig, axes = plots.plot_trace_resolving_power_detector_maps(table)
+    fig, axes = plots.plot_resolving_power_echellogram(
+        table, trace_width_fraction=0.25)
 
     assert axes[0, 0].collections
-    assert "B (id 0)" in axes[0, 0].get_title()
-    assert axes[0, 0].get_anchor() == "C"
-    fig.clf()
-
-    fig, axes = plots.plot_trace_sampling_detector_maps(table)
-
-    assert axes[0, 0].collections
-    assert "pix/resel" in axes[0, 0].get_title()
+    assert len(axes[0, 0].collections[0].get_segments()) == 2
+    assert "FWHM" in axes[0, 0].get_title()
+    assert "spat" in axes[0, 0].get_title()
+    assert axes[0, 0].get_xlabel() == "Focal-plane x [mm]"
+    assert axes[0, 0].get_ylabel() == "Focal-plane y [mm]"
     fig.clf()

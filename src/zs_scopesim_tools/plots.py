@@ -2681,33 +2681,24 @@ def show_and_save_hdul(
     }
 
 
-def _plot_trace_detector_maps(
+def plot_resolving_power_echellogram(
     table: Table,
-    values: np.ndarray,
     *,
-    colorbar_label: str,
-    title_kind: str,
-    cmap: str,
-    vmin: float | None,
-    vmax: float | None,
+    cmap: str = "viridis",
+    vmin: float | None = None,
+    vmax: float | None = None,
+    trace_width_fraction: float = 0.2,
 ):
-    """Plot trace samples directly in detector coordinates."""
+    """Plot resolving power on the trace effect's physical focal plane."""
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
     from matplotlib.colors import Normalize
 
-    if len(table) == 0:
-        raise ValueError("trace resolution diagnostic table is empty.")
     image_plane_ids = sorted({int(value) for value in table["image_plane_id"]})
     fig, axes = _detector_grid_axes(len(image_plane_ids), row_height=3.8)
-    values = np.asarray(values, dtype=float)
-    finite_values = values[np.isfinite(values)]
-    if finite_values.size == 0:
-        raise ValueError("trace diagnostic values contain no finite values.")
-    if vmin is None:
-        vmin = float(np.nanmin(finite_values))
-    if vmax is None:
-        vmax = float(np.nanmax(finite_values))
+    values = table["resolving_power_R"] / 1000.0
+    vmin = np.min(values) if vmin is None else vmin
+    vmax = np.max(values) if vmax is None else vmax
     if vmin == vmax:
         pad = 0.5 if vmin == 0 else 0.1 * abs(vmin)
         vmin, vmax = vmin - pad, vmax + pad
@@ -2715,187 +2706,94 @@ def _plot_trace_detector_maps(
 
     colormap = plt.get_cmap(cmap).copy()
     artist = None
-    image_plane_array = np.asarray(table["image_plane_id"], dtype=int)
+    image_plane_array = table["image_plane_id"]
+    plane_collections = []
+    plane_centres = []
 
     for ax, image_plane_id in zip(axes.flat, image_plane_ids, strict=False):
-        plane_mask = image_plane_array == image_plane_id
-        rows = table[plane_mask]
-        row_values = values[plane_mask]
-        nx = int(rows["detector_naxis1"][0])
-        ny = int(rows["detector_naxis2"][0])
-        if nx <= 0 or ny <= 0:
-            x = np.asarray(rows["detector_x_pix"], dtype=float)
-            y = np.asarray(rows["detector_y_pix"], dtype=float)
-            nx = int(np.ceil(np.nanmax(x))) + 1
-            ny = int(np.ceil(np.nanmax(y))) + 1
+        rows = table[image_plane_array == image_plane_id]
+        row_values = values[image_plane_array == image_plane_id]
+        x_mm = rows["detector_x_mm"]
+        y_mm = rows["detector_y_mm"]
 
-        trace_ids = np.asarray(rows["trace_id"], dtype=str)
+        trace_ids = rows["trace_id"]
+        collections = []
+        centres = []
         for trace_id in sorted({str(value) for value in trace_ids}):
             trace_mask = trace_ids == trace_id
             trace_rows = rows[trace_mask]
             trace_values = row_values[trace_mask]
-            sort_column = (
-                "sample_index" if "sample_index" in trace_rows.colnames
-                else "wave_nm"
-            )
-            order = np.argsort(np.asarray(trace_rows[sort_column], dtype=float))
-            xpix = np.asarray(trace_rows["detector_x_pix"], dtype=float)[order]
-            ypix = np.asarray(trace_rows["detector_y_pix"], dtype=float)[order]
+            order = np.argsort(trace_rows["sample_index"])
+            x = trace_rows["detector_x_mm"][order]
+            y = trace_rows["detector_y_mm"][order]
             trace_values = trace_values[order]
-            good = (
-                np.isfinite(xpix) & np.isfinite(ypix) & np.isfinite(trace_values)
-            )
-            xpix = xpix[good]
-            ypix = ypix[good]
-            trace_values = trace_values[good]
-            if xpix.size == 0:
-                continue
-            artist = ax.scatter(
-                xpix, ypix, c=trace_values, cmap=colormap, norm=norm,
-                s=4, linewidths=0, zorder=3,
-            )
-            if xpix.size < 2:
-                continue
-            points = np.column_stack([xpix, ypix])
-            segments = np.stack([points[:-1], points[1:]], axis=1)
-            segment_values = 0.5 * (trace_values[:-1] + trace_values[1:])
+            points = np.column_stack((x, y))
+            midpoints = (points[:-1] + points[1:]) / 2
+            starts = np.concatenate((points[:1], midpoints))
+            ends = np.concatenate((midpoints, points[-1:]))
+            segments = np.stack((starts, points, ends), axis=1)
             collection = LineCollection(
-                segments, cmap=colormap, norm=norm, linewidths=1.1, zorder=2,
+                segments,
+                cmap=colormap,
+                norm=norm,
+                linewidths=1.1,
+                zorder=2,
             )
-            collection.set_array(segment_values)
+            collection.set_array(trace_values)
             ax.add_collection(collection)
             artist = collection
+            collections.append(collection)
+            centres.append(points[len(points) // 2])
+
+        plane_collections.append(collections)
+        plane_centres.append(centres)
 
         channels = sorted({str(value) for value in rows["channel"]})
-        resolving_power = np.asarray(rows["resolving_power_R"], dtype=float)
-        element_width = np.asarray(rows["spectral_element_width_pix"], dtype=float)
-        seeing = float(np.nanmedian(np.asarray(rows["seeing_fwhm_arcsec"], dtype=float)))
-        spatial = float(np.nanmedian(np.asarray(rows["spatial_fwhm_pix"], dtype=float)))
-        if title_kind == "resolving_power":
-            diagnostic = (
-                f"R {np.nanmin(resolving_power) / 1000.0:.1f}-"
-                f"{np.nanmax(resolving_power) / 1000.0:.1f}k"
-            )
-        elif title_kind == "sampling":
-            width_min = float(np.nanmin(element_width))
-            width_max = float(np.nanmax(element_width))
-            if np.isclose(width_min, width_max):
-                diagnostic = f"{width_min:.1f} pix/resel"
-            else:
-                diagnostic = f"{width_min:.1f}-{width_max:.1f} pix/resel"
-        else:
-            raise ValueError(f"Unknown trace title kind: {title_kind!r}")
+        resolving_power = rows["resolving_power_R"]
+        seeing = np.median(rows["seeing_fwhm_arcsec"])
+        spatial = np.median(rows["spatial_fwhm_pix"])
+        diagnostic = (
+            f"R {np.min(resolving_power) / 1000.0:.1f}-"
+            f"{np.max(resolving_power) / 1000.0:.1f}k"
+        )
         ax.set_title(
-            f"{'/'.join(channels)} (id {image_plane_id})\n"
-            f"{diagnostic}, {seeing:.2f}\" FWHM/{spatial:.1f} pix",
+            f"{'/'.join(channels)}\n"
+            f"{diagnostic}, {seeing:.2f}\"/{spatial:.1f} pix "
+            "$FWHM_{spat}$",
             pad=8,
         )
-        if image_plane_id in (0,3):
-            ax.set_ylabel("Pixel")
-        if image_plane_id >2:
-            ax.set_xlabel("Pixel")
-        ax.set_xlim(0, nx)
-        ax.set_ylim(0, ny)
+        x_pad = max(0.05 * np.ptp(x_mm), 0.05)
+        y_pad = max(0.05 * np.ptp(y_mm), 0.05)
+        ax.set_xlim(np.min(x_mm) - x_pad, np.max(x_mm) + x_pad)
+        ax.set_ylim(np.min(y_mm) - y_pad, np.max(y_mm) + y_pad)
         ax.set_aspect("equal", adjustable="box")
         ax.grid(alpha=0.15, lw=0.5)
+        ax.set_xlabel("Focal-plane x [mm]")
+        ax.set_ylabel("Focal-plane y [mm]")
 
     for ax in axes.flat[len(image_plane_ids):]:
         ax.axis("off")
-    if artist is None:
-        raise ValueError("No finite trace samples fall on a detector image plane.")
     cbar = fig.colorbar(
         artist,
         ax=axes.ravel().tolist()[:len(image_plane_ids)],
         shrink=0.86,
         pad=0.02,
     )
-    cbar.set_label(colorbar_label)
+    cbar.set_label("Resolving power [k]")
+
     _center_detector_axes(axes, len(image_plane_ids))
-    return fig, axes, cbar
-
-
-def _add_resolving_power_sampling_axis(cbar: Any, table: Table) -> None:
-    """Add a typical spectral-element pixel scale to an R colorbar."""
-    wave_nm = np.asarray(table["wave_nm"], dtype=float)
-    dispersion_nm_pix = np.asarray(table["dispersion_nm_pix"], dtype=float)
-    scale_values = wave_nm / dispersion_nm_pix
-    scale_values = scale_values[np.isfinite(scale_values) & (scale_values > 0)]
-    if scale_values.size == 0:
-        return
-    typical_wave_over_dispersion = float(np.nanmedian(scale_values))
-
-    def r_k_to_pix(value):
-        value = np.asarray(value, dtype=float)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            return typical_wave_over_dispersion / (value * 1000.0)
-
-    def pix_to_r_k(value):
-        value = np.asarray(value, dtype=float)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            return typical_wave_over_dispersion / (value * 1000.0)
-
-    cbar.ax.yaxis.set_ticks_position("left")
-    cbar.ax.yaxis.set_label_position("left")
-    secondary = cbar.ax.secondary_yaxis(
-        "right",
-        functions=(r_k_to_pix, pix_to_r_k),
-    )
-    secondary.set_ylabel("Spectral FWHM [pix]", labelpad=10)
-
-
-def plot_trace_resolving_power_detector_maps(
-    table: Table,
-    *,
-    cmap: str = "viridis",
-    vmin: float | None = None,
-    vmax: float | None = None,
-):
-    """Plot local trace resolving power in detector coordinates."""
-    values = np.asarray(table["resolving_power_R"], dtype=float) / 1000.0
-    fig, axes, cbar = _plot_trace_detector_maps(
-        table,
-        values,
-        colorbar_label="Resolving power [k]",
-        title_kind="resolving_power",
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax,
-    )
-    for ax in axes:
-        ax.set_axis_off()
-    _add_resolving_power_sampling_axis(cbar, table)
-    return fig, axes
-
-
-def plot_trace_sampling_detector_maps(
-    table: Table,
-    *,
-    cmap: str = "viridis",
-    vmin: float | None = None,
-    vmax: float | None = None,
-    nyquist_width_pix: float | None = 2.0,
-):
-    """Plot local spectral-element sampling width in detector coordinates."""
-    values = np.asarray(table["spectral_element_width_pix"], dtype=float)
-    finite_values = values[np.isfinite(values)]
-    if finite_values.size and nyquist_width_pix is not None:
-        if vmin is None:
-            vmin = min(float(np.nanmin(finite_values)), float(nyquist_width_pix))
-        if vmax is None:
-            vmax = max(float(np.nanmax(finite_values)), float(nyquist_width_pix))
-    fig, axes, cbar = _plot_trace_detector_maps(
-        table,
-        values,
-        colorbar_label="Spectral element [pix]",
-        title_kind="sampling",
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax,
-    )
-    if (
-        nyquist_width_pix is not None
-        and cbar.vmin <= nyquist_width_pix <= cbar.vmax
+    fig.canvas.draw()
+    for ax, collections, centres in zip(
+        axes.flat, plane_collections, plane_centres, strict=False,
     ):
-        cbar.ax.axhline(nyquist_width_pix, color="white", lw=1.4)
-        cbar.ax.set_title(f"Nyquist: {nyquist_width_pix:g} pix", fontsize=8, pad=8)
+        if len(centres) < 2:
+            continue
+        centres = ax.transData.transform(centres)
+        distances = np.linalg.norm(
+            centres[:, None, :] - centres[None, :, :], axis=2)
+        np.fill_diagonal(distances, np.inf)
+        spacing = np.median(np.min(distances, axis=1))
+        linewidth = trace_width_fraction * spacing * 72 / fig.dpi
+        for collection in collections:
+            collection.set_linewidth(linewidth)
     return fig, axes

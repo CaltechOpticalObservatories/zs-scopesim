@@ -27,8 +27,7 @@ from .plots import (
     plot_slit_pair_geometry,
     plot_slit_width_loss,
     plot_source,
-    plot_trace_resolving_power_detector_maps,
-    plot_trace_sampling_detector_maps,
+    plot_resolving_power_echellogram,
     plot_transmission_sanity,
 )
 
@@ -853,35 +852,6 @@ def trace_catalog_table(trace_list: Any) -> Table:
     return Table(rows=sorted(rows, key=lambda row: row["trace_id"]))
 
 
-def _image_plane_for_id(ztrain: Any, image_plane_id: int) -> Any | None:
-    if not hasattr(ztrain, "image_planes"):
-        return None
-    if image_plane_id >= len(ztrain.image_planes):
-        return None
-    return ztrain.image_planes[image_plane_id]
-
-
-def _image_plane_pixel_size_mm(image_plane: Any) -> float:
-    from astropy.wcs import WCS
-
-    header = image_plane.header
-    try:
-        pixel_scale_matrix = WCS(header, key="D").pixel_scale_matrix
-        return float(np.sqrt(abs(np.linalg.det(pixel_scale_matrix))))
-    except Exception:
-        return float(
-            u.Quantity(
-                header["CDELT1D"],
-                u.Unit(header.get("CUNIT1D", "mm")),
-            ).to_value(u.mm),
-        )
-
-
-def _image_plane_detector_shape(image_plane: Any) -> tuple[int, int]:
-    header = image_plane.header
-    return int(header.get("NAXIS1", 0)), int(header.get("NAXIS2", 0))
-
-
 def trace_resolution_diagnostic_table(
     ztrain: Any,
     *,
@@ -889,13 +859,7 @@ def trace_resolution_diagnostic_table(
     samples_per_trace: int = 64,
     allow_diagnostic_psf: bool = False,
 ) -> Table:
-    """Return detector-plane trace resolving-power diagnostics.
-
-    Resolving power is derived from the loaded trace geometry and the current
-    image-plane pixel size. Analytical trace metadata, when present, supplies
-    the nominal slit-width/FWHM consistency point; future Zemax trace tables can
-    omit that metadata and still provide the Nyquist trace diagnostic.
-    """
+    """Return resolving-power diagnostics from the configured live effects."""
     if samples_per_trace < 2:
         raise ValueError("samples_per_trace must be at least 2.")
 
@@ -903,253 +867,127 @@ def trace_resolution_diagnostic_table(
     zenith_angle = _zenith_angle_from_airmass(
         _required_cmd_float(ztrain.cmds, "!OBS.airmass"),
     )
-    fwhm_func, psf_effect = _configured_psf_fwhm_func(
+    fwhm_func, _ = _configured_psf_fwhm_func(
         ztrain,
         allow_diagnostic_fallback=allow_diagnostic_psf,
     )
     trace_list = get_effect(ztrain, trace_list_name)
+    spectrographs = get_effect(ztrain, "trace_eff_analytical")._spectrographs
+    slit_selector = get_effect(ztrain, "slitwheel_selector")
     rows: list[dict[str, Any]] = []
 
     for aperture_id, traces in traces_by_aperture(trace_list).items():
         label = channel_label(aperture_id, traces)
+        slit = slit_selector.get_effect(aperture_id).current_slit
+        slit_y = u.Quantity(slit.data["y"]).to_value(u.arcsec)
+        active_slit_width_arcsec = slit_y.max() - slit_y.min()
+
         for trace in traces:
             image_plane_id = int(trace.meta["image_plane_id"])
-            image_plane = _image_plane_for_id(ztrain, image_plane_id)
-            if image_plane is None:
-                raise ValueError(
-                    f"Trace {trace.trace_id!r} refers to missing image plane "
-                    f"{image_plane_id}."
-                )
-            pixel_size_mm = _image_plane_pixel_size_mm(image_plane)
-            pixel_area = _image_plane_pixel_area(ztrain, image_plane_id)
-            pixel_scale_arcsec = np.sqrt(pixel_area.to_value(u.arcsec**2))
-            detector_naxis1, detector_naxis2 = _image_plane_detector_shape(
-                image_plane,
-            )
+            pixel_scale_arcsec = np.sqrt(
+                _image_plane_pixel_area(ztrain, image_plane_id).to_value(u.arcsec**2))
 
-            wave_um = np.linspace(
-                float(trace.wave_min),
-                float(trace.wave_max),
-                int(samples_per_trace),
-            )
-            wave = wave_um * u.um
-            slit_positions = _trace_slit_positions_arcsec(trace)
-            coords = _trace_detector_positions(
-                trace, wave, image_plane, slit_positions_arcsec=slit_positions,
-            )
-            if coords is None or not {"detector_x", "detector_y"}.issubset(coords):
-                raise ValueError(
-                    f"Trace {trace.trace_id!r} has no detector-pixel mapping."
-                )
-            dlam_dx, dlam_dy = trace.xy2lam.gradient()
+            prefix, _, order_text = trace.trace_id.rpartition("_")
+            order = int(order_text)
+            spectrograph = spectrographs[prefix]
+
+            trace_table = trace.table
+            wave = trace_table["wavelength"].quantity.to(u.um)
+            slit_position = trace_table["s"].quantity.to_value(u.arcsec)
+            primary_fsr = spectrograph.order_mask(
+                wave, fsr_edge=True)[spectrograph.orders == order][0]
+            samples = np.flatnonzero((slit_position == 0) & primary_fsr)
+            samples = samples[np.linspace(
+                0,
+                len(samples) - 1,
+                min(samples_per_trace, len(samples)),
+                dtype=int,
+            )]
+            wave = wave[samples]
+            detector_x_mm = trace_table["x"].quantity[samples].to_value(u.mm)
+            detector_y_mm = trace_table["y"].quantity[samples].to_value(u.mm)
+
+            spectral_fwhm_pix = (spectrograph.nominal_pixels_per_res_elem
+                                 * active_slit_width_arcsec
+                                 / trace.meta["nominal_slit_width"])
             wave_nm = wave.to_value(u.nm)
-            nominal_fwhm_pix = _finite_float(
-                trace.meta.get("nominal_fwhm_pix", np.nan),
-            )
-            nominal_slit_width = _finite_float(
-                trace.meta.get("nominal_slit_width", np.nan),
-            )
-            current_slit_arcsec = _current_slit_arcsec(ztrain, label)
-            design_res = _finite_float(trace.meta.get("design_res", np.nan))
+            beta = spectrograph.grating.beta(wave, order)
+            dispersion_nm_pix = (
+                spectrograph.pixel_scale
+                / spectrograph.grating.angular_dispersion(order, beta)
+            ).to_value(u.nm)
+            resolving_power = wave_nm / (spectral_fwhm_pix * dispersion_nm_pix)
+            spectrograph_x_pix = spectrograph.wavelength_to_x_pixel(wave, order).value
+            spectrograph_y_pix = spectrograph.wavelength_to_y_pixel(wave).value
             psf_fwhm = fwhm_func(wave, zenith_angle, seeing).to_value(u.arcsec)
             spatial_fwhm_pix = psf_fwhm / pixel_scale_arcsec
-            footprint_on_detector = (
-                (coords["detector_x"] >= 0)
-                & (coords["detector_x"] <= detector_naxis1)
-                & (coords["detector_y"] >= 0)
-                & (coords["detector_y"] <= detector_naxis2)
-            )
-            if (
-                np.isfinite(nominal_fwhm_pix)
-                and nominal_fwhm_pix > 0
-                and np.isfinite(nominal_slit_width)
-                and nominal_slit_width > 0
-                and np.isfinite(current_slit_arcsec)
-                and current_slit_arcsec > 0
-            ):
-                spectral_element_width_pix = (
-                    nominal_fwhm_pix * current_slit_arcsec / nominal_slit_width
-                )
-                resolution_note = (
-                    "R uses local detector dispersion and scales the nominal "
-                    "slit-projection metadata to the active selected slit."
-                )
-            else:
-                spectral_element_width_pix = 2.0
-                resolution_note = (
-                    "R is the local Nyquist resolving power because this trace "
-                    "has no slit-projection metadata."
-                )
+            resel_footprint_pix = spectral_fwhm_pix * spatial_fwhm_pix
 
             for idx in range(wave_nm.size):
-                on_detector = footprint_on_detector[:, idx]
-                if not np.all(on_detector):
-                    continue
-                x_mm = float(np.nanmean(coords["detector_x_mm"][:, idx]))
-                y_mm = float(np.nanmean(coords["detector_y_mm"][:, idx]))
-                detector_x = float(np.nanmean(coords["detector_x"][:, idx]))
-                detector_y = float(np.nanmean(coords["detector_y"][:, idx]))
-                dlam_dx_value = float(np.nanmean(np.asarray(
-                    dlam_dx(x_mm, y_mm),
-                    dtype=float,
-                )))
-                dlam_dy_value = float(np.nanmean(np.asarray(
-                    dlam_dy(x_mm, y_mm),
-                    dtype=float,
-                )))
-                dispersion_nm_pix = (
-                    pixel_size_mm
-                    * np.hypot(dlam_dx_value, dlam_dy_value)
-                    * 1000.0
-                )
-                nyquist_resolving_power = wave_nm[idx] / (
-                    2.0 * dispersion_nm_pix
-                )
-                if np.isfinite(spectral_element_width_pix) and spectral_element_width_pix > 0:
-                    resolving_power = wave_nm[idx] / (
-                        spectral_element_width_pix * dispersion_nm_pix
-                    )
-                else:
-                    resolving_power = nyquist_resolving_power
-                    spectral_element_width_pix = 2.0
                 rows.append({
                     "channel": label,
                     "aperture_id": int(aperture_id),
                     "image_plane_id": image_plane_id,
                     "trace_id": trace.trace_id,
                     "sample_index": idx,
-                    "wave_nm": float(wave_nm[idx]),
-                    "detector_x_pix": detector_x,
-                    "detector_y_pix": detector_y,
-                    "detector_x_mm": x_mm,
-                    "detector_y_mm": y_mm,
-                    "detector_naxis1": detector_naxis1,
-                    "detector_naxis2": detector_naxis2,
-                    "pixel_size_mm": float(pixel_size_mm),
-                    "pixel_scale_arcsec_pix": float(pixel_scale_arcsec),
-                    "dispersion_nm_pix": float(dispersion_nm_pix),
-                    "nyquist_resolving_power_R": float(nyquist_resolving_power),
-                    "resolving_power_R": float(resolving_power),
-                    "spectral_element_width_pix": float(spectral_element_width_pix),
-                    "design_resolving_power_R": design_res,
-                    "nominal_fwhm_pix": nominal_fwhm_pix,
-                    "nominal_slit_width_arcsec": nominal_slit_width,
-                    "active_slit_width_arcsec": current_slit_arcsec,
-                    "seeing_fwhm_arcsec": float(psf_fwhm[idx]),
-                    "spatial_fwhm_pix": float(spatial_fwhm_pix[idx]),
-                    "footprint_samples_on_detector": int(np.sum(on_detector)),
-                    "footprint_slit_min_arcsec": float(
-                        np.nanmin(slit_positions[on_detector]),
-                    ),
-                    "footprint_slit_max_arcsec": float(
-                        np.nanmax(slit_positions[on_detector]),
-                    ),
-                    "psf_model": (
-                        effect_name(psf_effect)
-                        if psf_effect is not None else "diagnostic"
-                    ),
-                    "note": resolution_note,
+                    "wave_nm": wave_nm[idx],
+                    "detector_x_mm": detector_x_mm[idx],
+                    "detector_y_mm": detector_y_mm[idx],
+                    "spectrograph_x_pix": spectrograph_x_pix[idx],
+                    "spectrograph_y_pix": spectrograph_y_pix[idx],
+                    "pixel_scale_arcsec_pix": pixel_scale_arcsec,
+                    "dispersion_nm_pix": dispersion_nm_pix[idx],
+                    "resolving_power_R": resolving_power[idx],
+                    "spectral_fwhm_pix": spectral_fwhm_pix,
+                    "active_slit_width_arcsec": active_slit_width_arcsec,
+                    "seeing_fwhm_arcsec": psf_fwhm[idx],
+                    "spatial_fwhm_pix": spatial_fwhm_pix[idx],
+                    "resel_footprint_pix": resel_footprint_pix[idx],
                 })
     return Table(rows=sorted(rows, key=lambda row: row["image_plane_id"]))
 
 
 def trace_resolution_summary_table(table: Table) -> Table:
-    """Return per-channel medians from a trace-resolution diagnostic table."""
+    """Return compact per-channel trace-resolution diagnostics."""
     rows: list[dict[str, Any]] = []
     for key in table.group_by(["image_plane_id", "channel"]).groups.keys:
         channel = str(key["channel"])
         image_plane_id = int(key["image_plane_id"])
         group = table[
-            (np.asarray(table["channel"], dtype=str) == channel)
-            & (np.asarray(table["image_plane_id"], dtype=int) == image_plane_id)
+            (table["channel"] == channel)
+            & (table["image_plane_id"] == image_plane_id)
         ]
-        wave_nm = np.asarray(group["wave_nm"], dtype=float)
-        dispersion_nm_pix = np.asarray(group["dispersion_nm_pix"], dtype=float)
-        resolving_power = np.asarray(group["resolving_power_R"], dtype=float)
-        spatial_fwhm_pix = np.asarray(group["spatial_fwhm_pix"], dtype=float)
-        wave_over_dispersion = wave_nm / dispersion_nm_pix
-        finite_scale = wave_over_dispersion[
-            np.isfinite(wave_over_dispersion) & (wave_over_dispersion > 0)
-        ]
-        typical_wave_over_dispersion = (
-            float(np.nanmedian(finite_scale)) if finite_scale.size else np.nan
-        )
-        with np.errstate(divide="ignore", invalid="ignore"):
-            typical_spectral_element_width_pix = (
-                typical_wave_over_dispersion / resolving_power
-            )
-            resel_footprint_pix = (
-                typical_spectral_element_width_pix * spatial_fwhm_pix
-            )
+        wave_nm = group["wave_nm"]
+        dispersion_nm_pix = group["dispersion_nm_pix"]
+        resolving_power = group["resolving_power_R"]
+        spatial_fwhm_pix = group["spatial_fwhm_pix"]
+        spectral_fwhm_pix = group["spectral_fwhm_pix"][0]
+        resel_footprint_pix = spectral_fwhm_pix * spatial_fwhm_pix
+
         rows.append({
             "channel": channel,
             "image_plane_id": image_plane_id,
             "n_traces": len({str(value) for value in group["trace_id"]}),
-            "wave_min_nm": float(np.nanmin(wave_nm)),
-            "wave_max_nm": float(np.nanmax(wave_nm)),
-            "dispersion_min_nm_pix": float(np.nanmin(
-                dispersion_nm_pix,
-            )),
-            "dispersion_median_nm_pix": float(np.nanmedian(
-                dispersion_nm_pix,
-            )),
-            "dispersion_max_nm_pix": float(np.nanmax(
-                dispersion_nm_pix,
-            )),
-            "nyquist_R_min": float(np.nanmin(
-                np.asarray(group["nyquist_resolving_power_R"], dtype=float),
-            )),
-            "nyquist_R_median": float(np.nanmedian(
-                np.asarray(group["nyquist_resolving_power_R"], dtype=float),
-            )),
-            "nyquist_R_max": float(np.nanmax(
-                np.asarray(group["nyquist_resolving_power_R"], dtype=float),
-            )),
-            "trace_R_min": float(np.nanmin(resolving_power)),
-            "trace_R_median": float(np.nanmedian(resolving_power)),
-            "trace_R_max": float(np.nanmax(resolving_power)),
-            "spectral_element_width_min_pix": float(np.nanmin(
-                np.asarray(group["spectral_element_width_pix"], dtype=float),
-            )),
-            "spectral_element_width_median_pix": float(np.nanmedian(
-                np.asarray(group["spectral_element_width_pix"], dtype=float),
-            )),
-            "spectral_element_width_max_pix": float(np.nanmax(
-                np.asarray(group["spectral_element_width_pix"], dtype=float),
-            )),
-            "typical_spectral_element_width_min_pix": float(np.nanmin(
-                typical_spectral_element_width_pix,
-            )),
-            "typical_spectral_element_width_median_pix": float(np.nanmedian(
-                typical_spectral_element_width_pix,
-            )),
-            "typical_spectral_element_width_max_pix": float(np.nanmax(
-                typical_spectral_element_width_pix,
-            )),
-            "resel_footprint_min_pix": float(np.nanmin(resel_footprint_pix)),
-            "resel_footprint_median_pix": float(np.nanmedian(resel_footprint_pix)),
-            "resel_footprint_max_pix": float(np.nanmax(resel_footprint_pix)),
-            "design_R_median": float(np.nanmedian(
-                np.asarray(group["design_resolving_power_R"], dtype=float),
-            )),
-            "nominal_fwhm_pix": float(np.nanmedian(
-                np.asarray(group["nominal_fwhm_pix"], dtype=float),
-            )),
-            "nominal_slit_width_arcsec": float(np.nanmedian(
-                np.asarray(group["nominal_slit_width_arcsec"], dtype=float),
-            )),
-            "active_slit_width_arcsec": float(np.nanmedian(
-                np.asarray(group["active_slit_width_arcsec"], dtype=float),
-            )),
-            "seeing_fwhm_median_arcsec": float(np.nanmedian(
-                np.asarray(group["seeing_fwhm_arcsec"], dtype=float),
-            )),
-            "pixel_scale_arcsec_pix": float(np.nanmedian(
-                np.asarray(group["pixel_scale_arcsec_pix"], dtype=float),
-            )),
-            "spatial_fwhm_min_pix": float(np.nanmin(spatial_fwhm_pix)),
-            "spatial_fwhm_median_pix": float(np.nanmedian(spatial_fwhm_pix)),
-            "spatial_fwhm_max_pix": float(np.nanmax(spatial_fwhm_pix)),
+            "wave_min_nm": np.min(wave_nm),
+            "wave_max_nm": np.max(wave_nm),
+            "dispersion_min_nm_pix": np.min(dispersion_nm_pix),
+            "dispersion_median_nm_pix": np.median(dispersion_nm_pix),
+            "dispersion_max_nm_pix": np.max(dispersion_nm_pix),
+            "trace_R_min": np.min(resolving_power),
+            "trace_R_median": np.median(resolving_power),
+            "trace_R_max": np.max(resolving_power),
+            "spectral_fwhm_pix": spectral_fwhm_pix,
+            "resel_footprint_min_pix": np.min(resel_footprint_pix),
+            "resel_footprint_median_pix": np.median(resel_footprint_pix),
+            "resel_footprint_max_pix": np.max(resel_footprint_pix),
+            "active_slit_width_arcsec": group["active_slit_width_arcsec"][0],
+            "seeing_fwhm_median_arcsec": np.median(
+                group["seeing_fwhm_arcsec"],
+            ),
+            "pixel_scale_arcsec_pix": group["pixel_scale_arcsec_pix"][0],
+            "spatial_fwhm_min_pix": np.min(spatial_fwhm_pix),
+            "spatial_fwhm_median_pix": np.median(spatial_fwhm_pix),
+            "spatial_fwhm_max_pix": np.max(spatial_fwhm_pix),
         })
     return Table(rows=sorted(rows, key=lambda row: row["image_plane_id"]))
 
@@ -1183,6 +1021,7 @@ def trace_resolution_summary_display_table(table: Table):
                 f"{float(row['wave_max_nm']):.0f}"
             ),
             "slit": f"{float(row['active_slit_width_arcsec']):.2f}\"",
+            "spec FWHM pix": f"{float(row['spectral_fwhm_pix']):.2f}",
             "disp nm/pix": _compact_range(
                 row["dispersion_min_nm_pix"],
                 row["dispersion_max_nm_pix"],
@@ -1194,13 +1033,7 @@ def trace_resolution_summary_display_table(table: Table):
                 precision=1,
                 scale=1000.0,
             ),
-            "nyq R k": _compact_range(
-                row["nyquist_R_min"],
-                row["nyquist_R_max"],
-                precision=1,
-                scale=1000.0,
-            ),
-            "pix/resel": _compact_range(
+            "resel pix": _compact_range(
                 row["resel_footprint_min_pix"],
                 row["resel_footprint_max_pix"],
                 precision=1,

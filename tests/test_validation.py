@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from astropy import units as u
 from astropy.io import fits
 from astropy.table import Table
@@ -177,18 +178,6 @@ class FakeTraceList:
         }
 
 
-class ConstantGradient:
-    def __init__(self, dx, dy):
-        self.dx = dx
-        self.dy = dy
-
-    def gradient(self):
-        return (
-            lambda x, y: np.full(np.asarray(x).shape, self.dx, dtype=float),
-            lambda x, y: np.full(np.asarray(x).shape, self.dy, dtype=float),
-        )
-
-
 class FakeGeometryTrace:
     trace_id = "B_1"
     wave_min = 1.0
@@ -200,17 +189,16 @@ class FakeGeometryTrace:
             "aperture_id": 0,
             "image_plane_id": 0,
             "extension_id": 2,
-            "nominal_fwhm_pix": 4.0,
             "nominal_slit_width": 0.7,
-            "design_res": 20000.0,
+            "plate_scale": 17.5,
         }
-        self.xy2lam = ConstantGradient(1.0, 0.0)
-
-    def xilam2x(self, xi, lam):
-        return np.asarray(lam, dtype=float)
-
-    def xilam2y(self, xi, lam):
-        return np.asarray(xi, dtype=float) / 10.0
+        wave = np.array([1.0, 1.02, 1.05, 1.08, 1.1])
+        self.table = Table({
+            "wavelength": np.tile(wave, 3) * u.um,
+            "s": np.repeat([-1.0, 0.0, 1.0], wave.size) * u.arcsec,
+            "x": np.tile([-2.0, -1.0, 0.0, 1.0, 2.0], 3) * u.mm,
+            "y": np.repeat([-0.1, 0.0, 0.1], wave.size) * u.mm,
+        })
 
 
 class FakeGeometryTraceList:
@@ -218,10 +206,59 @@ class FakeGeometryTraceList:
         self.spectral_traces = {"B_1": FakeGeometryTrace()}
 
 
+class FakeSpectrograph:
+    def __init__(self, orders):
+        self.orders = np.asarray(orders, dtype=int)
+        self.nominal_pixels_per_res_elem = 4.0
+        self.detector = type(
+            "FakeDetector",
+            (),
+            {"pixel_size": 0.01 * u.mm},
+        )()
+        self.dispersion_focal_length = 1.0 * u.mm
+        self.pixel_scale = 0.01 * u.rad
+        self.grating = type(
+            "FakeGrating",
+            (),
+            {
+                "beta": staticmethod(
+                    lambda wave, order: np.zeros(wave.size) * u.rad
+                ),
+                "angular_dispersion": staticmethod(
+                    lambda order, beta: np.ones(beta.size) * u.rad / u.um
+                ),
+            },
+        )()
+
+    def wavelength_to_x_pixel(self, wave, order):
+        return wave.to_value(u.um) * 100 * u.dimensionless_unscaled
+
+    def wavelength_to_y_pixel(self, wave):
+        return wave.to_value(u.um) * 50 * u.dimensionless_unscaled
+
+    def order_mask(self, wave, fsr_edge=False):
+        assert fsr_edge
+        return np.array([
+            (wave.to_value(u.um) >= 1.02)
+            & (wave.to_value(u.um) <= 1.08)
+        ])
+
+
+class FakeCurrentSlit:
+    data = Table({"y": [-0.35, 0.35] * u.arcsec})
+
+
+class FakeSlitWheel:
+    current_slit = FakeCurrentSlit()
+
+
 class FakeTraceEfficiency:
     include = True
     display_name = "trace_eff_analytical"
     meta = {"name": display_name}
+
+    def __init__(self, spectrographs=None):
+        self._spectrographs = spectrographs or {}
 
     def efficiency_generator(self, trace_id, wave):
         return np.full(wave.size, 0.9)
@@ -329,6 +366,9 @@ class FakeNamedSelector:
         self.display_name = name
         self.meta = {"name": name, "selector_key": selector_key}
         self.wheel_effects = effects
+
+    def get_effect(self, selector_value):
+        return self.wheel_effects.get(selector_value)
 
 
 class FakePSFEffect:
@@ -1330,6 +1370,14 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
     train.optics_manager = type("FakeOptics", (), {
         "all_effects": [
             named_effect(FakeGeometryTraceList(), "trace_list_analytical"),
+            FakeTraceEfficiency({
+                "B": FakeSpectrograph([1]),
+            }),
+            FakeNamedSelector(
+                "slitwheel_selector",
+                "aperture_id",
+                {0: FakeSlitWheel()},
+            ),
         ],
     })()
     monkeypatch.setattr(
@@ -1349,54 +1397,46 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
     table = val.trace_resolution_diagnostic_table(train, samples_per_trace=3)
 
     assert len(table) == 3
+    np.testing.assert_allclose(table["wave_nm"], [1020.0, 1050.0, 1080.0])
     np.testing.assert_allclose(table["dispersion_nm_pix"], [10.0, 10.0, 10.0])
-    np.testing.assert_allclose(table["resolving_power_R"], [25.0, 26.25, 27.5])
     np.testing.assert_allclose(
-        table["spectral_element_width_pix"],
+        table["resolving_power_R"],
+        [25.5, 26.25, 27.0],
+    )
+    np.testing.assert_allclose(
+        table["spectral_fwhm_pix"],
         [4.0, 4.0, 4.0],
     )
     np.testing.assert_allclose(table["spatial_fwhm_pix"], [5.0, 5.0, 5.0])
+    np.testing.assert_allclose(table["resel_footprint_pix"], [20.0] * 3)
+    np.testing.assert_allclose(table["detector_x_mm"], [-1.0, 0.0, 1.0])
+    assert "detector_x_pix" not in table.colnames
+
+    capped = val.trace_resolution_diagnostic_table(train, samples_per_trace=2)
+    np.testing.assert_allclose(capped["wave_nm"], [1020.0, 1080.0])
 
     summary = val.trace_resolution_summary_table(table)
     assert list(summary["channel"]) == ["B"]
     np.testing.assert_allclose(summary["trace_R_median"], [26.25])
-    np.testing.assert_allclose(summary["spectral_element_width_median_pix"], [4.0])
-    np.testing.assert_allclose(
-        summary["typical_spectral_element_width_median_pix"],
-        [4.0],
-    )
-    np.testing.assert_allclose(summary["resel_footprint_min_pix"], [19.09090909])
-    np.testing.assert_allclose(summary["resel_footprint_max_pix"], [21.0])
+    np.testing.assert_allclose(summary["spectral_fwhm_pix"], [4.0])
+    np.testing.assert_allclose(summary["resel_footprint_min_pix"], [20.0])
+    np.testing.assert_allclose(summary["resel_footprint_max_pix"], [20.0])
 
     display_table = val.trace_resolution_summary_display_table(summary)
     assert list(display_table.columns) == [
-        "ch", "id", "orders", "wave nm", "slit", "disp nm/pix", "R k",
-        "nyq R k", "pix/resel", "seeing",
+        "ch", "id", "orders", "wave nm", "slit", "spec FWHM pix",
+        "disp nm/pix", "R k", "resel pix", "seeing",
     ]
     assert display_table.loc[0, "R k"] == "0.0"
-    assert display_table.loc[0, "pix/resel"] == "19.1-21.0"
+    assert display_table.loc[0, "spec FWHM pix"] == "4.00"
+    assert display_table.loc[0, "resel pix"] == "20.0"
 
 
-def test_trace_resolution_diagnostic_table_requires_full_slit_on_detector(
+def test_trace_resolution_diagnostic_table_requires_configured_fwhm(
     monkeypatch,
 ):
-    class EdgeTrace(FakeGeometryTrace):
-        trace_id = "B_edge"
-        wave_min = 0.0
-        wave_max = 2.0
-        table = Table({"s": [-1.0, 0.0, 1.0]})
-
-        def xilam2x(self, xi, lam):
-            return np.zeros(np.asarray(lam, dtype=float).shape)
-
-        def xilam2y(self, xi, lam):
-            return 0.2 + 0.01 * np.asarray(xi, dtype=float) - 0.1 * np.asarray(
-                lam,
-                dtype=float,
-            )
-
-    class EdgeTraceList:
-        spectral_traces = {"B_edge": EdgeTrace()}
+    spectrograph = FakeSpectrograph([1])
+    del spectrograph.nominal_pixels_per_res_elem
 
     header = fits.Header({
         "NAXIS": 2,
@@ -1423,7 +1463,13 @@ def test_trace_resolution_diagnostic_table_requires_full_slit_on_detector(
     train.image_planes = [FakeImagePlane(header)]
     train.optics_manager = type("FakeOptics", (), {
         "all_effects": [
-            named_effect(EdgeTraceList(), "trace_list_analytical"),
+            named_effect(FakeGeometryTraceList(), "trace_list_analytical"),
+            FakeTraceEfficiency({"B": spectrograph}),
+            FakeNamedSelector(
+                "slitwheel_selector",
+                "aperture_id",
+                {0: FakeSlitWheel()},
+            ),
         ],
     })()
     monkeypatch.setattr(
@@ -1440,10 +1486,8 @@ def test_trace_resolution_diagnostic_table_requires_full_slit_on_detector(
         ),
     )
 
-    table = val.trace_resolution_diagnostic_table(train, samples_per_trace=3)
-
-    assert list(table["sample_index"]) == [0, 1]
-    assert list(table["footprint_samples_on_detector"]) == [3, 3]
+    with pytest.raises(AttributeError, match="nominal_pixels_per_res_elem"):
+        val.trace_resolution_diagnostic_table(train, samples_per_trace=3)
 
 
 def test_detector_background_budget_table_combines_detector_terms():
