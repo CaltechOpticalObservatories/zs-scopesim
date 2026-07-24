@@ -884,6 +884,8 @@ def trace_resolution_diagnostic_table(
 
         for trace in traces:
             image_plane_id = int(trace.meta["image_plane_id"])
+            image_plane_header = ztrain.image_planes[image_plane_id].header
+            detector_pixel_size_mm = trace.meta["pixel_size"]
             pixel_scale_arcsec = np.sqrt(
                 _image_plane_pixel_area(ztrain, image_plane_id).to_value(u.arcsec**2))
 
@@ -933,6 +935,9 @@ def trace_resolution_diagnostic_table(
                     "wave_nm": wave_nm[idx],
                     "detector_x_mm": detector_x_mm[idx],
                     "detector_y_mm": detector_y_mm[idx],
+                    "detector_pixel_size_mm": detector_pixel_size_mm,
+                    "detector_naxis1": image_plane_header["NAXIS1"],
+                    "detector_naxis2": image_plane_header["NAXIS2"],
                     "spectrograph_x_pix": spectrograph_x_pix[idx],
                     "spectrograph_y_pix": spectrograph_y_pix[idx],
                     "pixel_scale_arcsec_pix": pixel_scale_arcsec,

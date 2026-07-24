@@ -856,6 +856,9 @@ def test_resolving_power_echellogram_smoke():
             "sample_index": 0,
             "detector_x_mm": -1.0,
             "detector_y_mm": 0.2,
+            "detector_pixel_size_mm": 0.01,
+            "detector_naxis1": 200,
+            "detector_naxis2": 50,
             "wave_nm": 1000.0,
             "dispersion_nm_pix": 0.05,
             "resolving_power_R": 20000.0,
@@ -870,6 +873,9 @@ def test_resolving_power_echellogram_smoke():
             "sample_index": 1,
             "detector_x_mm": 1.0,
             "detector_y_mm": 0.2,
+            "detector_pixel_size_mm": 0.01,
+            "detector_naxis1": 200,
+            "detector_naxis2": 50,
             "wave_nm": 1005.0,
             "dispersion_nm_pix": 0.05,
             "resolving_power_R": 20100.0,
@@ -886,6 +892,9 @@ def test_resolving_power_echellogram_smoke():
     assert len(axes[0, 0].collections[0].get_segments()) == 2
     assert "FWHM" in axes[0, 0].get_title()
     assert "spat" in axes[0, 0].get_title()
-    assert axes[0, 0].get_xlabel() == "Focal-plane x [mm]"
-    assert axes[0, 0].get_ylabel() == "Focal-plane y [mm]"
+    assert axes[0, 0].get_xlabel() == "Pixel"
+    assert axes[0, 0].get_ylabel() == "Pixel"
+    np.testing.assert_allclose(axes[0, 0].get_xlim(), [0, 200])
+    np.testing.assert_allclose(axes[0, 0].get_ylim(), [0, 50])
+    np.testing.assert_allclose(axes[0, 0].collections[0].get_segments()[0][1], [0, 45])
     fig.clf()

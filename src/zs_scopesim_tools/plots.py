@@ -2515,9 +2515,7 @@ def show_and_save_hdul(
         f"detector {idx}" for idx in range(len(readouts))
     ]
     if len(titles) != len(readouts):
-        raise ValueError(
-            f"titles and hdul must have the same length: {len(titles)} != {len(readouts)}"
-        )
+        raise ValueError(f"titles and hdul must have the same length: {len(titles)} != {len(readouts)}")
     if reference_readouts is not None and len(reference_readouts) != len(readouts):
         raise ValueError(
             "reference_hdul and hdul contain different readout counts: "
@@ -2547,17 +2545,8 @@ def show_and_save_hdul(
     if reference_hdul is None and (show_delta or save_reference or save_delta):
         raise ValueError("reference_hdul is required to show or save reference/delta outputs.")
 
-    files: dict[str, list[Path]] = {
-        "hdul": [],
-        "reference": [],
-        "delta": [],
-        "figures": [],
-    }
-    figures: dict[str, Any] = {
-        "hdul": None,
-        "delta": None,
-        "cross_dispersion": None,
-    }
+    files: dict[str, list[Path]] = {k: [] for k in ("hdul", "reference", "delta", "figures")}
+    figures: dict[str, Any] = {k: None for k in ("hdul", "delta", "cross_dispersion")}
 
     needs_output_dir = (
         save_hdul
@@ -2572,10 +2561,7 @@ def show_and_save_hdul(
         readout_dir = Path(output_dir) / "readouts" / label
         readout_dir.mkdir(parents=True, exist_ok=True)
 
-    delta_images = (
-        _readout_delta_images(readouts, reference_readouts)
-        if reference_readouts is not None else None
-    )
+    delta_images = _readout_delta_images(readouts, reference_readouts) if reference_readouts is not None else None
 
     if show_hdul:
         fig_hdul, _axes = plot_readout_overview(
@@ -2631,10 +2617,7 @@ def show_and_save_hdul(
             title_suffix=cut_suffix,
             ylabel=cross_dispersion_ylabel,
         )
-        _set_figure_suptitle(
-            fig_cut,
-            cross_dispersion_figure_title or figure_title,
-        )
+        _set_figure_suptitle(fig_cut, cross_dispersion_figure_title or figure_title)
         figures["cross_dispersion"] = fig_cut
 
     if readout_dir is not None and save_figures:
@@ -2668,17 +2651,10 @@ def show_and_save_hdul(
                 name="DELTA",
             )
             path = readout_dir / f"{label}_delta_{title}.fits"
-            fits.HDUList([fits.PrimaryHDU(), image_hdu]).writeto(
-                path,
-                overwrite=True,
-            )
+            fits.HDUList([fits.PrimaryHDU(), image_hdu]).writeto(path, overwrite=True)
             files["delta"].append(path)
 
-    return {
-        "figures": figures,
-        "files": files,
-        "directory": readout_dir,
-    }
+    return {"figures": figures, "files": files, "directory": readout_dir}
 
 
 def plot_resolving_power_echellogram(
@@ -2687,14 +2663,19 @@ def plot_resolving_power_echellogram(
     cmap: str = "viridis",
     vmin: float | None = None,
     vmax: float | None = None,
-    trace_width_fraction: float = 0.2,
+    trace_width_fraction: float | list[float] | tuple[float, ...] = 0.2,
 ):
-    """Plot resolving power on the trace effect's physical focal plane."""
+    """Plot resolving power on the detector planes."""
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
     from matplotlib.colors import Normalize
 
     image_plane_ids = sorted({int(value) for value in table["image_plane_id"]})
+    width_fractions = (
+        trace_width_fraction
+        if isinstance(trace_width_fraction, (list, tuple))
+        else [trace_width_fraction] * len(image_plane_ids)
+    )
     fig, axes = _detector_grid_axes(len(image_plane_ids), row_height=3.8)
     values = table["resolving_power_R"] / 1000.0
     vmin = np.min(values) if vmin is None else vmin
@@ -2710,11 +2691,12 @@ def plot_resolving_power_echellogram(
     plane_collections = []
     plane_centres = []
 
-    for ax, image_plane_id in zip(axes.flat, image_plane_ids, strict=False):
+    for panel_index, (ax, image_plane_id) in enumerate(zip(axes.flat, image_plane_ids, strict=False)):
         rows = table[image_plane_array == image_plane_id]
         row_values = values[image_plane_array == image_plane_id]
-        x_mm = rows["detector_x_mm"]
-        y_mm = rows["detector_y_mm"]
+        pixel_size_mm = rows["detector_pixel_size_mm"][0]
+        detector_naxis1 = rows["detector_naxis1"][0]
+        detector_naxis2 = rows["detector_naxis2"][0]
 
         trace_ids = rows["trace_id"]
         collections = []
@@ -2724,21 +2706,15 @@ def plot_resolving_power_echellogram(
             trace_rows = rows[trace_mask]
             trace_values = row_values[trace_mask]
             order = np.argsort(trace_rows["sample_index"])
-            x = trace_rows["detector_x_mm"][order]
-            y = trace_rows["detector_y_mm"][order]
+            x = trace_rows["detector_x_mm"][order] / pixel_size_mm + detector_naxis1 / 2
+            y = trace_rows["detector_y_mm"][order] / pixel_size_mm + detector_naxis2 / 2
             trace_values = trace_values[order]
             points = np.column_stack((x, y))
             midpoints = (points[:-1] + points[1:]) / 2
             starts = np.concatenate((points[:1], midpoints))
             ends = np.concatenate((midpoints, points[-1:]))
             segments = np.stack((starts, points, ends), axis=1)
-            collection = LineCollection(
-                segments,
-                cmap=colormap,
-                norm=norm,
-                linewidths=1.1,
-                zorder=2,
-            )
+            collection = LineCollection(segments, cmap=colormap, norm=norm, linewidths=1.1, zorder=2)
             collection.set_array(trace_values)
             ax.add_collection(collection)
             artist = collection
@@ -2752,48 +2728,43 @@ def plot_resolving_power_echellogram(
         resolving_power = rows["resolving_power_R"]
         seeing = np.median(rows["seeing_fwhm_arcsec"])
         spatial = np.median(rows["spatial_fwhm_pix"])
-        diagnostic = (
-            f"R {np.min(resolving_power) / 1000.0:.1f}-"
-            f"{np.max(resolving_power) / 1000.0:.1f}k"
-        )
+        diagnostic = f"R {np.min(resolving_power) / 1000.0:.1f}-{np.max(resolving_power) / 1000.0:.1f}k"
         ax.set_title(
             f"{'/'.join(channels)}\n"
-            f"{diagnostic}, {seeing:.2f}\"/{spatial:.1f} pix "
-            "$FWHM_{spat}$",
-            pad=8,
+            f"{diagnostic}, {seeing:.2f}\"/{spatial:.1f} pix $FWHM_{{spat}}$", pad=8,
         )
-        x_pad = max(0.05 * np.ptp(x_mm), 0.05)
-        y_pad = max(0.05 * np.ptp(y_mm), 0.05)
-        ax.set_xlim(np.min(x_mm) - x_pad, np.max(x_mm) + x_pad)
-        ax.set_ylim(np.min(y_mm) - y_pad, np.max(y_mm) + y_pad)
+        ax.set_xlim(0, detector_naxis1)
+        ax.set_ylim(0, detector_naxis2)
+        ax.set_xticks([0, detector_naxis1 / 2, detector_naxis1])
+        ax.set_yticks([0, detector_naxis2 / 2, detector_naxis2])
         ax.set_aspect("equal", adjustable="box")
         ax.grid(alpha=0.15, lw=0.5)
-        ax.set_xlabel("Focal-plane x [mm]")
-        ax.set_ylabel("Focal-plane y [mm]")
+        row, column = divmod(panel_index, axes.shape[1])
+        ax.set_xlabel("Pixel" if row == axes.shape[0] - 1 else "")
+        ax.set_ylabel("Pixel" if column == 0 else "")
+        ax.tick_params(labelbottom=row == axes.shape[0] - 1, labelleft=column == 0)
 
     for ax in axes.flat[len(image_plane_ids):]:
         ax.axis("off")
-    cbar = fig.colorbar(
-        artist,
-        ax=axes.ravel().tolist()[:len(image_plane_ids)],
-        shrink=0.86,
-        pad=0.02,
-    )
+    cbar = fig.colorbar(artist, ax=axes.ravel().tolist()[:len(image_plane_ids)], shrink=0.86, pad=0.02)
     cbar.set_label("Resolving power [k]")
 
     _center_detector_axes(axes, len(image_plane_ids))
     fig.canvas.draw()
-    for ax, collections, centres in zip(
-        axes.flat, plane_collections, plane_centres, strict=False,
+    for width_fraction, ax, collections, centres in zip(
+        width_fractions,
+        axes.ravel()[:len(image_plane_ids)],
+        plane_collections,
+        plane_centres,
+        strict=True,
     ):
         if len(centres) < 2:
             continue
         centres = ax.transData.transform(centres)
-        distances = np.linalg.norm(
-            centres[:, None, :] - centres[None, :, :], axis=2)
+        distances = np.linalg.norm(centres[:, None, :] - centres[None, :, :], axis=2)
         np.fill_diagonal(distances, np.inf)
         spacing = np.median(np.min(distances, axis=1))
-        linewidth = trace_width_fraction * spacing * 72 / fig.dpi
+        linewidth = width_fraction * spacing * 72 / fig.dpi
         for collection in collections:
             collection.set_linewidth(linewidth)
     return fig, axes

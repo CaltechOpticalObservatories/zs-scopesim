@@ -191,6 +191,7 @@ class FakeGeometryTrace:
             "extension_id": 2,
             "nominal_slit_width": 0.7,
             "plate_scale": 17.5,
+            "pixel_size": 0.01,
         }
         wave = np.array([1.0, 1.02, 1.05, 1.08, 1.1])
         self.table = Table({
@@ -1410,6 +1411,9 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
     np.testing.assert_allclose(table["spatial_fwhm_pix"], [5.0, 5.0, 5.0])
     np.testing.assert_allclose(table["resel_footprint_pix"], [20.0] * 3)
     np.testing.assert_allclose(table["detector_x_mm"], [-1.0, 0.0, 1.0])
+    np.testing.assert_allclose(table["detector_pixel_size_mm"], [0.01] * 3)
+    np.testing.assert_allclose(table["detector_naxis1"], [200] * 3)
+    np.testing.assert_allclose(table["detector_naxis2"], [50] * 3)
     assert "detector_x_pix" not in table.colnames
 
     capped = val.trace_resolution_diagnostic_table(train, samples_per_trace=2)
