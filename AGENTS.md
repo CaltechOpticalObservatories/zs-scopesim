@@ -13,8 +13,7 @@ This repository favors transparent, directly inspectable scientific code over ge
 ### Failure behavior
 
 - Let ordinary `KeyError`, `AttributeError`, unit errors, shape errors, and indexing errors propagate when they already identify the broken assumption.
-- “Fail clearly” means do not fabricate a fallback result. It does not mean wrapping every operation in custom validation and verbose exceptions.
-- Add explicit validation only for a scientifically ambiguous failure that would otherwise produce a plausible but wrong result.
+- Do not wrap every operation in custom validation and verbose exceptions.
 - Do not use `try`/`except`, `getattr`, `.get`, `nan*` operations, coercions, or default values to conceal missing or inconsistent physical configuration.
 - Never silently substitute conventional values such as Nyquist sampling, two pixels, median parameters, or generic defaults.
 
