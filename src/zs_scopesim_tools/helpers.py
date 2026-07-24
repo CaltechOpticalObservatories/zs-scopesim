@@ -189,6 +189,13 @@ def ignore_warnings() -> None:
         module=r"traitlets\.traitlets",
     )
 
+    warnings.filterwarnings(
+        "ignore",
+        message=r"The fov_grid method is deprecated.*",
+        category=DeprecationWarning,
+        module=r"scopesim\.effects\.spectral_trace_list",
+    )
+
 
 def format_yappi_stats(sort: str = "tsub") -> str:
     """Return formatted yappi function stats for notebook display."""
