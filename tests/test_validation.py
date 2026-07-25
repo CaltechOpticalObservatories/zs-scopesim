@@ -383,7 +383,10 @@ class AOEnhanceablePSF:
     display_name = "seeing_psf"
     alpha = 3.25
 
-    def __init__(self, scale=0.2, *, is_absolute=True, fwhm=0.6):
+    def __init__(
+        self, scale=0.2, *, is_absolute=True, fwhm=0.6,
+        enable_ao=False,
+    ):
         self.scale = scale
         self.fwhm_arcsec = fwhm
         self.seen_wave_units = []
@@ -391,6 +394,7 @@ class AOEnhanceablePSF:
         self.meta = {
             "name": self.display_name,
             "is_absolute": is_absolute,
+            "enable_ao": enable_ao,
         }
 
     def fwhm(self, wave):
@@ -1135,6 +1139,27 @@ def test_build_slit_loss_data_includes_ao_mode_when_psf_supports_it():
     assert np.all(curves["ao_zenith"]["loss"] < curves["no_ao_zenith"]["loss"])
     assert set(effect.seen_wave_units) == {u.um}
     assert set(effect.seen_fwhm_units) == {u.um}
+    assert data["active_psf_mode"] == "no_ao"
+    assert data["psf_modes"]["no_ao"]["current"]
+    assert not data["psf_modes"]["ao"]["current"]
+
+
+def test_build_slit_loss_data_marks_configured_ao_mode_current():
+    effect = AOEnhanceablePSF(enable_ao=True)
+    data = val.build_slit_loss_data(
+        FakeAOTrain(effect),
+        arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
+        n_wave=5,
+        slit_length=4.0 * u.arcsec,
+        grid_step=0.25 * u.arcsec,
+    )
+
+    assert data["active_psf_mode"] == "ao"
+    assert not data["psf_modes"]["no_ao"]["current"]
+    assert data["psf_modes"]["ao"]["current"]
+    assert data["arms"]["VIS"]["curves"][
+        "ao_current_adc_residual"
+    ]["current_psf"]
 
 
 def test_build_slit_loss_data_handles_relative_dimensionless_ao_scale():

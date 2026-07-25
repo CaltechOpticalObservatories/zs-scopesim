@@ -451,6 +451,7 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
     import matplotlib.pyplot as plt
 
     wave = data["wave_nm"].to_value(u.nm)
+    base_width = plt.rcParams["lines.linewidth"]
     fig, axes = plt.subplots(
         2, 3, figsize=(16, 7.5), sharex=True, sharey=True,
         constrained_layout=True,
@@ -491,7 +492,7 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
             values = _plot_spectral_surface_brightness(values)
             ax.plot(
                 wave, np.where(values > 0, values, np.nan),
-                lw=1.0, ls="--", alpha=0.8,
+                lw=0.8 * base_width, ls="--", alpha=0.8,
                 color=group_colors.get(name, "0.5"),
                 label=f"pre {name}",
             )
@@ -499,7 +500,7 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
             values = _plot_spectral_surface_brightness(values)
             ax.plot(
                 wave, np.where(values > 0, values, np.nan),
-                lw=1.1, ls="-", alpha=0.8,
+                lw=0.9 * base_width, ls="-", alpha=0.8,
                 color=group_colors.get(name, "0.5"),
                 label=f"post {name}",
             )
@@ -515,7 +516,7 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
                 ),
                 np.nan,
             ),
-            lw=2.0,
+            lw=1.35 * base_width,
             color="tab:purple", alpha=0.9,
             label="pre total before trace QE", zorder=8,
         )
@@ -528,7 +529,7 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
         ax.plot(
             wave,
             np.where(post_without_block > 0, post_without_block, np.nan),
-            lw=2.0,
+            lw=1.35 * base_width,
             ls="--",
             color="0.35",
             alpha=0.9,
@@ -541,7 +542,7 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
         ax.plot(
             wave,
             np.where(post_after_qe > 0, post_after_qe, np.nan),
-            lw=2.4,
+            lw=1.6 * base_width,
             alpha=0.95,
             label="post diffuse with IR block+QE", zorder=10,
         )
@@ -551,7 +552,7 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
             ax.plot(
                 wave,
                 np.where(blocked_delta > 0, blocked_delta, np.nan),
-                lw=1.8,
+                lw=1.2 * base_width,
                 ls="-.",
                 color="tab:brown",
                 alpha=0.9,
@@ -579,7 +580,7 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
             0.04,
             "peak " + "\n".join(peak_lines),
             transform=ax.transAxes,
-            fontsize=10,
+            fontsize="small",
             va="bottom",
             ha="left",
             bbox={"boxstyle": "round,pad=0.25", "fc": "none",
@@ -613,6 +614,7 @@ def plot_detector_background_budget(table: Table):
     """Plot additive detector-background and noise terms by channel."""
     import matplotlib.pyplot as plt
 
+    base_width = plt.rcParams["lines.linewidth"]
     channels = [str(value) for value in table["channel"]]
     x = np.arange(len(channels))
     fig, axes = plt.subplots(
@@ -629,7 +631,9 @@ def plot_detector_background_budget(table: Table):
         additive_signal = diffuse + dark
     signal_ax.bar(x, diffuse, width=0.7, label="post-disperser diffuse")
     signal_ax.bar(x, dark, width=0.7, bottom=diffuse, label="dark current")
-    signal_ax.plot(x, bias, "o", color="black", label="bias offset")
+    signal_ax.plot(
+        x, bias, "o", color=plt.rcParams["text.color"], label="bias offset",
+    )
     if "full_well_e" in table.colnames:
         full_well = np.asarray(table["full_well_e"], dtype=float)
         first_full_well = True
@@ -638,7 +642,7 @@ def plot_detector_background_budget(table: Table):
                 continue
             signal_ax.hlines(
                 well_depth, xi - 0.36, xi + 0.36,
-                colors="tab:red", linewidth=2.5,
+                colors="tab:red", linewidth=1.7 * base_width,
                 label="full well" if first_full_well else None,
             )
             first_full_well = False
@@ -704,7 +708,11 @@ def plot_detector_background_budget(table: Table):
             f"(max {max_fraction:.2g}x)",
             transform=signal_ax.transAxes, va="top", ha="left",
             color="tab:red", fontsize="small", fontweight="bold",
-            bbox={"facecolor": "white", "edgecolor": "tab:red", "alpha": 0.85},
+            bbox={
+                "facecolor": plt.rcParams["axes.facecolor"],
+                "edgecolor": "tab:red",
+                "alpha": 0.85,
+            },
         )
     elif near_saturated:
         signal_ax.text(
@@ -712,7 +720,11 @@ def plot_detector_background_budget(table: Table):
             f"Near full well: {', '.join(near_saturated)}",
             transform=signal_ax.transAxes, va="top", ha="left",
             color="tab:orange", fontsize="small",
-            bbox={"facecolor": "white", "edgecolor": "tab:orange", "alpha": 0.85},
+            bbox={
+                "facecolor": plt.rcParams["axes.facecolor"],
+                "edgecolor": "tab:orange",
+                "alpha": 0.85,
+            },
         )
     signal_ax.legend(frameon=False, fontsize="small")
 
@@ -721,7 +733,7 @@ def plot_detector_background_budget(table: Table):
         ("diffuse shot", "diffuse_shot_noise_e_rms", "tab:blue"),
         ("dark shot", "dark_shot_noise_e_rms", "tab:green"),
         ("read", "read_noise_e_rms", "tab:orange"),
-        ("total", "total_noise_e_rms", "black"),
+        ("total", "total_noise_e_rms", plt.rcParams["text.color"]),
     ]
     offsets = (np.arange(len(noise_terms)) - 1.5) * width
     for offset, (label, column, color) in zip(offsets, noise_terms, strict=True):
@@ -751,13 +763,17 @@ def _slit_transmission_for_channel(
     channel: Mapping[str, Any],
     slit_loss_data: Mapping[str, Any],
     wave_nm: np.ndarray,
-    slit_curve_name: str,
-) -> np.ndarray:
+    slit_curve_name: str | None,
+) -> tuple[np.ndarray, Mapping[str, Any]]:
     arm_name = _arm_name_for_channel(channel["label"])
     arms = slit_loss_data["arms"]
     if arm_name not in arms:
         raise ValueError(f"slit_loss_data has no {arm_name!r} arm.")
     arm = arms[arm_name]
+    if slit_curve_name is None:
+        slit_curve_name = (
+            f"{slit_loss_data['active_psf_mode']}_current_adc_residual"
+        )
     if slit_curve_name not in arm["curves"]:
         raise ValueError(
             f"{arm_name} slit-loss data has no {slit_curve_name!r} curve."
@@ -765,7 +781,10 @@ def _slit_transmission_for_channel(
     curve = arm["curves"][slit_curve_name]
     arm_wave = u.Quantity(arm["wave_nm"]).to_value(u.nm)
     throughput = np.asarray(curve["throughput"], dtype=float)
-    return np.interp(wave_nm, arm_wave, throughput, left=np.nan, right=np.nan)
+    return (
+        np.interp(wave_nm, arm_wave, throughput, left=np.nan, right=np.nan),
+        curve,
+    )
 
 
 def _order_statistic(
@@ -804,22 +823,45 @@ def plot_transmission_sanity(
     data: Mapping[str, Any],
     *,
     slit_loss_data: Mapping[str, Any] | None = None,
-    slit_curve_name: str = "no_ao_current_adc_residual",
+    slit_curve_name: str | None = None,
     summary_component_alpha: float = 0.38,
     summary_component_linewidth: float = 1.15,
+    show_individual_channels: bool = True,
+    show_combined_channels: bool = True,
+    combined_title: str = "All Channels: Components, Instrument, and Total",
+    exclude_lines: Sequence[str] | None = None,
 ):
     """Plot component-level and all-channel throughput sanity checks."""
     import matplotlib.pyplot as plt
 
+    if not show_individual_channels and not show_combined_channels:
+        raise ValueError(
+            "At least one of show_individual_channels or "
+            "show_combined_channels must be True."
+        )
+
     wave = data["wave_nm"].to_value(u.nm)
-    fig = plt.figure(figsize=(16, 12.5), constrained_layout=True)
-    grid = fig.add_gridspec(3, 3, height_ratios=[1.0, 1.0, 1.35])
-    component_axes = np.array([
-        [fig.add_subplot(grid[row, col]) for col in range(3)]
-        for row in range(2)
-    ])
-    summary_ax = fig.add_subplot(grid[2, :])
+    excluded = set(exclude_lines or ())
+    if show_individual_channels and show_combined_channels:
+        fig = plt.figure(figsize=(16, 12.5), constrained_layout=True)
+        grid = fig.add_gridspec(3, 3, height_ratios=[1.0, 1.0, 1.35])
+        component_axes = np.array([
+            [fig.add_subplot(grid[row, col]) for col in range(3)]
+            for row in range(2)
+        ])
+        summary_ax = fig.add_subplot(grid[2, :])
+    elif show_individual_channels:
+        fig, component_axes = plt.subplots(
+            2, 3, figsize=(16, 8.2), squeeze=False, constrained_layout=True,
+        )
+        summary_ax = None
+    else:
+        fig, summary_ax = plt.subplots(
+            figsize=(16, 5.2), constrained_layout=True,
+        )
+        component_axes = None
     axes = {"components": component_axes, "summary": summary_ax}
+    base_width = plt.rcParams["lines.linewidth"]
 
     cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     channel_colors = {
@@ -836,165 +878,223 @@ def plot_transmission_sanity(
         "other": "0.5",
     }
 
-    for ax, (aperture_id, channel) in zip(
-        component_axes.flat,
-        data["channels"].items(),
-        strict=False,
-    ):
-        for name, values in channel["optics_groups"].items():
-            if name == "ir_blocking_filter":
-                continue
-            ax.plot(
-                wave,
-                values,
-                lw=1.0,
-                alpha=0.8,
-                color=group_colors.get(name, "0.5"),
-                label=name,
+    if component_axes is not None:
+        for ax, channel in zip(
+            component_axes.flat,
+            data["channels"].values(),
+            strict=False,
+        ):
+            for name, values in channel["optics_groups"].items():
+                if name == "ir_blocking_filter" or name in excluded:
+                    continue
+                ax.plot(
+                    wave,
+                    values,
+                    lw=0.8 * base_width,
+                    alpha=0.8,
+                    color=group_colors.get(name, "0.5"),
+                    label=name,
+                )
+            if "dichroics" not in excluded:
+                ax.plot(
+                    wave,
+                    channel["dichroic_total"],
+                    lw=0.95 * base_width,
+                    color="tab:purple",
+                    alpha=0.85,
+                    label="dichroics",
+                )
+            if "spectrograph optics" not in excluded:
+                ax.plot(
+                    wave,
+                    _spectrograph_optics_total(channel),
+                    lw=0.8 * base_width,
+                    ls="-",
+                    color="0.25",
+                    alpha=0.7,
+                    label="spectrograph optics",
+                )
+            for idx, order in enumerate(channel["orders"].values()):
+                if "disperser/order" not in excluded:
+                    ax.plot(
+                        wave,
+                        order["disperser"],
+                        lw=0.8 * base_width,
+                        color="tab:orange",
+                        alpha=0.32,
+                        label="disperser/order" if idx == 0 else None,
+                    )
+                if "trace QE" not in excluded:
+                    ax.plot(
+                        wave,
+                        order["detector_qe"],
+                        lw=0.9 * base_width,
+                        color="tab:red",
+                        alpha=0.8,
+                        label="trace QE" if idx == 0 else None,
+                    )
+                if "instrument" not in excluded:
+                    ax.plot(
+                        wave,
+                        order["instrument"],
+                        lw=0.7 * base_width,
+                        color="tab:brown",
+                        alpha=0.8,
+                        label="instrument" if idx == 0 else None,
+                    )
+            if slit_loss_data is not None:
+                slit_transmission, slit_curve = _slit_transmission_for_channel(
+                    channel, slit_loss_data, wave, slit_curve_name,
+                )
+                slit_width = u.Quantity(
+                    slit_curve["slit_width_arcsec"],
+                ).to_value(u.arcsec)
+                slit_label = (
+                    f'{slit_width:1.1f}" slit, '
+                    f'{"AO" if slit_curve["psf_mode"] == "ao" else "Natural"} '
+                    "seeing"
+                )
+                if slit_label not in excluded:
+                    ax.plot(
+                        wave,
+                        slit_transmission,
+                        lw=0.9 * base_width,
+                        ls=(0, (1, 2)),
+                        color="tab:pink",
+                        alpha=0.9,
+                        label=slit_label,
+                    )
+            wave_min = min(
+                u.Quantity(order["wave_min"]).to_value(u.nm)
+                for order in channel["orders"].values()
             )
-        ax.plot(
-            wave,
-            channel["dichroic_total"],
-            lw=1.2,
-            color="tab:purple",
-            alpha=0.85,
-            label="dichroics",
+            wave_max = max(
+                u.Quantity(order["wave_max"]).to_value(u.nm)
+                for order in channel["orders"].values()
+            )
+            ax.set_title(str(channel["label"]))
+            ax.set_xlim(wave_min, wave_max)
+            ax.set_ylim(0, 1.05)
+            ax.grid(alpha=0.2)
+
+        for ax in component_axes[-1, :]:
+            ax.set_xlabel(r"Wavelength [nm]")
+        for ax in component_axes[:, 0]:
+            ax.set_ylabel("Throughput")
+        for ax in component_axes.flat[len(data["channels"]):]:
+            ax.axis("off")
+
+        component_legend: OrderedDict[str, Any] = OrderedDict()
+        for ax in component_axes.flat:
+            handles, labels = ax.get_legend_handles_labels()
+            for handle, label in zip(handles, labels, strict=True):
+                if label and not label.startswith("_"):
+                    component_legend.setdefault(label, handle)
+        fig.legend(
+            list(component_legend.values()),
+            list(component_legend),
+            loc="outside upper center",
+            ncol=min(7, len(component_legend)),
+            frameon=False,
+            fontsize="small",
         )
-        ax.plot(
-            wave,
-            _spectrograph_optics_total(channel),
-            lw=1.0,
-            ls="--",
-            color="0.25",
-            alpha=0.7,
-            label="spectrograph optics",
+
+    if summary_ax is not None:
+        summary_component_label_used: set[str] = set()
+        for channel in data["channels"].values():
+            label = channel["label"]
+            color = channel_colors[label]
+            if slit_loss_data is not None:
+                slit_transmission, slit_curve = _slit_transmission_for_channel(
+                    channel, slit_loss_data, wave, slit_curve_name,
+                )
+                slit_width = u.Quantity(
+                    slit_curve["slit_width_arcsec"],
+                ).to_value(u.arcsec)
+                slit_label = (
+                    f'{slit_width:1.1f}" slit, '
+                    f'{"AO" if slit_curve["psf_mode"] == "ao" else "Natural"} '
+                    "seeing"
+                )
+            else:
+                slit_transmission = np.ones_like(wave)
+                slit_label = "active slit"
+            summary_components = (
+                ("telescope", channel["telescope_throughput"], ":", 1.1),
+                ("dichroic", channel["dichroic_total"], "-.",
+                 summary_component_linewidth),
+                ("spectrograph optics", _spectrograph_optics_total(channel),
+                 (0, (5, 2)), summary_component_linewidth),
+                (slit_label, slit_transmission, (0, (1, 2)), 1.1),
+                ("trace QE median",
+                 _order_statistic(channel, "detector_qe", np.nanmedian),
+                 (0, (3, 1, 1, 1)), summary_component_linewidth),
+            )
+            for component_name, values, linestyle, linewidth in summary_components:
+                if component_name in excluded:
+                    continue
+                summary_ax.plot(
+                    wave,
+                    values,
+                    lw=linewidth * base_width,
+                    ls=linestyle,
+                    color=color,
+                    alpha=summary_component_alpha,
+                    label=(
+                        component_name
+                        if component_name not in summary_component_label_used
+                        else None
+                    ),
+                )
+                summary_component_label_used.add(component_name)
+
+            for idx, order in enumerate(channel["orders"].values()):
+                instrument_label = f"{label} instrument" if idx == 0 else None
+                total_label = f"{label} total" if idx == 0 else None
+                if "trace QE" not in excluded:
+                    summary_ax.plot(
+                        wave,
+                        order["detector_qe"],
+                        lw=0.55 * base_width,
+                        ls=(0, (3, 1, 1, 1)),
+                        color=color,
+                        alpha=0.22,
+                        label=None,
+                    )
+                if "instrument" not in excluded:
+                    summary_ax.plot(
+                        wave,
+                        order["instrument"],
+                        lw=0.95 * base_width,
+                        ls="--",
+                        color=color,
+                        alpha=0.48,
+                        label=instrument_label,
+                    )
+                if "total" not in excluded:
+                    summary_ax.plot(
+                        wave,
+                        order["total_with_telescope_no_slit"]
+                        * slit_transmission,
+                        lw=1.55 * base_width,
+                        color=color,
+                        alpha=0.86,
+                        label=total_label,
+                    )
+
+        summary_ax.set_title(combined_title)
+        summary_ax.set_xlim(wave.min(), wave.max())
+        summary_ax.set_ylim(0, 1.05)
+        summary_ax.set_xlabel(r"Wavelength [nm]")
+        summary_ax.set_ylabel("Throughput")
+        summary_ax.grid(alpha=0.2)
+        summary_ax.legend(
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.16),
+            ncol=7,
+            frameon=False,
+            fontsize="small",
         )
-        for idx, order in enumerate(channel["orders"].values()):
-            ax.plot(
-                wave,
-                order["disperser"],
-                lw=1,
-                color="tab:orange",
-                alpha=0.32,
-                label="disperser/order" if idx == 0 else None,
-            )
-            ax.plot(
-                wave,
-                order["detector_qe"],
-                lw=1.1,
-                color="tab:red",
-                alpha=0.8,
-                label="trace QE" if idx == 0 else None,
-            )
-            ax.plot(
-                wave,
-                order["instrument"],
-                lw=0.85,
-                color="tab:brown",
-                alpha=0.8,
-                label="instrument/order" if idx == 0 else None,
-            )
-        ax.set_title(f"{channel['label']} (aperture {aperture_id})")
-        ax.set_xlim(wave.min(), wave.max())
-        ax.set_ylim(0, 1.05)
-        ax.grid(alpha=0.2)
-
-    for ax in component_axes[-1, :]:
-        ax.set_xlabel("Wavelength [nm]")
-    for ax in component_axes[:, 0]:
-        ax.set_ylabel("Throughput")
-    for ax in component_axes.flat[len(data["channels"]):]:
-        ax.axis("off")
-
-    component_legend: OrderedDict[str, Any] = OrderedDict()
-    for ax in component_axes.flat:
-        handles, labels = ax.get_legend_handles_labels()
-        for handle, label in zip(handles, labels, strict=True):
-            if label and not label.startswith("_"):
-                component_legend.setdefault(label, handle)
-    fig.legend(
-        list(component_legend.values()),
-        list(component_legend),
-        loc="outside upper center",
-        ncol=7,
-        frameon=False,
-        fontsize="small",
-    )
-
-    summary_component_label_used: set[str] = set()
-    for channel in data["channels"].values():
-        label = channel["label"]
-        color = channel_colors[label]
-        if slit_loss_data is not None:
-            slit_transmission = _slit_transmission_for_channel(channel, slit_loss_data, wave, slit_curve_name)
-        else:
-            slit_transmission = np.ones_like(wave)
-        summary_components = (
-            ("telescope", channel["telescope_throughput"], ":", 1.1),
-            ("dichroic", channel["dichroic_total"], "-.",summary_component_linewidth),
-            ("spectrograph optics", _spectrograph_optics_total(channel), (0, (5, 2)),summary_component_linewidth),
-            ("active slit", slit_transmission, (0, (1, 2)), 1.1),
-            ("trace QE median", _order_statistic(channel, "detector_qe", np.nanmedian), (0, (3, 1, 1, 1)),summary_component_linewidth),
-        )
-        for component_name, values, linestyle, linewidth in summary_components:
-            summary_ax.plot(
-                wave,
-                values,
-                lw=linewidth,
-                ls=linestyle,
-                color=color,
-                alpha=summary_component_alpha,
-                label=(
-                    component_name
-                    if component_name not in summary_component_label_used
-                    else None
-                ),
-            )
-            summary_component_label_used.add(component_name)
-
-        for idx, order in enumerate(channel["orders"].values()):
-            instrument_label = f"{label} instrument" if idx == 0 else None
-            total_label = f"{label} total" if idx == 0 else None
-            summary_ax.plot(
-                wave,
-                order["detector_qe"],
-                lw=0.55,
-                ls=(0, (3, 1, 1, 1)),
-                color=color,
-                alpha=0.22,
-                label=None,
-            )
-            summary_ax.plot(
-                wave,
-                order["instrument"],
-                lw=0.95,
-                ls="--",
-                color=color,
-                alpha=0.48,
-                label=instrument_label,
-            )
-            summary_ax.plot(
-                wave,
-                order["total_with_telescope_no_slit"] * slit_transmission,
-                lw=1.55,
-                color=color,
-                alpha=0.86,
-                label=total_label,
-            )
-
-    summary_ax.set_title("All Channels: Components, Instrument, and Total")
-    summary_ax.set_xlim(wave.min(), wave.max())
-    summary_ax.set_ylim(0, 1.05)
-    summary_ax.set_xlabel("Wavelength [nm]")
-    summary_ax.set_ylabel("Throughput")
-    summary_ax.grid(alpha=0.2)
-    summary_ax.legend(
-        loc="upper center",
-        bbox_to_anchor=(0.5, -0.16),
-        ncol=7,
-        frameon=False,
-        fontsize="small",
-    )
     return fig, axes
 
 
@@ -1395,6 +1495,7 @@ def plot_slit_loss_by_arm(
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
 
+    base_width = plt.rcParams["lines.linewidth"]
     arms = data["arms"]
     visible_by_arm = OrderedDict(
         (
@@ -1472,7 +1573,7 @@ def plot_slit_loss_by_arm(
                 and bool(curve.get("current_airmass", False))
                 and bool(curve.get("current_adc", False))
             )
-            linewidth = 2.7 if current_curve else 1.25
+            linewidth = base_width * (1.8 if current_curve else 0.85)
             alpha = _slit_loss_airmass_alpha(curve)
             zorder = 4.5 if current_curve else 2.0
             color = psf_colors.get(psf_key, curve.get("color"))
@@ -1545,7 +1646,7 @@ def plot_slit_loss_by_arm(
                 [0],
                 [0],
                 color=psf_colors[key],
-                lw=2.4,
+                lw=1.6 * base_width,
                 label=label,
             )
         )
@@ -1570,7 +1671,7 @@ def plot_slit_loss_by_arm(
                 [0],
                 [0],
                 color=cycle[0],
-                lw=2.7 if role_is_selected else 1.5,
+                lw=base_width * (1.8 if role_is_selected else 1.0),
                 ls=slit_styles.get(role, "-"),
                 label=label,
             )
@@ -1617,7 +1718,7 @@ def plot_slit_loss_by_arm(
                     [0],
                     [0],
                     color=cycle[0],
-                    lw=2.2,
+                    lw=1.45 * base_width,
                     alpha=_slit_loss_airmass_alpha(matches[0]),
                     label=label,
                 )
@@ -1648,10 +1749,10 @@ def plot_slit_loss_by_arm(
                 [0],
                 [0],
                 color=cycle[0],
-                lw=2.2,
+                lw=1.45 * base_width,
                 marker=marker,
                 markersize=8 if marker else 0,
-                markeredgewidth=1.1,
+                markeredgewidth=0.75 * base_width,
                 label=label,
             )
         )
@@ -1681,6 +1782,7 @@ def plot_slit_width_loss(data: Mapping[str, Any]):
     """Plot centered point-source slit loss as a function of slit width."""
     import matplotlib.pyplot as plt
 
+    base_width = plt.rcParams["lines.linewidth"]
     arms = data["arms"]
     if len(arms) != 2:
         raise ValueError(
@@ -1729,7 +1831,7 @@ def plot_slit_width_loss(data: Mapping[str, Any]):
             ax.plot(
                 slit_widths,
                 curve["loss"],
-                lw=2.4,
+                lw=1.6 * base_width,
                 color=color,
                 ls=curve.get("linestyle", "-"),
                 label=curve_labels[(arm_name, curve["psf_mode"], wave_key)],
@@ -1747,9 +1849,9 @@ def plot_slit_width_loss(data: Mapping[str, Any]):
                     np.interp(selector_slits, slit_widths, curve["loss"]),
                     s=34,
                     marker="o",
-                    facecolor="white",
+                    facecolor=plt.rcParams["axes.facecolor"],
                     edgecolor=color,
-                    linewidth=1.2,
+                    linewidth=0.8 * base_width,
                     zorder=4,
                     label="available slit widths",
                 )
@@ -1759,7 +1861,11 @@ def plot_slit_width_loss(data: Mapping[str, Any]):
         ).to_value(u.arcsec)
         if np.isfinite(current_slit):
             ax.axvline(
-                current_slit, color="0.25", lw=1.6, ls=":",
+                current_slit,
+                color=plt.rcParams["text.color"],
+                lw=1.05 * base_width,
+                ls=":",
+                alpha=0.75,
                 label="current slit",
             )
         ax.set_title(f"{arm_name} PSF Loss vs Slit Width", pad=8)
@@ -2019,7 +2125,7 @@ def _view_value(view: Mapping[str, Any] | None, *keys: str, default: Any = None)
     return default
 
 
-def _detector_grid_axes(n_images: int, *, row_height: float = 3.6):
+def _detector_grid_axes(n_images: int, *, row_height: float = 3.8):
     import matplotlib.pyplot as plt
 
     ncols = min(3, max(1, n_images))
@@ -2032,6 +2138,34 @@ def _detector_grid_axes(n_images: int, *, row_height: float = 3.6):
         constrained_layout=True,
     )
     return fig, axes
+
+
+def _configure_detector_colorbar_ticks(colorbar: Any, norm: Any) -> None:
+    from matplotlib.colors import LogNorm, SymLogNorm
+    from matplotlib.ticker import (
+        LogFormatterSciNotation,
+        LogLocator,
+        MaxNLocator,
+        ScalarFormatter,
+        SymmetricalLogLocator,
+    )
+
+    if isinstance(norm, SymLogNorm):
+        locator = SymmetricalLogLocator(
+            linthresh=norm.linthresh,
+            base=10,
+        )
+        locator.set_params(numticks=5)
+        colorbar.locator = locator
+    elif isinstance(norm, LogNorm):
+        colorbar.locator = LogLocator(base=10, numticks=5)
+        colorbar.formatter = LogFormatterSciNotation(base=10)
+    else:
+        formatter = ScalarFormatter(useMathText=True)
+        formatter.set_powerlimits((-3, 4))
+        colorbar.locator = MaxNLocator(nbins=5, min_n_ticks=3)
+        colorbar.formatter = formatter
+    colorbar.update_ticks()
 
 
 def _center_detector_axes(axes: Any, n_images: int) -> None:
@@ -2207,12 +2341,14 @@ def _plot_detector_image_grid(
         ax.axis("off")
         if colorbar_mode == "per-panel":
             cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.025)
+            _configure_detector_colorbar_ticks(cbar, norm)
             if colorbar_label:
                 cbar.set_label(colorbar_label)
     for ax in axes.flat[len(images):]:
         ax.axis("off")
     if colorbar_mode == "shared":
         cbar = fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.86)
+        _configure_detector_colorbar_ticks(cbar, im.norm)
         if colorbar_label:
             cbar.set_label(colorbar_label)
     _center_detector_axes(axes, len(images))
@@ -2670,6 +2806,7 @@ def plot_resolving_power_echellogram(
     from matplotlib.collections import LineCollection
     from matplotlib.colors import Normalize
 
+    base_width = plt.rcParams["lines.linewidth"]
     image_plane_ids = sorted({int(value) for value in table["image_plane_id"]})
     width_fractions = (
         trace_width_fraction
@@ -2714,7 +2851,13 @@ def plot_resolving_power_echellogram(
             starts = np.concatenate((points[:1], midpoints))
             ends = np.concatenate((midpoints, points[-1:]))
             segments = np.stack((starts, points, ends), axis=1)
-            collection = LineCollection(segments, cmap=colormap, norm=norm, linewidths=1.1, zorder=2)
+            collection = LineCollection(
+                segments,
+                cmap=colormap,
+                norm=norm,
+                linewidths=base_width,
+                zorder=2,
+            )
             collection.set_array(trace_values)
             ax.add_collection(collection)
             artist = collection
@@ -2738,7 +2881,7 @@ def plot_resolving_power_echellogram(
         ax.set_xticks([0, detector_naxis1 / 2, detector_naxis1])
         ax.set_yticks([0, detector_naxis2 / 2, detector_naxis2])
         ax.set_aspect("equal", adjustable="box")
-        ax.grid(alpha=0.15, lw=0.5)
+        ax.grid(alpha=0.15, lw=0.35 * base_width)
         row, column = divmod(panel_index, axes.shape[1])
         ax.set_xlabel("Pixel" if row == axes.shape[0] - 1 else "")
         ax.set_ylabel("Pixel" if column == 0 else "")

@@ -2310,6 +2310,8 @@ def _slit_loss_psf_modes(
     if effect is None or not hasattr(effect, "ao_scale"):
         return modes
 
+    ao_enabled = _metadata_bool(effect.meta.get("enable_ao"), default=False)
+    modes["no_ao"]["current"] = not ao_enabled
     is_absolute = _metadata_bool(
         getattr(effect, "meta", {}).get("is_absolute"),
         default=True,
@@ -2332,7 +2334,7 @@ def _slit_loss_psf_modes(
         "style": "--",
         "beta": float(getattr(effect, "alpha", beta) or beta),
         "fwhm_func": ao_fwhm,
-        "current": False,
+        "current": ao_enabled,
         "note": (
             "AO design FWHM from active AOEnhanceablePSF. "
             "Dimensionless absolute AO tables are interpreted as arcsec, "
@@ -2757,6 +2759,9 @@ def build_slit_loss_data(
         "seeing_arcsec": seeing,
         "airmass": airmass,
         "current_zenith_angle_deg": current_zenith_angle.to(u.deg),
+        "active_psf_mode": next(
+            name for name, spec in psf_modes.items() if spec["current"]
+        ),
         "psf_modes": psf_modes,
         "airmass_modes": airmass_specs,
         "adc_modes": adc_specs,

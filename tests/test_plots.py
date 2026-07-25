@@ -206,12 +206,16 @@ def test_transmission_plot_uses_active_slit_for_total_throughput():
                         "detector_qe": np.array([0.7, 0.8]),
                         "instrument": np.array([0.4, 0.6]),
                         "total_with_telescope_no_slit": np.array([0.2, 0.3]),
+                        "wave_min": 400 * u.nm,
+                        "wave_max": 500 * u.nm,
                     },
                     "B2": {
                         "disperser": np.array([np.nan, 0.65]),
                         "detector_qe": np.array([np.nan, 0.85]),
                         "instrument": np.array([np.nan, 0.55]),
                         "total_with_telescope_no_slit": np.array([np.nan, 0.32]),
+                        "wave_min": 450 * u.nm,
+                        "wave_max": 500 * u.nm,
                     },
                 },
             },
@@ -233,18 +237,23 @@ def test_transmission_plot_uses_active_slit_for_total_throughput():
                         "detector_qe": np.array([0.65, 0.75]),
                         "instrument": np.array([0.5, 0.7]),
                         "total_with_telescope_no_slit": np.array([0.25, 0.35]),
+                        "wave_min": 400 * u.nm,
+                        "wave_max": 500 * u.nm,
                     },
                 },
             },
         },
     }
     slit_loss_data = {
+        "active_psf_mode": "no_ao",
         "arms": {
             "VIS": {
                 "wave_nm": wave,
                 "curves": {
                     "no_ao_current_adc_residual": {
                         "throughput": np.array([0.5, 0.5]),
+                        "slit_width_arcsec": 0.7 * u.arcsec,
+                        "psf_mode": "no_ao",
                     },
                 },
             },
@@ -253,6 +262,8 @@ def test_transmission_plot_uses_active_slit_for_total_throughput():
                 "curves": {
                     "no_ao_current_adc_residual": {
                         "throughput": np.array([0.8, 0.8]),
+                        "slit_width_arcsec": 0.7 * u.arcsec,
+                        "psf_mode": "no_ao",
                     },
                 },
             },
@@ -274,10 +285,15 @@ def test_transmission_plot_uses_active_slit_for_total_throughput():
     assert "ir_blocking_filter" not in component_labels
     assert "spectrograph optics" in component_labels
     assert "trace QE" in component_labels
+    assert "instrument" in component_labels
+    assert '0.7" slit, Natural seeing' in component_labels
+    assert axes["components"][0, 0].get_title() == "B"
+    assert "aperture" not in axes["components"][0, 0].get_title()
+    assert axes["components"][0, 0].get_xlim() == (400.0, 500.0)
     labels = [line.get_label() for line in summary_ax.lines]
     assert "B instrument" in labels
     assert "B total" in labels
-    assert "active slit" in labels
+    assert '0.7" slit, Natural seeing' in labels
     assert "trace QE median" in labels
     assert "spectrograph optics" in labels
     qe_median = next(
@@ -290,6 +306,83 @@ def test_transmission_plot_uses_active_slit_for_total_throughput():
     )
     b_total = next(line for line in summary_ax.lines if line.get_label() == "B total")
     np.testing.assert_allclose(b_total.get_ydata(), [0.1, 0.15])
+    fig.clf()
+
+
+def test_transmission_plot_supports_individual_and_combined_only_modes():
+    wave = np.array([400.0, 500.0]) * u.nm
+    order = {
+        "disperser": np.array([0.6, 0.7]),
+        "detector_qe": np.array([0.7, 0.8]),
+        "instrument": np.array([0.4, 0.6]),
+        "total_with_telescope_no_slit": np.array([0.2, 0.3]),
+        "wave_min": 400 * u.nm,
+        "wave_max": 500 * u.nm,
+    }
+    channel = {
+        "label": "B",
+        "optics_groups": {"telescope": np.array([0.8, 0.8])},
+        "instrument_optics_groups": {"camera": np.array([0.6, 0.6])},
+        "telescope_throughput": np.array([0.8, 0.8]),
+        "dichroic_total": np.array([0.9, 0.9]),
+        "orders": {"B1": order},
+    }
+    data = {"wave_nm": wave, "channels": {0: channel}}
+
+    fig, axes = plots.plot_transmission_sanity(
+        data, show_combined_channels=False,
+    )
+    assert axes["components"].shape == (2, 3)
+    assert axes["summary"] is None
+    fig.clf()
+
+    fig, axes = plots.plot_transmission_sanity(
+        data,
+        show_individual_channels=False,
+        combined_title="Combined",
+    )
+    assert axes["components"] is None
+    assert axes["summary"].get_title() == "Combined"
+    fig.clf()
+
+
+def test_transmission_plot_excludes_displayed_component_globally():
+    wave = np.array([400.0, 500.0]) * u.nm
+    order = {
+        "disperser": np.array([0.6, 0.7]),
+        "detector_qe": np.array([0.7, 0.8]),
+        "instrument": np.array([0.4, 0.6]),
+        "total_with_telescope_no_slit": np.array([0.2, 0.3]),
+        "wave_min": 400 * u.nm,
+        "wave_max": 500 * u.nm,
+    }
+    data = {
+        "wave_nm": wave,
+        "channels": {
+            0: {
+                "label": "B",
+                "optics_groups": {"telescope": np.array([0.8, 0.8])},
+                "instrument_optics_groups": {
+                    "camera": np.array([0.6, 0.6]),
+                },
+                "telescope_throughput": np.array([0.8, 0.8]),
+                "dichroic_total": np.array([0.9, 0.9]),
+                "orders": {"B1": order},
+            },
+        },
+    }
+
+    fig, axes = plots.plot_transmission_sanity(
+        data, exclude_lines=["instrument", "spectrograph optics"],
+    )
+    component_labels = [
+        line.get_label() for line in axes["components"][0, 0].lines
+    ]
+    summary_labels = [line.get_label() for line in axes["summary"].lines]
+    assert "instrument" not in component_labels
+    assert "spectrograph optics" not in component_labels
+    assert "B instrument" not in summary_labels
+    assert "spectrograph optics" not in summary_labels
     fig.clf()
 
 
@@ -682,6 +775,59 @@ def test_detector_image_grid_centers_mixed_aspect_axes():
     )
 
     assert [ax.get_anchor() for ax in axes.flat[:6]] == ["C"] * 6
+    fig.clf()
+
+
+def test_detector_image_grid_limits_per_panel_colorbar_tick_density():
+    images = [
+        np.linspace(1.0, 1.0e7 * (idx + 1), 64).reshape(8, 8)
+        for idx in range(6)
+    ]
+
+    fig, axes = plots.plot_detector_image_grid(
+        images,
+        titles=["B", "G", "R", "YJ", "H", "K"],
+        clip=None,
+        colorbar_mode="per-panel",
+    )
+
+    colorbar_axes = [
+        ax for ax in fig.axes
+        if ax not in set(axes.flat)
+    ]
+    assert len(colorbar_axes) == 6
+    assert all(len(ax.get_yticks()) <= 7 for ax in colorbar_axes)
+    assert all(
+        ax.yaxis.get_major_formatter().__class__.__name__ == "ScalarFormatter"
+        for ax in colorbar_axes
+    )
+    fig.clf()
+
+
+def test_detector_image_grid_uses_log_colorbar_locator_for_shared_scale():
+    images = [
+        np.geomspace(1.0, 1.0e6, 64).reshape(8, 8)
+        for _idx in range(6)
+    ]
+
+    fig, axes = plots.plot_detector_image_grid(
+        images,
+        titles=["B", "G", "R", "YJ", "H", "K"],
+        clip=None,
+        shared_scale=True,
+        colorbar_mode="shared",
+        image_scale="log",
+    )
+
+    colorbar_axes = [
+        ax for ax in fig.axes
+        if ax not in set(axes.flat)
+    ]
+    assert len(colorbar_axes) == 1
+    assert (
+        colorbar_axes[0].yaxis.get_major_locator().__class__.__name__
+        == "LogLocator"
+    )
     fig.clf()
 
 
