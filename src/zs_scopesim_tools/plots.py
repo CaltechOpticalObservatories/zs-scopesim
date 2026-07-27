@@ -150,7 +150,7 @@ def _plot_table_source_field(
                 (xpos, ypos),
                 xytext=(4, 4),
                 textcoords="offset points",
-                fontsize=8,
+                fontsize="small",
                 zorder=4,
             )
     ax_image.set_aspect("equal", adjustable="datalim")
@@ -315,7 +315,6 @@ def plot_source(
         ax_spectrum.set_title("Spectrum")
         ax_spectrum.set_xlabel("Wavelength [um]")
         ax_spectrum.set_yscale(spectrum_yscale)
-        ax_spectrum.grid(alpha=0.2)
         if ax_spectrum.get_legend_handles_labels()[0]:
             ax_spectrum.legend(frameon=False)
     return fig, axs
@@ -412,7 +411,7 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
             transform=ax.transAxes,
             ha="left",
             va="top",
-            fontsize=9,
+            fontsize="small",
             bbox={
                 "boxstyle": "round,pad=0.22",
                 "fc": "none",
@@ -426,7 +425,6 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
             pad=8,
         )
         ax.set_xlim(wave.min(), wave.max())
-        ax.grid(alpha=0.2)
 
     for ax in axes[-1, :]:
         ax.set_xlabel("Wavelength [nm]")
@@ -438,7 +436,7 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
         handles.extend(ax_handles)
         labels.extend(ax_labels)
     dedup = OrderedDict(zip(labels, handles))
-    fig.suptitle("Post-Disperser Diffuse Background", fontsize=12)
+    fig.suptitle("Post-Disperser Diffuse Background", fontsize="large")
     fig.legend(
         dedup.values(), dedup.keys(), loc="outside lower center",
         ncol=5, frameon=False,
@@ -590,7 +588,6 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
         ax.set_xlim(wave.min(), wave.max())
         ax.set_yscale("log")
         ax.set_ylim(ymin, ymax)
-        ax.grid(alpha=0.2)
 
     for ax in axes[-1, :]:
         ax.set_xlabel("Wavelength [nm]")
@@ -625,12 +622,14 @@ def plot_detector_background_budget(table: Table):
     diffuse = np.asarray(table["post_diffuse_e_pix"], dtype=float)
     dark = np.asarray(table["dark_current_e_pix"], dtype=float)
     bias = np.asarray(table["bias_e_pix"], dtype=float)
-    if "additive_signal_e_pix" in table.colnames:
-        additive_signal = np.asarray(table["additive_signal_e_pix"], dtype=float)
-    else:
+    has_diffuse = np.any(diffuse != 0)
+    if has_diffuse:
         additive_signal = diffuse + dark
-    signal_ax.bar(x, diffuse, width=0.7, label="post-disperser diffuse")
-    signal_ax.bar(x, dark, width=0.7, bottom=diffuse, label="dark current")
+        signal_ax.bar(x, diffuse, width=0.7, label="post-disperser diffuse")
+        signal_ax.bar(x, dark, width=0.7, bottom=diffuse, label="dark current")
+    else:
+        additive_signal = dark
+        signal_ax.bar(x, dark, width=0.7, label="dark current")
     signal_ax.plot(
         x, bias, "o", color=plt.rcParams["text.color"], label="bias offset",
     )
@@ -650,7 +649,6 @@ def plot_detector_background_budget(table: Table):
     signal_ax.set_xticks(x, channels)
     signal_ax.set_ylabel("Detector signal [e-/pix]")
     signal_ax.set_title("Additive Signal")
-    signal_ax.grid(axis="y", alpha=0.2)
     if "saturation_status" in table.colnames:
         statuses = [str(value) for value in table["saturation_status"]]
     elif "full_well_e" in table.colnames:
@@ -729,13 +727,20 @@ def plot_detector_background_budget(table: Table):
     signal_ax.legend(frameon=False, fontsize="small")
 
     width = 0.2
-    noise_terms = [
-        ("diffuse shot", "diffuse_shot_noise_e_rms", "tab:blue"),
+    noise_terms = []
+    if has_diffuse:
+        noise_terms.append(
+            ("diffuse shot", "diffuse_shot_noise_e_rms", "tab:blue"),
+        )
+    noise_terms.extend([
         ("dark shot", "dark_shot_noise_e_rms", "tab:green"),
         ("read", "read_noise_e_rms", "tab:orange"),
         ("total", "total_noise_e_rms", plt.rcParams["text.color"]),
-    ]
-    offsets = (np.arange(len(noise_terms)) - 1.5) * width
+    ])
+    offsets = (
+        np.arange(len(noise_terms))
+        - 0.5 * (len(noise_terms) - 1)
+    ) * width
     for offset, (label, column, color) in zip(offsets, noise_terms, strict=True):
         noise_ax.bar(
             x + offset, np.asarray(table[column], dtype=float),
@@ -745,7 +750,6 @@ def plot_detector_background_budget(table: Table):
     noise_ax.set_xticks(x, channels)
     noise_ax.set_ylabel("Noise [e- RMS/pix]")
     noise_ax.set_title("Noise Terms")
-    noise_ax.grid(axis="y", alpha=0.2)
     noise_ax.legend(frameon=False, fontsize="small")
     return fig, axes
 
@@ -975,7 +979,6 @@ def plot_transmission_sanity(
             ax.set_title(str(channel["label"]))
             ax.set_xlim(wave_min, wave_max)
             ax.set_ylim(0, 1.05)
-            ax.grid(alpha=0.2)
 
         for ax in component_axes[-1, :]:
             ax.set_xlabel(r"Wavelength [nm]")
@@ -1087,7 +1090,6 @@ def plot_transmission_sanity(
         summary_ax.set_ylim(0, 1.05)
         summary_ax.set_xlabel(r"Wavelength [nm]")
         summary_ax.set_ylabel("Throughput")
-        summary_ax.grid(alpha=0.2)
         summary_ax.legend(
             loc="upper center",
             bbox_to_anchor=(0.5, -0.16),
@@ -1209,7 +1211,7 @@ def plot_slit_adc_psf_scenes(data: Mapping[str, Any]):
             ax.axvline(0, color="white", lw=0.8, alpha=0.45)
             ax.axhline(0, color="white", lw=0.8, alpha=0.25)
             ax.set_aspect("equal", adjustable="box")
-            ax.set_title(f"{scenario_name}\n{variant['label']}", fontsize=10)
+            ax.set_title(f"{scenario_name}\n{variant['label']}", fontsize="medium")
             if row == nrows - 1:
                 ax.set_xlabel("Along slit [arcsec]")
             if col == 0:
@@ -1222,7 +1224,7 @@ def plot_slit_adc_psf_scenes(data: Mapping[str, Any]):
         "Slit/AD/PSF Scene Check "
         f"(airmass {data['airmass']:.2f}, "
         f"seeing {data['seeing_arcsec'].to_value(u.arcsec):.2f} arcsec)",
-        fontsize=12,
+        fontsize="large",
     )
     handles, labels = axes[0, 0].get_legend_handles_labels()
     if handles:
@@ -1614,7 +1616,6 @@ def plot_slit_loss_by_arm(
             ax.set_ylabel("")
             ax.tick_params(axis="y", labelleft=False)
         ax.set_ylim(0, 1)
-        ax.grid(alpha=0.25)
 
     def legend_heading(label: str):
         return Line2D([0], [0], color="none", lw=0, label=label)
@@ -1873,7 +1874,6 @@ def plot_slit_width_loss(data: Mapping[str, Any]):
         ax.set_ylabel("Slit loss fraction")
         ax.set_ylim(0, 1)
         ax.set_xlim(slit_widths.min(), slit_widths.max())
-        ax.grid(alpha=0.25)
 
     legend_entries: OrderedDict[str, Any] = OrderedDict()
     for ax in axes.flat:
@@ -2143,6 +2143,7 @@ def _detector_grid_axes(n_images: int, *, row_height: float = 3.8):
 def _configure_detector_colorbar_ticks(colorbar: Any, norm: Any) -> None:
     from matplotlib.colors import LogNorm, SymLogNorm
     from matplotlib.ticker import (
+        FixedLocator,
         LogFormatterSciNotation,
         LogLocator,
         MaxNLocator,
@@ -2156,15 +2157,23 @@ def _configure_detector_colorbar_ticks(colorbar: Any, norm: Any) -> None:
             base=10,
         )
         locator.set_params(numticks=5)
-        colorbar.locator = locator
+        formatter = LogFormatterSciNotation(base=10, linthresh=norm.linthresh)
     elif isinstance(norm, LogNorm):
-        colorbar.locator = LogLocator(base=10, numticks=5)
-        colorbar.formatter = LogFormatterSciNotation(base=10)
+        locator = LogLocator(base=10, numticks=5)
+        formatter = LogFormatterSciNotation(base=10)
     else:
         formatter = ScalarFormatter(useMathText=True)
         formatter.set_powerlimits((-3, 4))
-        colorbar.locator = MaxNLocator(nbins=5, min_n_ticks=3)
-        colorbar.formatter = formatter
+        locator = MaxNLocator(nbins=5, min_n_ticks=3)
+
+    ticks = np.asarray(locator.tick_values(norm.vmin, norm.vmax), dtype=float)
+    ticks = ticks[
+        np.isfinite(ticks)
+        & (ticks >= norm.vmin)
+        & (ticks <= norm.vmax)
+    ]
+    colorbar.locator = FixedLocator(ticks)
+    colorbar.formatter = formatter
     colorbar.update_ticks()
 
 
@@ -2301,6 +2310,7 @@ def _plot_detector_image_grid(
             cmap=cmap,
             interpolation=image_interpolation,
             resample=True,
+            extent=(0, data.shape[1], 0, data.shape[0]),
         )
         ax.set_title(f"{title}{title_suffix}", pad=8)
         if annotate_delta or annotate_stats:
@@ -2329,7 +2339,7 @@ def _plot_detector_image_grid(
                 transform=ax.transAxes,
                 ha="left",
                 va="top",
-                fontsize=9,
+                fontsize="small",
                 color="white",
                 bbox={
                     "boxstyle": "round,pad=0.22",
@@ -2338,7 +2348,17 @@ def _plot_detector_image_grid(
                     "alpha": 0.55,
                 },
             )
-        ax.axis("off")
+        x_ticks = np.arange(0, data.shape[1] + 1, 2048)
+        y_ticks = np.arange(0, data.shape[0] + 1, 2048)
+        ax.set_xticks(x_ticks)
+        ax.set_yticks(y_ticks)
+        ncols = axes.shape[1]
+        column = idx % ncols
+        bottom_index = column + ncols * ((len(images) - 1 - column) // ncols)
+        ax.tick_params(
+            labelbottom=idx == bottom_index,
+            labelleft=column == 0,
+        )
         if colorbar_mode == "per-panel":
             cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.025)
             _configure_detector_colorbar_ticks(cbar, norm)
@@ -2351,6 +2371,8 @@ def _plot_detector_image_grid(
         _configure_detector_colorbar_ticks(cbar, im.norm)
         if colorbar_label:
             cbar.set_label(colorbar_label)
+    fig.supxlabel("Pixels")
+    fig.supylabel("Pixels")
     _center_detector_axes(axes, len(images))
     return fig, axes
 
@@ -2510,7 +2532,6 @@ def plot_detector_cross_dispersion_cut(
         ax.set_title(f"{title}{title_suffix} central {ncut} cols", pad=8)
         ax.set_xlabel("Detector row [pix]")
         ax.set_ylabel(ylabel)
-        ax.grid(alpha=0.25)
     for ax in axes.flat[len(image_arrays):]:
         ax.axis("off")
     return fig, axes
@@ -2881,7 +2902,6 @@ def plot_resolving_power_echellogram(
         ax.set_xticks([0, detector_naxis1 / 2, detector_naxis1])
         ax.set_yticks([0, detector_naxis2 / 2, detector_naxis2])
         ax.set_aspect("equal", adjustable="box")
-        ax.grid(alpha=0.15, lw=0.35 * base_width)
         row, column = divmod(panel_index, axes.shape[1])
         ax.set_xlabel("Pixel" if row == axes.shape[0] - 1 else "")
         ax.set_ylabel("Pixel" if column == 0 else "")

@@ -152,6 +152,32 @@ def test_detector_background_budget_plot_handles_saturation_annotation():
     fig.clf()
 
 
+def test_detector_background_budget_plot_omits_disabled_diffuse_terms():
+    table = Table({
+        "channel": ["B", "K"],
+        "post_diffuse_e_pix": [0.0, 0.0],
+        "dark_current_e_pix": [3.0, 20.0],
+        "bias_e_pix": [1040.0, 1040.0],
+        "full_well_e": [64000.0, 64000.0],
+        "signal_fraction_of_full_well": [3.0 / 64000.0, 20.0 / 64000.0],
+        "saturation_status": ["ok", "ok"],
+        "diffuse_shot_noise_e_rms": [0.0, 0.0],
+        "dark_shot_noise_e_rms": [3.0**0.5, 20.0**0.5],
+        "read_noise_e_rms": [5.0, 0.5],
+        "total_noise_e_rms": [(3.0 + 25.0)**0.5, (20.0 + 0.25)**0.5],
+    })
+
+    fig, axes = plots.plot_detector_background_budget(table)
+
+    labels = [
+        label
+        for ax in axes
+        for label in ax.get_legend_handles_labels()[1]
+    ]
+    assert not any("diffuse" in label for label in labels)
+    fig.clf()
+
+
 def test_post_disperser_diffuse_plot_annotates_ir_blocking():
     wave = np.array([300.0, 400.0]) * u.nm
     channels = {}
@@ -650,6 +676,9 @@ def test_readout_overview_can_use_data_floor_for_biased_frames():
 
 
 def test_detector_image_grid_accepts_explicit_display_limits():
+    import matplotlib.pyplot as plt
+
+    plt.close("all")
     images = [np.arange(100, dtype=float).reshape(10, 10)]
 
     fig, axes = plots.plot_detector_image_grid(
@@ -778,6 +807,25 @@ def test_detector_image_grid_centers_mixed_aspect_axes():
     fig.clf()
 
 
+def test_detector_image_grid_shows_physical_pixel_axes_and_shared_labels():
+    images = [
+        np.zeros((1, 4096), dtype=float),
+        np.zeros((4096, 1), dtype=float),
+    ]
+
+    fig, axes = plots.plot_detector_image_grid(
+        images,
+        titles=["wide", "tall"],
+        clip=None,
+    )
+
+    assert np.array_equal(axes[0, 0].get_xticks(), [0, 2048, 4096])
+    assert np.array_equal(axes[0, 1].get_yticks(), [0, 2048, 4096])
+    assert fig._supxlabel.get_text() == "Pixels"
+    assert fig._supylabel.get_text() == "Pixels"
+    fig.clf()
+
+
 def test_detector_image_grid_limits_per_panel_colorbar_tick_density():
     images = [
         np.linspace(1.0, 1.0e7 * (idx + 1), 64).reshape(8, 8)
@@ -801,6 +849,24 @@ def test_detector_image_grid_limits_per_panel_colorbar_tick_density():
         ax.yaxis.get_major_formatter().__class__.__name__ == "ScalarFormatter"
         for ax in colorbar_axes
     )
+    for image_ax, colorbar_ax in zip(axes.flat, colorbar_axes, strict=True):
+        vmin, vmax = image_ax.images[0].get_clim()
+        ticks = colorbar_ax.get_yticks()
+        assert np.all(ticks >= vmin)
+        assert np.all(ticks <= vmax)
+
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    for colorbar_ax in colorbar_axes:
+        labels = [
+            label.get_window_extent(renderer)
+            for label in colorbar_ax.get_yticklabels()
+            if label.get_visible() and label.get_text()
+        ]
+        assert all(
+            lower.y1 <= upper.y0
+            for lower, upper in zip(labels, labels[1:], strict=False)
+        )
     fig.clf()
 
 
@@ -824,10 +890,39 @@ def test_detector_image_grid_uses_log_colorbar_locator_for_shared_scale():
         if ax not in set(axes.flat)
     ]
     assert len(colorbar_axes) == 1
-    assert (
-        colorbar_axes[0].yaxis.get_major_locator().__class__.__name__
-        == "LogLocator"
+    assert colorbar_axes[0].yaxis.get_major_locator().__class__.__name__ == "FixedLocator"
+    assert colorbar_axes[0].yaxis.get_major_formatter().__class__.__name__ == "LogFormatterSciNotation"
+    ticks = colorbar_axes[0].get_yticks()
+    assert np.all(ticks >= 1.0)
+    assert np.all(ticks <= 1.0e6)
+    fig.clf()
+
+
+def test_detector_image_grid_bounds_symlog_colorbar_ticks():
+    images = [
+        np.linspace(-1.0e4, 1.0e4, 81).reshape(9, 9)
+        for _idx in range(6)
+    ]
+
+    fig, axes = plots.plot_detector_image_grid(
+        images,
+        titles=["B", "G", "R", "YJ", "H", "K"],
+        clip=None,
+        shared_scale=True,
+        colorbar_mode="shared",
+        symmetric=True,
+        image_scale="symlog",
     )
+
+    colorbar_axes = [
+        ax for ax in fig.axes
+        if ax not in set(axes.flat)
+    ]
+    assert len(colorbar_axes) == 1
+    ticks = colorbar_axes[0].get_yticks()
+    assert np.all(ticks >= -1.0e4)
+    assert np.all(ticks <= 1.0e4)
+    assert colorbar_axes[0].yaxis.get_major_formatter().__class__.__name__ == "LogFormatterSciNotation"
     fig.clf()
 
 
