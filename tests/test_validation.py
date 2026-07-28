@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from astropy import units as u
 from astropy.io import fits
-from astropy.table import Table
+from astropy.table import QTable, Table
 from synphot.units import PHOTLAM
 
 from zs_scopesim_tools import validation as val
@@ -189,6 +189,7 @@ class FakeGeometryTrace:
             "aperture_id": 0,
             "image_plane_id": 0,
             "extension_id": 2,
+            "nominal_fwhm_pix": 4.0,
             "nominal_slit_width": 0.7,
             "plate_scale": 17.5,
             "pixel_size": 0.01,
@@ -210,32 +211,6 @@ class FakeGeometryTraceList:
 class FakeSpectrograph:
     def __init__(self, orders):
         self.orders = np.asarray(orders, dtype=int)
-        self.nominal_pixels_per_res_elem = 4.0
-        self.detector = type(
-            "FakeDetector",
-            (),
-            {"pixel_size": 0.01 * u.mm},
-        )()
-        self.dispersion_focal_length = 1.0 * u.mm
-        self.pixel_scale = 0.01 * u.rad
-        self.grating = type(
-            "FakeGrating",
-            (),
-            {
-                "beta": staticmethod(
-                    lambda wave, order: np.zeros(wave.size) * u.rad
-                ),
-                "angular_dispersion": staticmethod(
-                    lambda order, beta: np.ones(beta.size) * u.rad / u.um
-                ),
-            },
-        )()
-
-    def wavelength_to_x_pixel(self, wave, order):
-        return wave.to_value(u.um) * 100 * u.dimensionless_unscaled
-
-    def wavelength_to_y_pixel(self, wave):
-        return wave.to_value(u.um) * 50 * u.dimensionless_unscaled
 
     def order_mask(self, wave, fsr_edge=False):
         assert fsr_edge
@@ -268,6 +243,85 @@ class FakeTraceEfficiency:
 class FakeImagePlane:
     def __init__(self, header):
         self.header = header
+
+
+class FakeTraceFOV:
+    trace_id = "B_1"
+
+
+def fake_trace_detector_coordinates():
+    return QTable({
+        "readout_index": np.zeros(5, dtype=int),
+        "image_plane_id": np.zeros(5, dtype=int),
+        "detector_id": np.ones(5, dtype=int),
+        "trace_id": ["B_1"] * 5,
+        "wavelength": [1.0, 1.02, 1.05, 1.08, 1.1] * u.um,
+        "xi": np.zeros(5) * u.arcsec,
+        "detector_x": [10.0, 10.0, 13.0, 13.0, 15.0] * u.pixel,
+        "detector_y": [5.0, 7.0, 7.0, 10.0, 10.0] * u.pixel,
+    })
+
+
+def make_fake_trace_resolution_train(
+    *,
+    mapped=None,
+    fovs=None,
+    include_order_authority=True,
+):
+    header = fits.Header({
+        "NAXIS": 2,
+        "NAXIS1": 200,
+        "NAXIS2": 50,
+        "CTYPE1D": "LINEAR",
+        "CTYPE2D": "LINEAR",
+        "CUNIT1D": "mm",
+        "CUNIT2D": "mm",
+        "CRVAL1D": 0.0,
+        "CRVAL2D": 0.0,
+        "CRPIX1D": 1.0,
+        "CRPIX2D": 1.0,
+        "CDELT1D": 0.01,
+        "CDELT2D": 0.01,
+    })
+    effects = [
+        named_effect(FakeGeometryTraceList(), "trace_list_analytical"),
+        FakeNamedSelector(
+            "slitwheel_selector",
+            "aperture_id",
+            {0: FakeSlitWheel()},
+        ),
+    ]
+    if include_order_authority:
+        effects.insert(1, FakeTraceEfficiency({
+            "B": FakeSpectrograph([1]),
+        }))
+
+    train = type("FakeTraceResolutionTrain", (), {})()
+    train.cmds = {
+        "!OBS.airmass": 1.0,
+        "!OBS.seeing": 0.5,
+        "!INST.vis_curr_slit": 0.7,
+        "!INST.nir_curr_slit": 0.7,
+    }
+    train.image_planes = [FakeImagePlane(header)]
+    train.fov_manager = type(
+        "FakeFOVManager",
+        (),
+        {"fovs": [FakeTraceFOV()] if fovs is None else fovs},
+    )()
+    train.trace_detector_coordinates = (
+        lambda **_kwargs: (
+            fake_trace_detector_coordinates()
+            if mapped is None
+            else mapped
+        )
+    )
+    train.optics_manager = type(
+        "FakeOptics",
+        (),
+        {"all_effects": effects},
+    )()
+    return train
 
 
 class FakeTrainWithImagePlane:
@@ -1393,6 +1447,14 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
         "!INST.nir_curr_slit": 0.7,
     }
     train.image_planes = [FakeImagePlane(header)]
+    train.fov_manager = type(
+        "FakeFOVManager",
+        (),
+        {"fovs": [FakeTraceFOV()]},
+    )()
+    train.trace_detector_coordinates = (
+        lambda **_kwargs: fake_trace_detector_coordinates()
+    )
     train.optics_manager = type("FakeOptics", (), {
         "all_effects": [
             named_effect(FakeGeometryTraceList(), "trace_list_analytical"),
@@ -1435,11 +1497,17 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
     )
     np.testing.assert_allclose(table["spatial_fwhm_pix"], [5.0, 5.0, 5.0])
     np.testing.assert_allclose(table["resel_footprint_pix"], [20.0] * 3)
-    np.testing.assert_allclose(table["detector_x_mm"], [-1.0, 0.0, 1.0])
-    np.testing.assert_allclose(table["detector_pixel_size_mm"], [0.01] * 3)
+    np.testing.assert_allclose(table["detector_x_pix"], [10.0, 13.0, 13.0])
+    np.testing.assert_allclose(table["detector_y_pix"], [7.0, 7.0, 10.0])
     np.testing.assert_allclose(table["detector_naxis1"], [200] * 3)
     np.testing.assert_allclose(table["detector_naxis2"], [50] * 3)
-    assert "detector_x_pix" not in table.colnames
+    assert not {
+        "detector_x_mm",
+        "detector_y_mm",
+        "detector_pixel_size_mm",
+        "spectrograph_x_pix",
+        "spectrograph_y_pix",
+    } & set(table.colnames)
 
     capped = val.trace_resolution_diagnostic_table(train, samples_per_trace=2)
     np.testing.assert_allclose(capped["wave_nm"], [1020.0, 1080.0])
@@ -1464,8 +1532,9 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
 def test_trace_resolution_diagnostic_table_requires_configured_fwhm(
     monkeypatch,
 ):
+    trace_list = FakeGeometryTraceList()
+    del trace_list.spectral_traces["B_1"].meta["nominal_fwhm_pix"]
     spectrograph = FakeSpectrograph([1])
-    del spectrograph.nominal_pixels_per_res_elem
 
     header = fits.Header({
         "NAXIS": 2,
@@ -1490,9 +1559,17 @@ def test_trace_resolution_diagnostic_table_requires_configured_fwhm(
         "!INST.nir_curr_slit": 0.7,
     }
     train.image_planes = [FakeImagePlane(header)]
+    train.fov_manager = type(
+        "FakeFOVManager",
+        (),
+        {"fovs": [FakeTraceFOV()]},
+    )()
+    train.trace_detector_coordinates = (
+        lambda **_kwargs: fake_trace_detector_coordinates()
+    )
     train.optics_manager = type("FakeOptics", (), {
         "all_effects": [
-            named_effect(FakeGeometryTraceList(), "trace_list_analytical"),
+            named_effect(trace_list, "trace_list_analytical"),
             FakeTraceEfficiency({"B": spectrograph}),
             FakeNamedSelector(
                 "slitwheel_selector",
@@ -1515,8 +1592,50 @@ def test_trace_resolution_diagnostic_table_requires_configured_fwhm(
         ),
     )
 
-    with pytest.raises(AttributeError, match="nominal_pixels_per_res_elem"):
+    with pytest.raises(KeyError, match="nominal_fwhm_pix"):
         val.trace_resolution_diagnostic_table(train, samples_per_trace=3)
+
+
+def test_trace_resolution_diagnostic_table_requires_one_ordered_mapped_run(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            None,
+        ),
+    )
+
+    multiple_fovs = make_fake_trace_resolution_train(
+        fovs=[FakeTraceFOV(), FakeTraceFOV()],
+    )
+    with pytest.raises(NotImplementedError, match="one continuous configured FOV"):
+        val.trace_resolution_diagnostic_table(multiple_fovs)
+
+    unordered = fake_trace_detector_coordinates()
+    unordered["wavelength"] = [1.0, 1.05, 1.02, 1.08, 1.1] * u.um
+    unordered_run = make_fake_trace_resolution_train(mapped=unordered)
+    with pytest.raises(NotImplementedError, match="wavelength-ordered mapped run"):
+        val.trace_resolution_diagnostic_table(unordered_run)
+
+
+def test_trace_resolution_diagnostic_table_requires_order_domain_authority(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            None,
+        ),
+    )
+    train = make_fake_trace_resolution_train(include_order_authority=False)
+
+    with pytest.raises(ValueError, match="trace_eff_analytical"):
+        val.trace_resolution_diagnostic_table(train)
 
 
 def test_detector_background_budget_table_combines_detector_terms():

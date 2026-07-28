@@ -874,6 +874,11 @@ def trace_resolution_diagnostic_table(
     trace_list = get_effect(ztrain, trace_list_name)
     spectrographs = get_effect(ztrain, "trace_eff_analytical")._spectrographs
     slit_selector = get_effect(ztrain, "slitwheel_selector")
+    mapped = ztrain.trace_detector_coordinates(xi=0 * u.arcsec)
+    mapped_trace_ids = np.asarray(mapped["trace_id"], dtype=str)
+    fovs_by_trace: dict[str, list[Any]] = defaultdict(list)
+    for fov in ztrain.fov_manager.fovs:
+        fovs_by_trace[str(fov.trace_id)].append(fov)
     rows: list[dict[str, Any]] = []
 
     for aperture_id, traces in traces_by_aperture(trace_list).items():
@@ -883,44 +888,51 @@ def trace_resolution_diagnostic_table(
         active_slit_width_arcsec = slit_y.max() - slit_y.min()
 
         for trace in traces:
+            trace_id = str(trace.trace_id)
+            trace_fovs = fovs_by_trace[trace_id]
+            if len(trace_fovs) != 1:
+                raise NotImplementedError(f"Trace {trace_id!r} requires one continuous configured FOV; found {len(trace_fovs)}.")
+
+            mapped_indices = np.flatnonzero(mapped_trace_ids == trace_id)
+            if mapped_indices.size < 2 or np.any(np.diff(mapped_indices) != 1):
+                raise NotImplementedError(f"Trace {trace_id!r} does not have one continuous mapped run.")
+
+            wave = mapped["wavelength"][mapped_indices].to(u.um)
+            detector_x_pix = mapped["detector_x"][mapped_indices].to_value(u.pixel)
+            detector_y_pix = mapped["detector_y"][mapped_indices].to_value(u.pixel)
+            path_step_pix = np.hypot(np.diff(detector_x_pix), np.diff(detector_y_pix))
+
+            if (np.any(np.diff(wave) <= 0 * u.um) or np.any(path_step_pix <= 0)
+                or not (np.all(np.isfinite(detector_x_pix)) and
+                        np.all(np.isfinite(detector_y_pix)) and
+                        np.all(np.isfinite(path_step_pix)))):
+                raise NotImplementedError(f"Trace {trace_id!r} does not have one continuous, "
+                                          f"wavelength-ordered mapped run.")
+
+            detector_path_pix = np.concatenate(([0.0], np.cumsum(path_step_pix)))
+            dispersion_nm_pix = np.gradient(wave.to_value(u.nm), detector_path_pix)
             image_plane_id = int(trace.meta["image_plane_id"])
             image_plane_header = ztrain.image_planes[image_plane_id].header
-            detector_pixel_size_mm = trace.meta["pixel_size"]
-            pixel_scale_arcsec = np.sqrt(
-                _image_plane_pixel_area(ztrain, image_plane_id).to_value(u.arcsec**2))
+            pixel_scale_arcsec = np.sqrt(_image_plane_pixel_area(ztrain, image_plane_id).to_value(u.arcsec**2))
 
-            prefix, _, order_text = trace.trace_id.rpartition("_")
+            prefix, _, order_text = trace_id.rpartition("_")
             order = int(order_text)
             spectrograph = spectrographs[prefix]
-
-            trace_table = trace.table
-            wave = trace_table["wavelength"].quantity.to(u.um)
-            slit_position = trace_table["s"].quantity.to_value(u.arcsec)
-            primary_fsr = spectrograph.order_mask(
-                wave, fsr_edge=True)[spectrograph.orders == order][0]
-            samples = np.flatnonzero((slit_position == 0) & primary_fsr)
-            samples = samples[np.linspace(
-                0,
-                len(samples) - 1,
-                min(samples_per_trace, len(samples)),
-                dtype=int,
-            )]
+            primary_fsr = spectrograph.order_mask(wave, fsr_edge=True)[spectrograph.orders == order][0]
+            samples = np.flatnonzero(primary_fsr)
+            if samples.size < 2:
+                raise ValueError(f"Trace {trace_id!r} has fewer than two configured samples in its primary FSR.")
+            samples = samples[np.linspace(0, len(samples) - 1, min(samples_per_trace, len(samples)), dtype=int)]
             wave = wave[samples]
-            detector_x_mm = trace_table["x"].quantity[samples].to_value(u.mm)
-            detector_y_mm = trace_table["y"].quantity[samples].to_value(u.mm)
+            detector_x_pix = detector_x_pix[samples]
+            detector_y_pix = detector_y_pix[samples]
+            dispersion_nm_pix = dispersion_nm_pix[samples]
+            if (not np.all(np.isfinite(dispersion_nm_pix)) or np.any(dispersion_nm_pix <= 0)):
+                raise ValueError(f"Trace {trace_id!r} has non-positive or non-finite mapped dispersion in its primary FSR.")
 
-            spectral_fwhm_pix = (spectrograph.nominal_pixels_per_res_elem
-                                 * active_slit_width_arcsec
-                                 / trace.meta["nominal_slit_width"])
+            spectral_fwhm_pix = trace.meta["nominal_fwhm_pix"] * active_slit_width_arcsec/ trace.meta["nominal_slit_width"]
             wave_nm = wave.to_value(u.nm)
-            beta = spectrograph.grating.beta(wave, order)
-            dispersion_nm_pix = (
-                spectrograph.pixel_scale
-                / spectrograph.grating.angular_dispersion(order, beta)
-            ).to_value(u.nm)
             resolving_power = wave_nm / (spectral_fwhm_pix * dispersion_nm_pix)
-            spectrograph_x_pix = spectrograph.wavelength_to_x_pixel(wave, order).value
-            spectrograph_y_pix = spectrograph.wavelength_to_y_pixel(wave).value
             psf_fwhm = fwhm_func(wave, zenith_angle, seeing).to_value(u.arcsec)
             spatial_fwhm_pix = psf_fwhm / pixel_scale_arcsec
             resel_footprint_pix = spectral_fwhm_pix * spatial_fwhm_pix
@@ -930,16 +942,13 @@ def trace_resolution_diagnostic_table(
                     "channel": label,
                     "aperture_id": int(aperture_id),
                     "image_plane_id": image_plane_id,
-                    "trace_id": trace.trace_id,
+                    "trace_id": trace_id,
                     "sample_index": idx,
                     "wave_nm": wave_nm[idx],
-                    "detector_x_mm": detector_x_mm[idx],
-                    "detector_y_mm": detector_y_mm[idx],
-                    "detector_pixel_size_mm": detector_pixel_size_mm,
+                    "detector_x_pix": detector_x_pix[idx],
+                    "detector_y_pix": detector_y_pix[idx],
                     "detector_naxis1": image_plane_header["NAXIS1"],
                     "detector_naxis2": image_plane_header["NAXIS2"],
-                    "spectrograph_x_pix": spectrograph_x_pix[idx],
-                    "spectrograph_y_pix": spectrograph_y_pix[idx],
                     "pixel_scale_arcsec_pix": pixel_scale_arcsec,
                     "dispersion_nm_pix": dispersion_nm_pix[idx],
                     "resolving_power_R": resolving_power[idx],

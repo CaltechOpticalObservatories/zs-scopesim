@@ -2852,7 +2852,6 @@ def plot_resolving_power_echellogram(
     for panel_index, (ax, image_plane_id) in enumerate(zip(axes.flat, image_plane_ids, strict=False)):
         rows = table[image_plane_array == image_plane_id]
         row_values = values[image_plane_array == image_plane_id]
-        pixel_size_mm = rows["detector_pixel_size_mm"][0]
         detector_naxis1 = rows["detector_naxis1"][0]
         detector_naxis2 = rows["detector_naxis2"][0]
 
@@ -2864,8 +2863,8 @@ def plot_resolving_power_echellogram(
             trace_rows = rows[trace_mask]
             trace_values = row_values[trace_mask]
             order = np.argsort(trace_rows["sample_index"])
-            x = trace_rows["detector_x_mm"][order] / pixel_size_mm + detector_naxis1 / 2
-            y = trace_rows["detector_y_mm"][order] / pixel_size_mm + detector_naxis2 / 2
+            x = trace_rows["detector_x_pix"][order]
+            y = trace_rows["detector_y_pix"][order]
             trace_values = trace_values[order]
             points = np.column_stack((x, y))
             midpoints = (points[:-1] + points[1:]) / 2
