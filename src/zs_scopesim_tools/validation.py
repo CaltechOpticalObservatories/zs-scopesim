@@ -856,13 +856,9 @@ def trace_resolution_diagnostic_table(
     ztrain: Any,
     *,
     trace_list_name: str = "trace_list_analytical",
-    samples_per_trace: int = 64,
     allow_diagnostic_psf: bool = False,
 ) -> Table:
-    """Return resolving-power diagnostics from the configured live effects."""
-    if samples_per_trace < 2:
-        raise ValueError("samples_per_trace must be at least 2.")
-
+    """Return the complete native-resolution grid from the configured train."""
     seeing = _required_cmd_quantity(ztrain.cmds, "!OBS.seeing", u.arcsec)
     zenith_angle = _zenith_angle_from_airmass(
         _required_cmd_float(ztrain.cmds, "!OBS.airmass"),
@@ -897,43 +893,102 @@ def trace_resolution_diagnostic_table(
             if mapped_indices.size < 2 or np.any(np.diff(mapped_indices) != 1):
                 raise NotImplementedError(f"Trace {trace_id!r} does not have one continuous mapped run.")
 
-            wave = mapped["wavelength"][mapped_indices].to(u.um)
-            detector_x_pix = mapped["detector_x"][mapped_indices].to_value(u.pixel)
-            detector_y_pix = mapped["detector_y"][mapped_indices].to_value(u.pixel)
-            path_step_pix = np.hypot(np.diff(detector_x_pix), np.diff(detector_y_pix))
+            node_wave = mapped["wavelength"][mapped_indices].to(u.um)
+            node_x_pix = mapped["detector_x"][mapped_indices].to_value(u.pixel)
+            node_y_pix = mapped["detector_y"][mapped_indices].to_value(u.pixel)
+            node_dx_pix = np.diff(node_x_pix)
+            node_dy_pix = np.diff(node_y_pix)
 
-            if (np.any(np.diff(wave) <= 0 * u.um) or np.any(path_step_pix <= 0)
-                or not (np.all(np.isfinite(detector_x_pix)) and
-                        np.all(np.isfinite(detector_y_pix)) and
-                        np.all(np.isfinite(path_step_pix)))):
+            if (np.any(np.diff(node_wave) <= 0 * u.um)
+                or np.any(node_dx_pix <= 0)
+                or np.any(np.abs(node_dx_pix) <= np.abs(node_dy_pix))
+                or not (np.all(np.isfinite(node_x_pix)) and
+                        np.all(np.isfinite(node_y_pix)))):
                 raise NotImplementedError(f"Trace {trace_id!r} does not have one continuous, "
-                                          f"wavelength-ordered mapped run.")
+                                          f"wavelength-ordered detector-x run.")
 
-            detector_path_pix = np.concatenate(([0.0], np.cumsum(path_step_pix)))
-            dispersion_nm_pix = np.gradient(wave.to_value(u.nm), detector_path_pix)
             image_plane_id = int(trace.meta["image_plane_id"])
             image_plane_header = ztrain.image_planes[image_plane_id].header
             pixel_scale_arcsec = np.sqrt(_image_plane_pixel_area(ztrain, image_plane_id).to_value(u.arcsec**2))
+            spectral_fwhm_pix = trace.meta["nominal_fwhm_pix"] * active_slit_width_arcsec / trace.meta["nominal_slit_width"]
+
+            readout_indices = np.unique(mapped["readout_index"][mapped_indices])
+            if readout_indices.size != 1:
+                raise NotImplementedError(f"Trace {trace_id!r} does not map to exactly one configured readout.")
+            detector_manager = ztrain.detector_managers[int(readout_indices[0])]
+            if len(detector_manager) != 1:
+                raise NotImplementedError(f"Trace {trace_id!r} requires one configured detector per image plane.")
+            detector_header = detector_manager[0].header
+            detector_naxis1 = int(detector_header["NAXIS1"])
+            detector_naxis2 = int(detector_header["NAXIS2"])
 
             prefix, _, order_text = trace_id.rpartition("_")
             order = int(order_text)
             spectrograph = spectrographs[prefix]
-            primary_fsr = spectrograph.order_mask(wave, fsr_edge=True)[spectrograph.orders == order][0]
-            samples = np.flatnonzero(primary_fsr)
-            if samples.size < 2:
-                raise ValueError(f"Trace {trace_id!r} has fewer than two configured samples in its primary FSR.")
-            samples = samples[np.linspace(0, len(samples) - 1, min(samples_per_trace, len(samples)), dtype=int)]
-            wave = wave[samples]
-            detector_x_pix = detector_x_pix[samples]
-            detector_y_pix = detector_y_pix[samples]
-            dispersion_nm_pix = dispersion_nm_pix[samples]
-            if (not np.all(np.isfinite(dispersion_nm_pix)) or np.any(dispersion_nm_pix <= 0)):
-                raise ValueError(f"Trace {trace_id!r} has non-positive or non-finite mapped dispersion in its primary FSR.")
+            order_index = np.flatnonzero(spectrograph.orders == order)
+            if order_index.size != 1:
+                raise ValueError(f"Trace {trace_id!r} does not identify one configured spectrograph order.")
+            fsr_wave_low, fsr_wave_high = spectrograph.edge_wave(fsr=True)[order_index[0]].to(u.um)
+            domain_wave_low = max(fsr_wave_low, node_wave[0])
+            domain_wave_high = min(fsr_wave_high, node_wave[-1])
+            if domain_wave_high <= domain_wave_low:
+                raise ValueError(f"Trace {trace_id!r} does not intersect its configured primary FSR.")
 
-            spectral_fwhm_pix = trace.meta["nominal_fwhm_pix"] * active_slit_width_arcsec/ trace.meta["nominal_slit_width"]
-            wave_nm = wave.to_value(u.nm)
+            domain_coordinates = ztrain.trace_detector_coordinates(
+                xi=0 * u.arcsec,
+                wavelengths={trace_id: u.Quantity([domain_wave_low, domain_wave_high])},
+            )
+            domain_x_low, domain_x_high = domain_coordinates["detector_x"].to_value(u.pixel)
+            domain_x_low = max(domain_x_low, -0.5)
+            domain_x_high = min(domain_x_high, detector_naxis1 - 0.5)
+            n_float_bins = int(np.floor((domain_x_high - domain_x_low) / spectral_fwhm_pix))
+            float_boundaries = domain_x_low + np.arange(n_float_bins + 1) * spectral_fwhm_pix
+            raster_boundaries = np.floor(float_boundaries + 1).astype(int)
+            detector_x0_pix = raster_boundaries[:-1]
+            detector_x1_pix = raster_boundaries[1:]
+            raster_x_low = detector_x0_pix - 0.5
+            raster_x_high = detector_x1_pix - 0.5
+            complete = (
+                (detector_x0_pix >= 0)
+                & (detector_x1_pix <= detector_naxis1)
+                & (detector_x1_pix > detector_x0_pix)
+                & (raster_x_low >= domain_x_low)
+                & (raster_x_high <= domain_x_high)
+            )
+            detector_x0_pix = detector_x0_pix[complete]
+            detector_x1_pix = detector_x1_pix[complete]
+            if detector_x0_pix.size < 2:
+                raise ValueError(f"Trace {trace_id!r} has fewer than two complete native elements.")
+            spectral_width_pix = detector_x1_pix - detector_x0_pix
+            raster_x_low = detector_x0_pix - 0.5
+            raster_x_high = detector_x1_pix - 0.5
+            raster_x_center = 0.5 * (detector_x0_pix + detector_x1_pix) - 0.5
+
+            node_wave_nm = node_wave.to_value(u.nm)
+            wave_low_nm = np.interp(raster_x_low, node_x_pix, node_wave_nm)
+            wave_high_nm = np.interp(raster_x_high, node_x_pix, node_wave_nm)
+            requested_wave_nm = np.interp(raster_x_center, node_x_pix, node_wave_nm)
+            center_coordinates = ztrain.trace_detector_coordinates(
+                xi=0 * u.arcsec,
+                wavelengths={trace_id: requested_wave_nm * u.nm},
+            )
+            center_trace_ids = np.asarray(center_coordinates["trace_id"], dtype=str)
+            wave_nm = center_coordinates["wavelength"].to_value(u.nm)
+            detector_x_pix = center_coordinates["detector_x"].to_value(u.pixel)
+            detector_y_pix = center_coordinates["detector_y"].to_value(u.pixel)
+            if (len(center_coordinates) != len(requested_wave_nm)
+                or np.any(center_trace_ids != trace_id)
+                or not (np.all(np.isfinite(detector_x_pix)) and np.all(np.isfinite(detector_y_pix)))
+                or np.any(detector_x_pix < raster_x_low)
+                or np.any(detector_x_pix > raster_x_high)):
+                raise ValueError(f"Trace {trace_id!r} native centers did not remap through the configured train.")
+
+            dispersion_nm_pix = (wave_high_nm - wave_low_nm) / spectral_width_pix
+            if not np.all(np.isfinite(dispersion_nm_pix)) or np.any(dispersion_nm_pix <= 0):
+                raise ValueError(f"Trace {trace_id!r} has non-positive or non-finite native dispersion.")
+
             resolving_power = wave_nm / (spectral_fwhm_pix * dispersion_nm_pix)
-            psf_fwhm = fwhm_func(wave, zenith_angle, seeing).to_value(u.arcsec)
+            psf_fwhm = fwhm_func(wave_nm * u.nm, zenith_angle, seeing).to_value(u.arcsec)
             spatial_fwhm_pix = psf_fwhm / pixel_scale_arcsec
             resel_footprint_pix = spectral_fwhm_pix * spatial_fwhm_pix
 
@@ -945,10 +1000,15 @@ def trace_resolution_diagnostic_table(
                     "trace_id": trace_id,
                     "sample_index": idx,
                     "wave_nm": wave_nm[idx],
+                    "wave_low_nm": wave_low_nm[idx],
+                    "wave_high_nm": wave_high_nm[idx],
                     "detector_x_pix": detector_x_pix[idx],
                     "detector_y_pix": detector_y_pix[idx],
-                    "detector_naxis1": image_plane_header["NAXIS1"],
-                    "detector_naxis2": image_plane_header["NAXIS2"],
+                    "detector_x0_pix": detector_x0_pix[idx],
+                    "detector_x1_pix": detector_x1_pix[idx],
+                    "spectral_width_pix": spectral_width_pix[idx],
+                    "detector_naxis1": detector_naxis1,
+                    "detector_naxis2": detector_naxis2,
                     "pixel_scale_arcsec_pix": pixel_scale_arcsec,
                     "dispersion_nm_pix": dispersion_nm_pix[idx],
                     "resolving_power_R": resolving_power[idx],

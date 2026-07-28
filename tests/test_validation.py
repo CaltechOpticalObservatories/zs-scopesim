@@ -189,7 +189,7 @@ class FakeGeometryTrace:
             "aperture_id": 0,
             "image_plane_id": 0,
             "extension_id": 2,
-            "nominal_fwhm_pix": 4.0,
+            "nominal_fwhm_pix": 4.5,
             "nominal_slit_width": 0.7,
             "plate_scale": 17.5,
             "pixel_size": 0.01,
@@ -209,23 +209,31 @@ class FakeGeometryTraceList:
 
 
 class FakeSpectrograph:
-    def __init__(self, orders):
+    def __init__(self, orders, fsr_edges=(1.015, 1.085)):
         self.orders = np.asarray(orders, dtype=int)
+        self.fsr_edges = u.Quantity([fsr_edges] * len(self.orders), u.um)
 
     def order_mask(self, wave, fsr_edge=False):
         assert fsr_edge
+        wave_um = wave.to_value(u.um)
         return np.array([
-            (wave.to_value(u.um) >= 1.02)
-            & (wave.to_value(u.um) <= 1.08)
+            (wave_um > low.to_value(u.um)) & (wave_um < high.to_value(u.um))
+            for low, high in self.fsr_edges
         ])
+
+    def edge_wave(self, fsr=True):
+        assert fsr
+        return self.fsr_edges
 
 
 class FakeCurrentSlit:
-    data = Table({"y": [-0.35, 0.35] * u.arcsec})
+    def __init__(self, width=0.7):
+        self.data = Table({"y": [-0.5 * width, 0.5 * width] * u.arcsec})
 
 
 class FakeSlitWheel:
-    current_slit = FakeCurrentSlit()
+    def __init__(self, width=0.7):
+        self.current_slit = FakeCurrentSlit(width)
 
 
 class FakeTraceEfficiency:
@@ -245,20 +253,33 @@ class FakeImagePlane:
         self.header = header
 
 
+class FakeDetector:
+    def __init__(self, header):
+        self.header = header
+
+
 class FakeTraceFOV:
     trace_id = "B_1"
 
 
-def fake_trace_detector_coordinates():
+def fake_trace_detector_coordinates(*, xi=0 * u.arcsec, wavelengths=None):
+    node_wave = np.array([1.0, 1.02, 1.05, 1.08, 1.1])
+    node_x = np.array([0.0, 10.0, 25.0, 40.0, 50.0])
+    if wavelengths is None:
+        wave = node_wave
+    else:
+        wave = u.Quantity(wavelengths["B_1"]).to_value(u.um)
+    detector_x = np.interp(wave, node_wave, node_x)
+    detector_y = 5.0 + 0.05 * detector_x
     return QTable({
-        "readout_index": np.zeros(5, dtype=int),
-        "image_plane_id": np.zeros(5, dtype=int),
-        "detector_id": np.ones(5, dtype=int),
-        "trace_id": ["B_1"] * 5,
-        "wavelength": [1.0, 1.02, 1.05, 1.08, 1.1] * u.um,
-        "xi": np.zeros(5) * u.arcsec,
-        "detector_x": [10.0, 10.0, 13.0, 13.0, 15.0] * u.pixel,
-        "detector_y": [5.0, 7.0, 7.0, 10.0, 10.0] * u.pixel,
+        "readout_index": np.zeros(len(wave), dtype=int),
+        "image_plane_id": np.zeros(len(wave), dtype=int),
+        "detector_id": np.ones(len(wave), dtype=int),
+        "trace_id": ["B_1"] * len(wave),
+        "wavelength": wave * u.um,
+        "xi": np.full(len(wave), u.Quantity(xi).to_value(u.arcsec)) * u.arcsec,
+        "detector_x": detector_x * u.pixel,
+        "detector_y": detector_y * u.pixel,
     })
 
 
@@ -267,6 +288,8 @@ def make_fake_trace_resolution_train(
     mapped=None,
     fovs=None,
     include_order_authority=True,
+    slit_width=0.7,
+    fsr_edges=(1.015, 1.085),
 ):
     header = fits.Header({
         "NAXIS": 2,
@@ -288,12 +311,12 @@ def make_fake_trace_resolution_train(
         FakeNamedSelector(
             "slitwheel_selector",
             "aperture_id",
-            {0: FakeSlitWheel()},
+            {0: FakeSlitWheel(slit_width)},
         ),
     ]
     if include_order_authority:
         effects.insert(1, FakeTraceEfficiency({
-            "B": FakeSpectrograph([1]),
+            "B": FakeSpectrograph([1], fsr_edges=fsr_edges),
         }))
 
     train = type("FakeTraceResolutionTrain", (), {})()
@@ -304,17 +327,15 @@ def make_fake_trace_resolution_train(
         "!INST.nir_curr_slit": 0.7,
     }
     train.image_planes = [FakeImagePlane(header)]
+    train.detector_managers = [[FakeDetector(header.copy())]]
     train.fov_manager = type(
         "FakeFOVManager",
         (),
         {"fovs": [FakeTraceFOV()] if fovs is None else fovs},
     )()
     train.trace_detector_coordinates = (
-        lambda **_kwargs: (
-            fake_trace_detector_coordinates()
-            if mapped is None
-            else mapped
-        )
+        fake_trace_detector_coordinates
+        if mapped is None else lambda **_kwargs: mapped
     )
     train.optics_manager = type(
         "FakeOptics",
@@ -1424,50 +1445,7 @@ def test_trace_catalog_table_uses_in_memory_traces():
 
 
 def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
-    header = fits.Header({
-        "NAXIS": 2,
-        "NAXIS1": 200,
-        "NAXIS2": 50,
-        "CTYPE1D": "LINEAR",
-        "CTYPE2D": "LINEAR",
-        "CUNIT1D": "mm",
-        "CUNIT2D": "mm",
-        "CRVAL1D": 0.0,
-        "CRVAL2D": 0.0,
-        "CRPIX1D": 1.0,
-        "CRPIX2D": 1.0,
-        "CDELT1D": 0.01,
-        "CDELT2D": 0.01,
-    })
-    train = type("FakeTraceResolutionTrain", (), {})()
-    train.cmds = {
-        "!OBS.airmass": 1.0,
-        "!OBS.seeing": 0.5,
-        "!INST.vis_curr_slit": 0.7,
-        "!INST.nir_curr_slit": 0.7,
-    }
-    train.image_planes = [FakeImagePlane(header)]
-    train.fov_manager = type(
-        "FakeFOVManager",
-        (),
-        {"fovs": [FakeTraceFOV()]},
-    )()
-    train.trace_detector_coordinates = (
-        lambda **_kwargs: fake_trace_detector_coordinates()
-    )
-    train.optics_manager = type("FakeOptics", (), {
-        "all_effects": [
-            named_effect(FakeGeometryTraceList(), "trace_list_analytical"),
-            FakeTraceEfficiency({
-                "B": FakeSpectrograph([1]),
-            }),
-            FakeNamedSelector(
-                "slitwheel_selector",
-                "aperture_id",
-                {0: FakeSlitWheel()},
-            ),
-        ],
-    })()
+    train = make_fake_trace_resolution_train()
     monkeypatch.setattr(
         val,
         "_image_plane_pixel_area",
@@ -1482,25 +1460,40 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
         ),
     )
 
-    table = val.trace_resolution_diagnostic_table(train, samples_per_trace=3)
+    table = val.trace_resolution_diagnostic_table(train)
 
-    assert len(table) == 3
-    np.testing.assert_allclose(table["wave_nm"], [1020.0, 1050.0, 1080.0])
-    np.testing.assert_allclose(table["dispersion_nm_pix"], [10.0, 10.0, 10.0])
+    assert len(table) == 7
+    assert len(table) > 3  # the primary FSR contains only three geometry nodes
+    assert np.array_equal(table["sample_index"], np.arange(len(table)))
+    assert np.array_equal(table["detector_x1_pix"][:-1], table["detector_x0_pix"][1:])
+    assert np.array_equal(
+        np.concatenate([np.arange(row["detector_x0_pix"], row["detector_x1_pix"]) for row in table]),
+        np.arange(table["detector_x0_pix"][0], table["detector_x1_pix"][-1]),
+    )
+    assert set(table["spectral_width_pix"]) == {4, 5}
+    assert np.all(table["detector_x0_pix"] >= 0)
+    assert np.all(table["detector_x1_pix"] <= table["detector_naxis1"])
+    assert np.all(table["detector_x_pix"] >= table["detector_x0_pix"] - 0.5)
+    assert np.all(table["detector_x_pix"] <= table["detector_x1_pix"] - 0.5)
+    np.testing.assert_allclose(np.median(np.diff(table["detector_x_pix"])), 4.5)
+    np.testing.assert_allclose(
+        table["dispersion_nm_pix"],
+        (table["wave_high_nm"] - table["wave_low_nm"]) / table["spectral_width_pix"],
+    )
     np.testing.assert_allclose(
         table["resolving_power_R"],
-        [25.5, 26.25, 27.0],
+        table["wave_nm"] / (table["spectral_fwhm_pix"] * table["dispersion_nm_pix"]),
     )
-    np.testing.assert_allclose(
-        table["spectral_fwhm_pix"],
-        [4.0, 4.0, 4.0],
-    )
-    np.testing.assert_allclose(table["spatial_fwhm_pix"], [5.0, 5.0, 5.0])
-    np.testing.assert_allclose(table["resel_footprint_pix"], [20.0] * 3)
-    np.testing.assert_allclose(table["detector_x_pix"], [10.0, 13.0, 13.0])
-    np.testing.assert_allclose(table["detector_y_pix"], [7.0, 7.0, 10.0])
-    np.testing.assert_allclose(table["detector_naxis1"], [200] * 3)
-    np.testing.assert_allclose(table["detector_naxis2"], [50] * 3)
+    remapped = fake_trace_detector_coordinates(wavelengths={"B_1": table["wave_nm"] * u.nm})
+    np.testing.assert_allclose(table["detector_x_pix"], remapped["detector_x"].to_value(u.pixel))
+    np.testing.assert_allclose(table["detector_y_pix"], remapped["detector_y"].to_value(u.pixel))
+    np.testing.assert_allclose(table["spectral_fwhm_pix"], [4.5] * len(table))
+    np.testing.assert_allclose(table["spatial_fwhm_pix"], [5.0] * len(table))
+    np.testing.assert_allclose(table["resel_footprint_pix"], [22.5] * len(table))
+    np.testing.assert_allclose(table["detector_naxis1"], [200] * len(table))
+    np.testing.assert_allclose(table["detector_naxis2"], [50] * len(table))
+    primary_fsr = FakeSpectrograph([1]).order_mask(table["wave_nm"] * u.nm, fsr_edge=True)[0]
+    assert np.all(primary_fsr)
     assert not {
         "detector_x_mm",
         "detector_y_mm",
@@ -1509,24 +1502,107 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
         "spectrograph_y_pix",
     } & set(table.colnames)
 
-    capped = val.trace_resolution_diagnostic_table(train, samples_per_trace=2)
-    np.testing.assert_allclose(capped["wave_nm"], [1020.0, 1080.0])
-
     summary = val.trace_resolution_summary_table(table)
     assert list(summary["channel"]) == ["B"]
-    np.testing.assert_allclose(summary["trace_R_median"], [26.25])
-    np.testing.assert_allclose(summary["spectral_fwhm_pix"], [4.0])
-    np.testing.assert_allclose(summary["resel_footprint_min_pix"], [20.0])
-    np.testing.assert_allclose(summary["resel_footprint_max_pix"], [20.0])
+    np.testing.assert_allclose(summary["trace_R_median"], [np.median(table["resolving_power_R"])])
+    np.testing.assert_allclose(summary["spectral_fwhm_pix"], [4.5])
+    np.testing.assert_allclose(summary["resel_footprint_min_pix"], [22.5])
+    np.testing.assert_allclose(summary["resel_footprint_max_pix"], [22.5])
 
     display_table = val.trace_resolution_summary_display_table(summary)
     assert list(display_table.columns) == [
         "ch", "id", "orders", "wave nm", "slit", "spec FWHM pix",
         "disp nm/pix", "R k", "resel pix", "seeing",
     ]
-    assert display_table.loc[0, "R k"] == "0.0"
-    assert display_table.loc[0, "spec FWHM pix"] == "4.00"
-    assert display_table.loc[0, "resel pix"] == "20.0"
+    assert display_table.loc[0, "R k"] == "0.1"
+    assert display_table.loc[0, "spec FWHM pix"] == "4.50"
+    assert display_table.loc[0, "resel pix"] == "22.5"
+
+
+def test_trace_resolution_diagnostic_table_scales_native_count_with_slit(monkeypatch):
+    monkeypatch.setattr(
+        val,
+        "_image_plane_pixel_area",
+        lambda _ztrain, _image_plane_id: 0.01 * u.arcsec**2,
+    )
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            None,
+        ),
+    )
+
+    wide = val.trace_resolution_diagnostic_table(make_fake_trace_resolution_train(slit_width=0.70))
+    narrow = val.trace_resolution_diagnostic_table(make_fake_trace_resolution_train(slit_width=0.33))
+
+    assert abs(len(narrow) - len(wide) * 0.70 / 0.33) <= 2
+    np.testing.assert_allclose(
+        np.median(np.diff(narrow["detector_x_pix"])),
+        narrow["spectral_fwhm_pix"][0],
+        rtol=0.1,
+    )
+    np.testing.assert_allclose(wide["spectral_fwhm_pix"], 4.5)
+    np.testing.assert_allclose(narrow["spectral_fwhm_pix"], 4.5 * 0.33 / 0.70)
+    assert set(wide["spectral_width_pix"]) == {4, 5}
+    assert set(narrow["spectral_width_pix"]) == {2, 3}
+
+
+@pytest.mark.parametrize("fsr_edges", [(1.02, 1.08), (1.015, 1.085)])
+def test_trace_resolution_diagnostic_table_rasterizes_boundary_phases(monkeypatch, fsr_edges):
+    monkeypatch.setattr(
+        val,
+        "_image_plane_pixel_area",
+        lambda _ztrain, _image_plane_id: 0.01 * u.arcsec**2,
+    )
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            None,
+        ),
+    )
+
+    train = make_fake_trace_resolution_train(fsr_edges=fsr_edges)
+    table = val.trace_resolution_diagnostic_table(train)
+
+    assert np.array_equal(table["sample_index"], np.arange(len(table)))
+    assert np.array_equal(table["detector_x1_pix"][:-1], table["detector_x0_pix"][1:])
+    assert np.sum(table["spectral_width_pix"]) == table["detector_x1_pix"][-1] - table["detector_x0_pix"][0]
+    assert set(table["spectral_width_pix"]) == {4, 5}
+    spectrograph = FakeSpectrograph([1], fsr_edges=fsr_edges)
+    assert np.all(spectrograph.order_mask(table["wave_nm"] * u.nm, fsr_edge=True)[0])
+
+
+def test_trace_resolution_diagnostic_table_uses_configured_detector_edges(monkeypatch):
+    monkeypatch.setattr(
+        val,
+        "_image_plane_pixel_area",
+        lambda _ztrain, _image_plane_id: 0.01 * u.arcsec**2,
+    )
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            None,
+        ),
+    )
+
+    train = make_fake_trace_resolution_train(fsr_edges=(1.0, 1.1))
+    train.image_planes[0].header["NAXIS1"] = 200
+    train.detector_managers[0][0].header["NAXIS1"] = 48
+    table = val.trace_resolution_diagnostic_table(train)
+
+    assert np.all(table["detector_x0_pix"] >= 0)
+    assert np.all(table["detector_x1_pix"] <= 48)
+    assert np.all(table["detector_naxis1"] == 48)
+
+    train.detector_managers[0].append(FakeDetector(train.detector_managers[0][0].header))
+    with pytest.raises(NotImplementedError, match="one configured detector per image plane"):
+        val.trace_resolution_diagnostic_table(train)
 
 
 def test_trace_resolution_diagnostic_table_requires_configured_fwhm(
@@ -1593,7 +1669,7 @@ def test_trace_resolution_diagnostic_table_requires_configured_fwhm(
     )
 
     with pytest.raises(KeyError, match="nominal_fwhm_pix"):
-        val.trace_resolution_diagnostic_table(train, samples_per_trace=3)
+        val.trace_resolution_diagnostic_table(train)
 
 
 def test_trace_resolution_diagnostic_table_requires_one_ordered_mapped_run(
@@ -1617,7 +1693,7 @@ def test_trace_resolution_diagnostic_table_requires_one_ordered_mapped_run(
     unordered = fake_trace_detector_coordinates()
     unordered["wavelength"] = [1.0, 1.05, 1.02, 1.08, 1.1] * u.um
     unordered_run = make_fake_trace_resolution_train(mapped=unordered)
-    with pytest.raises(NotImplementedError, match="wavelength-ordered mapped run"):
+    with pytest.raises(NotImplementedError, match="wavelength-ordered detector-x run"):
         val.trace_resolution_diagnostic_table(unordered_run)
 
 

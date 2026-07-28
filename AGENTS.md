@@ -3,6 +3,11 @@ Use conda run -n zssim jupyter server list to see what might be active or execut
 
 This repository favors transparent, directly inspectable scientific code over generalized library-style abstractions.
 
+### ACP memory guard
+- heap limit is about 4 GiB and distinct from IDE's overall 8GiB heap limit 
+- Do not print, serialize, or send entire notebook files, notebook outputs, or full multi-thousand-line diffs through the chat/tool stream. 
+- Inspect notebook source by relevant cell IDs or narrow source ranges. Avoid loading large notebook output blobs into the conversation.
+
 ### Directness and readability
 
 - Write the physical calculation where it is used, in the same order that a scientist would derive or inspect it.

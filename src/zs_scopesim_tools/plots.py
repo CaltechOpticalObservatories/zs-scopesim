@@ -2821,11 +2821,15 @@ def plot_resolving_power_echellogram(
     vmin: float | None = None,
     vmax: float | None = None,
     trace_width_fraction: float | list[float] | tuple[float, ...] = 0.2,
+    max_display_samples_per_trace: int | None = None,
 ):
     """Plot resolving power on the detector planes."""
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection
     from matplotlib.colors import Normalize
+
+    if max_display_samples_per_trace is not None and max_display_samples_per_trace < 2:
+        raise ValueError("max_display_samples_per_trace must be at least 2.")
 
     base_width = plt.rcParams["lines.linewidth"]
     image_plane_ids = sorted({int(value) for value in table["image_plane_id"]})
@@ -2863,6 +2867,9 @@ def plot_resolving_power_echellogram(
             trace_rows = rows[trace_mask]
             trace_values = row_values[trace_mask]
             order = np.argsort(trace_rows["sample_index"])
+            if max_display_samples_per_trace is not None and len(order) > max_display_samples_per_trace:
+                display_indices = np.linspace(0, len(order) - 1, max_display_samples_per_trace, dtype=int)
+                order = order[display_indices]
             x = trace_rows["detector_x_pix"][order]
             y = trace_rows["detector_y_pix"][order]
             trace_values = trace_values[order]

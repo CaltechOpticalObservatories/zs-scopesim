@@ -1137,3 +1137,20 @@ def test_resolving_power_echellogram_smoke():
     np.testing.assert_allclose(axes[0, 0].get_ylim(), [0, 50])
     np.testing.assert_allclose(axes[0, 0].collections[0].get_segments()[0][1], [0, 45])
     fig.clf()
+
+    dense_table = table[np.zeros(201, dtype=int)]
+    dense_table["sample_index"] = np.arange(201)
+    dense_table["detector_x_pix"] = np.arange(201, dtype=float)
+    dense_table["wave_nm"] = 1000 + np.arange(201)
+    dense_table["resolving_power_R"] = 20000 + np.arange(201)
+    fig, axes = plots.plot_resolving_power_echellogram(
+        dense_table,
+        max_display_samples_per_trace=17,
+    )
+
+    assert len(dense_table) == 201
+    segments = axes[0, 0].collections[0].get_segments()
+    assert len(segments) == 17
+    np.testing.assert_allclose(segments[0][1, 0], 0)
+    np.testing.assert_allclose(segments[-1][1, 0], 200)
+    fig.clf()
