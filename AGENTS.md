@@ -63,6 +63,7 @@ This repository favors transparent, directly inspectable scientific code over ge
 - Comments and docstrings should explain non-obvious physics, units, coordinate conventions, or deliberate approximations.
 - Do not narrate obvious control flow or restate the code in prose.
 - One-line private helpers and notebook utilities generally do not need elaborate docstrings.
+- When LaTeX is supported (especially Matplotlib/Jupyter labels), write symbols with ASCII-only LaTeX/mathtext such as `r"$\Delta m_5$"` and `r"$R\approx1000$"`; never insert literal Unicode mathematical or Greek characters into source.
 
 ### Scope discipline
 
