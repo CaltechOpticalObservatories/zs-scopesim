@@ -1,4 +1,6 @@
 
+Use conda run -n zssim jupyter server list to see what might be active or executing before getting started.
+
 This repository favors transparent, directly inspectable scientific code over generalized library-style abstractions.
 
 ### Directness and readability
