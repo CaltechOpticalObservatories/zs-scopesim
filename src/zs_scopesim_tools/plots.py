@@ -3048,7 +3048,10 @@ def plot_limiting_magnitude_curves(
 
     Presentation filtering is independent for every curve unless
     ``shared_presentation_mask_selector`` explicitly identifies the scientific
-    curve whose retained row keys should be shared.
+    curve whose retained row keys should be shared. A plot specification can
+    instead provide ``presentation_mask_selector`` for one curve. The optional
+    ``order_rolling_median_bins`` smooths only plotted magnitudes, separately
+    within every contiguous displayed order run.
     """
     import matplotlib.pyplot as plt
     import pandas as pd
@@ -3131,18 +3134,51 @@ def plot_limiting_magnitude_curves(
             curve = curve[
                 curve["limiting_magnitude_ab"] >= minimum_limiting_magnitude_ab
             ]
+        selection_keys = shared_selection_keys
+        if "presentation_mask_selector" in spec:
+            if shared_selection_keys is not None:
+                raise ValueError(
+                    "Use either the shared presentation mask or a per-curve "
+                    "presentation_mask_selector"
+                )
+            presentation_curve = select_curve(
+                spec["presentation_mask_selector"]
+            )
+            if minimum_limiting_magnitude_ab is not None:
+                presentation_curve = presentation_curve[
+                    presentation_curve["limiting_magnitude_ab"]
+                    >= minimum_limiting_magnitude_ab
+                ]
+            presentation_display = _limiting_magnitude_display_rows(
+                presentation_curve,
+                dynamic_range_mag=dynamic_range_mag,
+            )
+            selection_keys = pd.MultiIndex.from_frame(
+                presentation_display[[
+                    "channel", "trace_id", "contiguous_order_run",
+                    "bin_index_within_run", "nominal_wavelength_low_nm",
+                    "nominal_wavelength_high_nm",
+                ]]
+            )
         display = _limiting_magnitude_display_rows(
             curve,
             dynamic_range_mag=dynamic_range_mag,
-            selection_keys=shared_selection_keys,
+            selection_keys=selection_keys,
         )
+        display["plotted_limiting_magnitude_ab"] = display["limiting_magnitude_ab"]
+        if "order_rolling_median_bins" in spec:
+            smoothing_bins = spec["order_rolling_median_bins"]
+            if smoothing_bins < 1 or smoothing_bins % 2 != 1:
+                raise ValueError( "order_rolling_median_bins must be a positive odd integer")
+            display["plotted_limiting_magnitude_ab"] = (
+                display.groupby(["channel", "trace_id", "contiguous_order_run", "display_run"],
+                                sort=False)["limiting_magnitude_ab"]
+                .transform(lambda values: values.rolling(smoothing_bins, center=True, min_periods=1).median())
+            )
         display_frames.append(display)
         color = spec.get("color", f"C{index}")
         linestyle = spec.get("linestyle", "-")
-        linewidth = (
-            spec.get("linewidth_multiplier", 1.0)
-            * plt.rcParams["lines.linewidth"]
-        )
+        linewidth = spec.get("linewidth_multiplier", 1.0) * plt.rcParams["lines.linewidth"]
         alpha = spec.get("alpha", 0.95)
         style = {
             "color": color,
@@ -3153,26 +3189,20 @@ def plot_limiting_magnitude_curves(
         for channel in list(dict.fromkeys(display["channel"])):
             channel_rows = display[display["channel"] == channel]
             for (_trace_id, _order_run, _display_run), run_rows in (
-                channel_rows.groupby(
-                    ["trace_id", "contiguous_order_run", "display_run"],
-                    sort=False,
-                )
+                channel_rows.groupby( ["trace_id", "contiguous_order_run", "display_run"], sort=False)
             ):
                 run_rows = run_rows.sort_values("nominal_wavelength_nm")
-                run_style = (
-                    style if len(run_rows) > 1
-                    else {**style, "marker": ".", "markersize": 3}
-                )
+                run_style = style if len(run_rows) > 1 else {**style, "marker": ".", "markersize": 3}
                 ax.plot(
                     run_rows["nominal_wavelength_nm"] / 1000,
-                    run_rows["limiting_magnitude_ab"],
+                    run_rows["plotted_limiting_magnitude_ab"],
                     **run_style,
                 )
         handles.append(Line2D([0], [0], **style))
         labels.append(spec["label"])
 
     data = pd.concat(display_frames, ignore_index=True)
-    finite = data["limiting_magnitude_ab"].to_numpy()
+    finite = data["plotted_limiting_magnitude_ab"].to_numpy()
     low, high = np.percentile(finite, [1, 99.5])
     pad = max(0.2, 0.08 * (high - low))
     label_y = low - pad + 0.045 * (high - low + 2 * pad)
@@ -3185,9 +3215,7 @@ def plot_limiting_magnitude_curves(
 
     channel_ranges = []
     for channel in ("B", "G", "R", "YJ", "H", "K"):
-        waves = data.loc[
-            data["channel"] == channel, "nominal_wavelength_nm"
-        ].to_numpy() / 1000
+        waves = data.loc[data["channel"] == channel, "nominal_wavelength_nm"].to_numpy() / 1000
         if len(waves):
             channel_ranges.append((channel, np.min(waves), np.max(waves)))
     for channel, wave_low, wave_high in channel_ranges:
@@ -3199,9 +3227,7 @@ def plot_limiting_magnitude_curves(
             va="bottom",
             fontweight="semibold",
         )
-    for previous, current in zip(
-        channel_ranges[:-1], channel_ranges[1:], strict=True,
-    ):
+    for previous, current in zip(channel_ranges[:-1], channel_ranges[1:], strict=True):
         ax.axvline(
             0.5 * (previous[2] + current[1]),
             color="0.5",

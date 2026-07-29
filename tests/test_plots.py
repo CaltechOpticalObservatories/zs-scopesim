@@ -1286,6 +1286,47 @@ def test_limiting_magnitude_plot_shared_mask_uses_scientific_selector():
     fig.clf()
 
 
+def test_limiting_magnitude_plot_per_curve_mask_and_order_smoothing():
+    catalog = limiting_magnitude_catalog_for_plot_tests()
+    simulation_all = {
+        "integration": "1 hour",
+        "slit_arcsec": 0.70,
+        "ao_enabled": False,
+        "bin_factor": 18,
+        "sky_model": "simulation",
+        "native_element_selection": "all elements",
+    }
+    no_oh_all = {
+        **simulation_all,
+        "bin_factor": 1,
+        "sky_model": "no OH",
+    }
+    fig, ax = plots.plot_limiting_magnitude_curves(
+        catalog,
+        [{
+            **simulation_all,
+            "label": "smoothed",
+            "color": "C0",
+            "presentation_mask_selector": no_oh_all,
+            "order_rolling_median_bins": 3,
+        }],
+        title="Per-curve presentation",
+    )
+
+    data_lines = [line for line in ax.lines if line.get_color() == "C0"]
+    assert [line.get_xdata().tolist() for line in data_lines] == [
+        [0.4, 0.401, 0.402],
+        [0.41],
+        [0.5],
+    ]
+    assert [line.get_ydata().tolist() for line in data_lines] == [
+        [22.0, 24.0, 22.0],
+        [23.0],
+        [23.0],
+    ]
+    fig.clf()
+
+
 def test_limiting_magnitude_plot_applies_explicit_minimum_only_to_display():
     catalog = limiting_magnitude_catalog_for_plot_tests()
     original_length = len(catalog)
