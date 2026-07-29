@@ -1899,3 +1899,247 @@ def test_resolution_element_snr_summary_table_scales_positive_median():
     np.testing.assert_allclose(table["median_positive_pixel_snr"], [2.0])
     np.testing.assert_allclose(table["median_resel_snr"], [6.0])
     assert list(table["positive_snr_pixels"]) == [3]
+
+
+def _limiting_magnitude(input_abmag, signal, source_variance, non_source_variance):
+    target_snr = 5.0
+    q2 = target_snr**2
+    discriminant = (
+        (q2 * source_variance) ** 2
+        + 4 * signal**2 * q2 * non_source_variance
+    )
+    scale = (
+        q2 * source_variance + np.sqrt(discriminant)
+    ) / (2 * signal**2)
+    return input_abmag - 2.5 * np.log10(scale)
+
+
+def make_paired_selection_samples():
+    native_specs = [
+        ("B", "b_1", 0, 400.00, 0, 1, 10.0, 2.0, 3.0),
+        ("B", "b_1", 1, 400.10, 1, 2, 8.0, 2.0, 3.0),
+        ("B", "b_1", 2, 400.20, 2, 3, 6.0, 2.0, 40.0),
+        ("B", "b_1", 4, 401.00, 10, 11, 4.0, 2.0, 20.0),
+        ("B", "b_1", 5, 401.10, 11, 12, 2.0, 2.0, 2.0),
+        ("H", "h_2", 0, 1600.00, 0, 1, 9.0, 3.0, 3.0),
+        ("H", "h_2", 1, 1600.10, 1, 2, 7.0, 3.0, 30.0),
+        ("H", "h_2", 2, 1600.20, 2, 3, 5.0, 3.0, 3.0),
+    ]
+    rows = []
+    for channel, trace_id, sample_index, wave_nm, x0, x1, signal, fixed, simulation_fixed in native_specs:
+        wave_low_nm = wave_nm - 0.05
+        wave_high_nm = wave_nm + 0.05
+        row = {
+            "case": '0.70" slit',
+            "channel": channel,
+            "trace_id": trace_id,
+            "sample_index": sample_index,
+            "bin_index": sample_index,
+            "native_start_index": sample_index,
+            "native_stop_index": sample_index + 1,
+            "native_count": 1,
+            "bin_factor": 1,
+            "wave_nm": wave_nm,
+            "wave_low_nm": wave_low_nm,
+            "wave_high_nm": wave_high_nm,
+            "x0": x0,
+            "x1": x1,
+            "resolution_width_nm": 0.1,
+            "extraction_R": wave_nm / 0.1,
+            "input_abmag": 20.0,
+            "target_snr": 5.0,
+            "signal_e": signal,
+            "source_var_e": signal,
+            "background_e": 0.5 * (fixed - 1.0),
+            "background_var_e": fixed - 1.0,
+            "detector_var_e": 1.0,
+            "fixed_variance_e": fixed,
+            "snr_at_input": signal / np.sqrt(signal + fixed),
+            "m5_ab": _limiting_magnitude(20.0, signal, signal, fixed),
+            "simulation_signal_e": signal,
+            "simulation_source_var_e": signal,
+            "simulation_background_e": 0.5 * (simulation_fixed - 1.0),
+            "simulation_background_var_e": simulation_fixed - 1.0,
+            "simulation_detector_var_e": 1.0,
+            "simulation_fixed_variance_e": simulation_fixed,
+            "simulation_m5_ab": _limiting_magnitude(
+                20.0, signal, signal, simulation_fixed
+            ),
+        }
+        rows.append(row)
+
+    native = Table(rows=rows)
+    for channel, trace_id, groups in (
+        ("B", "b_1", ((0, 2), (2, 3), (4, 6))),
+        ("H", "h_2", ((0, 2), (2, 3))),
+    ):
+        trace_native = native[
+            (native["channel"] == channel)
+            & (native["trace_id"] == trace_id)
+        ]
+        for bin_index, (start, stop) in enumerate(groups):
+            group = trace_native[
+                (trace_native["sample_index"] >= start)
+                & (trace_native["sample_index"] < stop)
+            ]
+            signal = np.sum(group["signal_e"])
+            source_variance = np.sum(group["source_var_e"])
+            non_source_variance = np.sum(group["fixed_variance_e"])
+            rows.append({
+                **{name: group[name][0] for name in native.colnames},
+                "sample_index": start,
+                "bin_index": bin_index,
+                "native_start_index": start,
+                "native_stop_index": stop,
+                "native_count": len(group),
+                "bin_factor": 2,
+                "wave_nm": 0.5 * (
+                    group["wave_low_nm"][0] + group["wave_high_nm"][-1]
+                ),
+                "wave_low_nm": group["wave_low_nm"][0],
+                "wave_high_nm": group["wave_high_nm"][-1],
+                "resolution_width_nm": np.sum(group["resolution_width_nm"]),
+                "extraction_R": (
+                    0.5 * (
+                        group["wave_low_nm"][0]
+                        + group["wave_high_nm"][-1]
+                    )
+                    / np.sum(group["resolution_width_nm"])
+                ),
+                "signal_e": signal,
+                "source_var_e": source_variance,
+                "background_e": np.sum(group["background_e"]),
+                "background_var_e": np.sum(group["background_var_e"]),
+                "detector_var_e": np.sum(group["detector_var_e"]),
+                "fixed_variance_e": non_source_variance,
+                "snr_at_input": signal / np.sqrt(
+                    source_variance + non_source_variance
+                ),
+                "m5_ab": _limiting_magnitude(
+                    20.0, signal, source_variance, non_source_variance
+                ),
+            })
+    return Table(rows=rows)
+
+
+def test_snr_selected_spectral_bins_returns_four_curves_without_crossing_gaps():
+    curves, native_selection = val.snr_selected_spectral_bins(
+        make_paired_selection_samples(),
+        bin_factors=(2,),
+        integration="1 hour",
+        slit_arcsec=0.70,
+        ao_enabled=False,
+    )
+
+    curve_keys = set(zip(
+        curves["sky_model"],
+        curves["native_element_selection"],
+        strict=True,
+    ))
+    assert curve_keys == {
+        ("simulation", "all elements"),
+        ("simulation", "S/N-selected"),
+        ("no OH", "all elements"),
+        ("no OH", "S/N-selected"),
+    }
+    b_rows = curves[
+        (curves["channel"] == "B")
+        & (curves["sky_model"] == "simulation")
+        & (curves["native_element_selection"] == "all elements")
+    ]
+    assert list(b_rows["contiguous_order_run"]) == [1, 1, 2]
+    assert list(b_rows["bin_index_within_run"]) == [0, 1, 0]
+    assert list(b_rows["complete_native_bin"]) == [True, False, True]
+    assert np.all(np.isfinite(curves["limiting_magnitude_ab"]))
+
+    selected = curves[curves["native_element_selection"] == "S/N-selected"]
+    all_elements = curves[curves["native_element_selection"] == "all elements"]
+    assert np.all(
+        selected["snr_at_input"]
+        >= all_elements["snr_at_input"]
+        - 1e-12 * np.maximum(1.0, np.abs(all_elements["snr_at_input"]))
+    )
+    assert np.all(
+        selected["retained_native_elements"]
+        <= selected["available_native_elements"]
+    )
+    assert set(native_selection["sky_model"]) == {"simulation", "no OH"}
+
+
+def test_snr_selected_spectral_bins_uses_independent_sky_model_masks():
+    _, native_selection = val.snr_selected_spectral_bins(
+        make_paired_selection_samples(),
+        bin_factors=(2,),
+        integration="1 hour",
+        slit_arcsec=0.33,
+        ao_enabled=True,
+    )
+    simulation = native_selection[
+        native_selection["sky_model"] == "simulation"
+    ]
+    no_oh = native_selection[native_selection["sky_model"] == "no OH"]
+
+    assert list(simulation["native_sample_index"]) == list(
+        no_oh["native_sample_index"]
+    )
+    assert np.any(
+        simulation["retained_by_snr_selection"]
+        != no_oh["retained_by_snr_selection"]
+    )
+    assert np.all(simulation["ao_enabled"])
+    np.testing.assert_allclose(simulation["slit_arcsec"], 0.33)
+
+
+def test_fixed_bin_no_oh_curves_copy_authoritative_limiting_magnitudes():
+    samples = make_paired_selection_samples()
+    reconstructed, _ = val.snr_selected_spectral_bins(
+        samples,
+        bin_factors=(2,),
+        integration="1 hour",
+        slit_arcsec=0.70,
+        ao_enabled=False,
+    )
+    fixed = val.fixed_bin_no_oh_limiting_magnitude_curves(
+        samples,
+        bin_factors=(2,),
+        integration="1 hour",
+        slit_arcsec=0.70,
+        ao_enabled=False,
+    )
+    no_oh_all = reconstructed[
+        (reconstructed["sky_model"] == "no OH")
+        & (
+            reconstructed["native_element_selection"]
+            == "all elements"
+        )
+    ]
+
+    fixed_keys = [
+        (
+            str(row["channel"]),
+            str(row["trace_id"]),
+            int(row["contiguous_order_run"]),
+            int(row["bin_index_within_run"]),
+        )
+        for row in fixed
+    ]
+    reconstructed_by_key = {
+        (
+            str(row["channel"]),
+            str(row["trace_id"]),
+            int(row["contiguous_order_run"]),
+            int(row["bin_index_within_run"]),
+        ): row
+        for row in no_oh_all
+    }
+    np.testing.assert_allclose(
+        fixed["limiting_magnitude_ab"],
+        [
+            reconstructed_by_key[key]["limiting_magnitude_ab"]
+            for key in fixed_keys
+        ],
+    )
+    np.testing.assert_allclose(
+        fixed["limiting_magnitude_ab"],
+        samples[samples["bin_factor"] == 2]["m5_ab"],
+    )

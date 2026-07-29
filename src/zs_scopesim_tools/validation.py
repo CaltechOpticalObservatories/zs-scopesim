@@ -3873,3 +3873,437 @@ def validate_transmission_sanity_data(data: Mapping[str, Any]) -> None:
                     f"{np.nanmin(finite):.3g}..{np.nanmax(finite):.3g}",
                     stacklevel=2,
                 )
+
+
+def snr_selected_spectral_bins(
+    paired_samples: Table,
+    *,
+    bin_factors: tuple[int, ...],
+    integration: str,
+    slit_arcsec: float,
+    ao_enabled: bool,
+) -> tuple[Table, Table]:
+    """Calculate all-element and S/N-selected limiting-magnitude curves.
+
+    Unprefixed input columns describe the counterfactual ``no OH`` sky;
+    ``simulation_*`` columns describe the configured sky including
+    airglow/interline emission.
+
+    ``contiguous_order_run`` starts when sample indices, detector rectangles,
+    or wavelength edges stop being contiguous. ``bin_index_within_run`` is
+    local and zero-based. ``non_source_variance_e2`` is the matched-sky plus
+    detector variance that does not scale with trial source flux.
+    ``retained_source_signal_fraction`` is selected signal divided by all
+    available signal. ``complete_native_bin`` requires exactly ``bin_factor``
+    valid contiguous native elements.
+    """
+    native = paired_samples[
+        (paired_samples["bin_factor"] == 1)
+        & (paired_samples["native_count"] == 1)
+    ]
+    unsorted_channels = np.asarray(native["channel"], dtype=str)
+    channel_order = sorted(
+        set(unsorted_channels),
+        key=lambda channel: np.median(native["wave_nm"][unsorted_channels == channel]),
+    )
+    native = native[np.lexsort((
+        np.asarray(native["sample_index"], dtype=int),
+        np.asarray(native["trace_id"], dtype=str),
+        np.asarray(native["channel"], dtype=str),
+    ))]
+
+    sky_models = ("simulation", "no OH")
+    source_signal_native = np.stack((
+        np.asarray(native["simulation_signal_e"], dtype=float),
+        np.asarray(native["signal_e"], dtype=float),
+    ))
+    source_shot_variance_native = np.stack((
+        np.asarray(native["simulation_source_var_e"], dtype=float),
+        np.asarray(native["source_var_e"], dtype=float),
+    ))
+    non_source_variance_native = np.stack((
+        np.asarray(native["simulation_fixed_variance_e"], dtype=float),
+        np.asarray(native["fixed_variance_e"], dtype=float),
+    ))
+    sky_variance_native = np.stack((
+        np.asarray(native["simulation_background_var_e"], dtype=float),
+        np.asarray(native["background_var_e"], dtype=float),
+    ))
+    detector_variance_native = np.stack((
+        np.asarray(native["simulation_detector_var_e"], dtype=float),
+        np.asarray(native["detector_var_e"], dtype=float),
+    ))
+    native_wave_nm = np.asarray(native["wave_nm"], dtype=float)
+    native_width_nm = np.asarray(native["wave_high_nm"] - native["wave_low_nm"], dtype=float)
+    native_resolution_width_nm = np.asarray(native["resolution_width_nm"], dtype=float)
+    added_configured_sky_e = np.asarray(
+        native["simulation_background_e"] - native["background_e"], dtype=float,
+    )
+
+    input_abmag = float(native["input_abmag"][0])
+    target_snr = float(native["target_snr"][0])
+    q2 = target_snr**2
+    curve_rows, native_rows = [], []
+
+    for bin_factor in bin_factors:
+        bin_factor = int(bin_factor)
+        if bin_factor <= 0:
+            raise ValueError(f"bin_factor must be positive, got {bin_factor}")
+
+        channels = np.asarray(native["channel"], dtype=str)
+        traces = np.asarray(native["trace_id"], dtype=str)
+        bin_native_indices, bin_metadata = [], []
+        for channel in channel_order:
+            channel_rows = channels == channel
+            trace_order = sorted(
+                set(traces[channel_rows]),
+                key=lambda value: (
+                    str(value).rpartition("_")[0],
+                    int(str(value).rpartition("_")[2]),
+                ),
+            )
+            for trace_id in trace_order:
+                indices = np.flatnonzero(channel_rows & (traces == trace_id))
+                indices = indices[np.argsort(native["sample_index"][indices])]
+                new_run = np.r_[
+                    True,
+                    (np.diff(native["sample_index"][indices]) != 1)
+                    | (native["x1"][indices[:-1]] != native["x0"][indices[1:]])
+                    | ~np.isclose(
+                        native["wave_high_nm"][indices[:-1]],
+                        native["wave_low_nm"][indices[1:]],
+                        rtol=0, atol=1e-12,
+                    ),
+                ]
+                contiguous_runs = np.cumsum(new_run)
+                for contiguous_order_run in np.unique(contiguous_runs):
+                    run_indices = indices[contiguous_runs == contiguous_order_run]
+                    for bin_index_within_run, start in enumerate(
+                        range(0, len(run_indices), bin_factor)
+                    ):
+                        group = run_indices[start:start + bin_factor]
+                        bin_native_indices.append(group)
+                        bin_metadata.append({
+                            "channel": channel,
+                            "trace_id": trace_id,
+                            "contiguous_order_run": int(contiguous_order_run),
+                            "bin_index_within_run": bin_index_within_run,
+                            "native_start_sample_index": int(native["sample_index"][group[0]]),
+                            "native_stop_sample_index": int(native["sample_index"][group[-1]]) + 1,
+                            "nominal_wavelength_low_nm": float(native["wave_low_nm"][group[0]]),
+                            "nominal_wavelength_high_nm": float(native["wave_high_nm"][group[-1]]),
+                        })
+
+        n_bins = len(bin_native_indices)
+        padded_native_index = np.full((n_bins, bin_factor), -1, dtype=int)
+        for bin_index, indices in enumerate(bin_native_indices):
+            padded_native_index[bin_index, :len(indices)] = indices
+        native_present = padded_native_index >= 0
+        assert np.all(np.bincount(
+            padded_native_index[native_present], minlength=len(native),
+        ) == 1)
+        safe_index = np.where(native_present, padded_native_index, 0)
+
+        def gather(values):
+            values = np.asarray(values)
+            if values.ndim == 1:
+                values = values[None, :]
+            return np.take_along_axis(
+                values[:, None, :], safe_index[None, :, :], axis=2,
+            )
+
+        source_signal = gather(source_signal_native)
+        source_shot_variance = gather(source_shot_variance_native)
+        non_source_variance = gather(non_source_variance_native)
+        sky_variance = gather(sky_variance_native)
+        detector_variance = gather(detector_variance_native)
+        wavelength_nm = gather(native_wave_nm)[0]
+        wavelength_width_nm = gather(native_width_nm)[0]
+        resolution_width_nm = np.where(
+            native_present, gather(native_resolution_width_nm)[0], 0.0,
+        ).sum(axis=1)
+
+        valid = (
+            native_present[None, :, :]
+            & np.isfinite(source_signal)
+            & np.isfinite(source_shot_variance)
+            & np.isfinite(non_source_variance)
+            & (source_shot_variance + non_source_variance > 0)
+        )
+        available_count = valid.sum(axis=2)
+        assert np.all(available_count > 0)
+        native_snr = np.full_like(source_signal, -np.inf)
+        native_snr[valid] = (
+            source_signal[valid]
+            / np.sqrt(source_shot_variance[valid] + non_source_variance[valid])
+        )
+
+        available_signal = np.where(valid, source_signal, 0.0)
+        available_source_variance = np.where(valid, source_shot_variance, 0.0)
+        available_non_source_variance = np.where(valid, non_source_variance, 0.0)
+        available_sky_variance = np.where(valid, sky_variance, 0.0)
+        available_detector_variance = np.where(valid, detector_variance, 0.0)
+        sort_order = np.argsort(-native_snr, axis=2, kind="stable")
+        sorted_signal = np.take_along_axis(available_signal, sort_order, axis=2)
+        sorted_variance = np.take_along_axis(
+            available_source_variance + available_non_source_variance,
+            sort_order, axis=2,
+        )
+        prefix_available = (
+            np.arange(bin_factor)[None, None, :] < available_count[:, :, None]
+        )
+        cumulative_snr = np.full_like(sorted_signal, np.nan)
+        cumulative_snr[prefix_available] = (
+            np.cumsum(sorted_signal, axis=2)[prefix_available]
+            / np.sqrt(np.cumsum(sorted_variance, axis=2)[prefix_available])
+        )
+        best_prefix_count = np.nanargmax(cumulative_snr, axis=2) + 1
+        sorted_retained = (
+            np.arange(bin_factor)[None, None, :] < best_prefix_count[:, :, None]
+        )
+        retained_mask = np.zeros_like(sorted_retained)
+        np.put_along_axis(retained_mask, sort_order, sorted_retained, axis=2)
+        retained_mask &= valid
+        retained_count = retained_mask.sum(axis=2)
+        assert np.all((retained_count >= 1) & (retained_count <= available_count))
+
+        components = {
+            "source_signal_e": available_signal,
+            "source_shot_variance_e2": available_source_variance,
+            "sky_variance_e2": available_sky_variance,
+            "detector_variance_e2": available_detector_variance,
+            "non_source_variance_e2": available_non_source_variance,
+        }
+        all_sums = {name: values.sum(axis=2) for name, values in components.items()}
+        selected_sums = {
+            name: (values * retained_mask).sum(axis=2)
+            for name, values in components.items()
+        }
+        all_total_variance = (
+            all_sums["source_shot_variance_e2"]
+            + all_sums["non_source_variance_e2"]
+        )
+        selected_total_variance = (
+            selected_sums["source_shot_variance_e2"]
+            + selected_sums["non_source_variance_e2"]
+        )
+        all_snr = all_sums["source_signal_e"] / np.sqrt(all_total_variance)
+        selected_snr = (
+            selected_sums["source_signal_e"] / np.sqrt(selected_total_variance)
+        )
+        assert np.all(
+            selected_snr >= all_snr - 1e-12 * np.maximum(1.0, np.abs(all_snr))
+        )
+
+        available_width_nm = np.where(valid, wavelength_width_nm[None, :, :], 0.0)
+        selected_wavelength_fraction = (
+            (available_width_nm * retained_mask).sum(axis=2)
+            / available_width_nm.sum(axis=2)
+        )
+        all_effective_wave_nm = (
+            wavelength_nm[None, :, :] * available_signal
+        ).sum(axis=2) / all_sums["source_signal_e"]
+        selected_effective_wave_nm = (
+            wavelength_nm[None, :, :] * available_signal * retained_mask
+        ).sum(axis=2) / selected_sums["source_signal_e"]
+        selected_signal_fraction = (
+            selected_sums["source_signal_e"] / all_sums["source_signal_e"]
+        )
+
+        for sky_index, sky_model in enumerate(sky_models):
+            for selection_name, sums, total_variance, snr, counts, width_fraction, effective_wave, signal_fraction in (
+                (
+                    "all elements", all_sums, all_total_variance, all_snr,
+                    available_count, np.ones((2, n_bins)), all_effective_wave_nm,
+                    np.ones((2, n_bins)),
+                ),
+                (
+                    "S/N-selected", selected_sums, selected_total_variance,
+                    selected_snr, retained_count, selected_wavelength_fraction,
+                    selected_effective_wave_nm, selected_signal_fraction,
+                ),
+            ):
+                signal = sums["source_signal_e"][sky_index]
+                source_variance = sums["source_shot_variance_e2"][sky_index]
+                non_source = sums["non_source_variance_e2"][sky_index]
+                discriminant = (
+                    (q2 * source_variance) ** 2
+                    + 4 * signal**2 * q2 * non_source
+                )
+                flux_scale = (
+                    q2 * source_variance + np.sqrt(discriminant)
+                ) / (2 * signal**2)
+                limiting_magnitude = input_abmag - 2.5 * np.log10(flux_scale)
+
+                for bin_index, metadata in enumerate(bin_metadata):
+                    nominal_wave_nm = 0.5 * (
+                        metadata["nominal_wavelength_low_nm"]
+                        + metadata["nominal_wavelength_high_nm"]
+                    )
+                    complete = (
+                        len(bin_native_indices[bin_index]) == bin_factor
+                        and available_count[sky_index, bin_index] == bin_factor
+                    )
+                    curve_rows.append({
+                        "integration": integration,
+                        "slit_arcsec": float(slit_arcsec),
+                        "ao_enabled": bool(ao_enabled),
+                        "bin_factor": bin_factor,
+                        "sky_model": sky_model,
+                        "native_element_selection": selection_name,
+                        **metadata,
+                        "nominal_wavelength_nm": nominal_wave_nm,
+                        "effective_wavelength_nm": effective_wave[sky_index, bin_index],
+                        "calculated_resolving_power": nominal_wave_nm / resolution_width_nm[bin_index],
+                        "input_abmag": input_abmag,
+                        "target_snr": target_snr,
+                        "limiting_magnitude_ab": limiting_magnitude[bin_index],
+                        **{
+                            name: values[sky_index, bin_index]
+                            for name, values in sums.items()
+                        },
+                        "total_variance_e2": total_variance[sky_index, bin_index],
+                        "snr_at_input": snr[sky_index, bin_index],
+                        "available_native_elements": int(available_count[sky_index, bin_index]),
+                        "retained_native_elements": int(counts[sky_index, bin_index]),
+                        "retained_wavelength_fraction": width_fraction[sky_index, bin_index],
+                        "retained_source_signal_fraction": signal_fraction[sky_index, bin_index],
+                        "complete_native_bin": bool(complete),
+                    })
+
+        for sky_index, sky_model in enumerate(sky_models):
+            for bin_index, metadata in enumerate(bin_metadata):
+                for slot, native_index in enumerate(padded_native_index[bin_index]):
+                    if native_index < 0:
+                        continue
+                    native_rows.append({
+                        "integration": integration,
+                        "slit_arcsec": float(slit_arcsec),
+                        "ao_enabled": bool(ao_enabled),
+                        "bin_factor": bin_factor,
+                        "sky_model": sky_model,
+                        "channel": metadata["channel"],
+                        "trace_id": metadata["trace_id"],
+                        "contiguous_order_run": metadata["contiguous_order_run"],
+                        "bin_index_within_run": metadata["bin_index_within_run"],
+                        "native_sample_index": int(native["sample_index"][native_index]),
+                        "native_wavelength_low_nm": float(native["wave_low_nm"][native_index]),
+                        "native_wavelength_high_nm": float(native["wave_high_nm"][native_index]),
+                        "native_wavelength_nm": float(native["wave_nm"][native_index]),
+                        "source_signal_e": source_signal[sky_index, bin_index, slot],
+                        "source_shot_variance_e2": source_shot_variance[sky_index, bin_index, slot],
+                        "non_source_variance_e2": non_source_variance[sky_index, bin_index, slot],
+                        "total_variance_e2": (
+                            source_shot_variance[sky_index, bin_index, slot]
+                            + non_source_variance[sky_index, bin_index, slot]
+                        ),
+                        "native_snr": native_snr[sky_index, bin_index, slot],
+                        "available_for_selection": bool(valid[sky_index, bin_index, slot]),
+                        "retained_by_snr_selection": bool(retained_mask[sky_index, bin_index, slot]),
+                        "configured_minus_no_oh_background_e": added_configured_sky_e[native_index],
+                    })
+
+    return Table(rows=curve_rows), Table(rows=native_rows)
+
+
+def fixed_bin_no_oh_limiting_magnitude_curves(
+    samples: Table,
+    *,
+    bin_factors: tuple[int, ...],
+    integration: str,
+    slit_arcsec: float,
+    ao_enabled: bool,
+) -> Table:
+    """Reshape authoritative fixed-bin no-OH products into catalog rows.
+
+    Existing ``m5_ab`` values are copied, not recalculated. Native rows supply
+    only the source-weighted effective wavelength.
+    """
+    selected = samples[np.isin(samples["bin_factor"], bin_factors)]
+    native = samples[
+        (samples["bin_factor"] == 1) & (samples["native_count"] == 1)
+    ]
+    channels = np.asarray(selected["channel"], dtype=str)
+    traces = np.asarray(selected["trace_id"], dtype=str)
+    channel_order = sorted(
+        set(channels),
+        key=lambda channel: np.median(selected["wave_nm"][channels == channel]),
+    )
+    rows = []
+
+    for channel in channel_order:
+        channel_rows = channels == channel
+        for trace_id in sorted(set(traces[channel_rows])):
+            for bin_factor in bin_factors:
+                indices = np.flatnonzero(
+                    channel_rows
+                    & (traces == trace_id)
+                    & (selected["bin_factor"] == bin_factor)
+                )
+                indices = indices[np.argsort(selected["bin_index"][indices])]
+                if len(indices) == 0:
+                    continue
+                new_run = np.r_[
+                    True,
+                    (np.diff(selected["bin_index"][indices]) != 1)
+                    | (
+                        selected["native_stop_index"][indices[:-1]]
+                        != selected["native_start_index"][indices[1:]]
+                    )
+                    | ~np.isclose(
+                        selected["wave_high_nm"][indices[:-1]],
+                        selected["wave_low_nm"][indices[1:]],
+                        rtol=0, atol=1e-12,
+                    ),
+                ]
+                contiguous_runs = np.cumsum(new_run)
+                for contiguous_order_run in np.unique(contiguous_runs):
+                    run_indices = indices[contiguous_runs == contiguous_order_run]
+                    for bin_index_within_run, row_index in enumerate(run_indices):
+                        sample = selected[row_index]
+                        native_rows = native[
+                            (native["channel"] == channel)
+                            & (native["trace_id"] == trace_id)
+                            & (native["sample_index"] >= sample["native_start_index"])
+                            & (native["sample_index"] < sample["native_stop_index"])
+                        ]
+                        effective_wave_nm = np.sum(
+                            native_rows["wave_nm"] * native_rows["signal_e"]
+                        ) / np.sum(native_rows["signal_e"])
+                        rows.append({
+                            "integration": integration,
+                            "slit_arcsec": float(slit_arcsec),
+                            "ao_enabled": bool(ao_enabled),
+                            "bin_factor": int(bin_factor),
+                            "sky_model": "no OH",
+                            "native_element_selection": "all elements",
+                            "channel": channel,
+                            "trace_id": trace_id,
+                            "contiguous_order_run": int(contiguous_order_run),
+                            "bin_index_within_run": bin_index_within_run,
+                            "native_start_sample_index": int(sample["native_start_index"]),
+                            "native_stop_sample_index": int(sample["native_stop_index"]),
+                            "nominal_wavelength_low_nm": float(sample["wave_low_nm"]),
+                            "nominal_wavelength_high_nm": float(sample["wave_high_nm"]),
+                            "nominal_wavelength_nm": float(sample["wave_nm"]),
+                            "effective_wavelength_nm": effective_wave_nm,
+                            "calculated_resolving_power": float(sample["extraction_R"]),
+                            "input_abmag": float(sample["input_abmag"]),
+                            "target_snr": float(sample["target_snr"]),
+                            "limiting_magnitude_ab": float(sample["m5_ab"]),
+                            "source_signal_e": float(sample["signal_e"]),
+                            "source_shot_variance_e2": float(sample["source_var_e"]),
+                            "sky_variance_e2": float(sample["background_var_e"]),
+                            "detector_variance_e2": float(sample["detector_var_e"]),
+                            "non_source_variance_e2": float(sample["fixed_variance_e"]),
+                            "total_variance_e2": float(
+                                sample["source_var_e"] + sample["fixed_variance_e"]
+                            ),
+                            "snr_at_input": float(sample["snr_at_input"]),
+                            "available_native_elements": int(sample["native_count"]),
+                            "retained_native_elements": int(sample["native_count"]),
+                            "retained_wavelength_fraction": 1.0,
+                            "retained_source_signal_fraction": 1.0,
+                            "complete_native_bin": bool(sample["native_count"] == bin_factor),
+                        })
+    return Table(rows=rows)
