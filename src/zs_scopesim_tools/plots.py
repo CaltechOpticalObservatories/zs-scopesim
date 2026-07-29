@@ -2167,11 +2167,7 @@ def _configure_detector_colorbar_ticks(colorbar: Any, norm: Any) -> None:
         locator = MaxNLocator(nbins=5, min_n_ticks=3)
 
     ticks = np.asarray(locator.tick_values(norm.vmin, norm.vmax), dtype=float)
-    ticks = ticks[
-        np.isfinite(ticks)
-        & (ticks >= norm.vmin)
-        & (ticks <= norm.vmax)
-    ]
+    ticks = ticks[np.isfinite(ticks) & (ticks >= norm.vmin) & (ticks <= norm.vmax)]
     colorbar.locator = FixedLocator(ticks)
     colorbar.formatter = formatter
     colorbar.update_ticks()
