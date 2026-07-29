@@ -2933,3 +2933,291 @@ def plot_resolving_power_echellogram(
         for collection in collections:
             collection.set_linewidth(linewidth)
     return fig, axes
+
+
+def _limiting_magnitude_display_rows(
+    curve,
+    *,
+    dynamic_range_mag,
+    selection_keys=None,
+):
+    """Apply the established per-order limiting-magnitude presentation mask."""
+    import pandas as pd
+
+    frame = curve.copy()
+    valid = (
+        np.isfinite(frame["limiting_magnitude_ab"])
+        & frame["complete_native_bin"].to_numpy(dtype=bool)
+    )
+    frame["_display_valid"] = valid
+    frame["_display_keep"] = False
+    row_key_columns = [
+        "channel", "trace_id", "contiguous_order_run",
+        "bin_index_within_run", "nominal_wavelength_low_nm",
+        "nominal_wavelength_high_nm",
+    ]
+
+    if selection_keys is not None:
+        row_keys = pd.MultiIndex.from_frame(frame[row_key_columns])
+        frame["_display_keep"] = valid & row_keys.isin(selection_keys)
+    else:
+        for _channel, channel_rows in frame.groupby("channel", sort=False):
+            channel_wave_nm = channel_rows["nominal_wavelength_nm"].to_numpy()
+            comparison_rows = []
+            valid_rows = channel_rows[channel_rows["_display_valid"]]
+            for (_trace_id, _order_run), order_rows in valid_rows.groupby(
+                ["trace_id", "contiguous_order_run"], sort=False,
+            ):
+                order_rows = order_rows.sort_values("bin_index_within_run")
+                comparison_rows.append(np.interp(
+                    channel_wave_nm,
+                    order_rows["nominal_wavelength_nm"].to_numpy(),
+                    order_rows["limiting_magnitude_ab"].to_numpy(),
+                    left=np.nan,
+                    right=np.nan,
+                ))
+            if not comparison_rows:
+                continue
+            local_upper = pd.Series(
+                np.ma.masked_invalid(
+                    np.vstack(comparison_rows)
+                ).max(axis=0).filled(np.nan),
+                index=channel_rows.index,
+            )
+            for (_trace_id, _order_run), order_rows in valid_rows.groupby(
+                ["trace_id", "contiguous_order_run"], sort=False,
+            ):
+                raw_order_peak = np.max(order_rows["limiting_magnitude_ab"])
+                keep = (
+                    order_rows["limiting_magnitude_ab"] == raw_order_peak
+                ) | (
+                    (
+                        order_rows["limiting_magnitude_ab"]
+                        >= raw_order_peak - dynamic_range_mag
+                    )
+                    & (
+                        order_rows["limiting_magnitude_ab"]
+                        >= local_upper.loc[order_rows.index] - dynamic_range_mag
+                    )
+                )
+                frame.loc[order_rows.index, "_display_keep"] = keep
+
+    selected = frame[frame["_display_keep"]].copy()
+    parts = []
+    for (_channel, _trace_id, _order_run), order_rows in selected.groupby(
+        ["channel", "trace_id", "contiguous_order_run"], sort=False,
+    ):
+        order_rows = order_rows.sort_values("bin_index_within_run").copy()
+        order_rows["display_run"] = np.cumsum(np.r_[
+            True,
+            np.diff(order_rows["bin_index_within_run"].to_numpy()) != 1,
+        ])
+        parts.append(order_rows)
+    if not parts:
+        raise ValueError("No complete finite rows remain after presentation filtering")
+    display = pd.concat(parts, ignore_index=True)
+
+    if selection_keys is None:
+        groups = ["channel", "trace_id", "contiguous_order_run"]
+        raw_peaks = (
+            frame[frame["_display_valid"]]
+            .groupby(groups, sort=False)["limiting_magnitude_ab"]
+            .max()
+        )
+        display_peaks = (
+            display.groupby(groups, sort=False)["limiting_magnitude_ab"].max()
+        )
+        assert raw_peaks.index.equals(display_peaks.index)
+        assert np.array_equal(raw_peaks.to_numpy(), display_peaks.to_numpy())
+    return display.drop(columns=["_display_valid", "_display_keep"])
+
+
+def plot_limiting_magnitude_curves(
+    curves: Table,
+    plot_specs: Sequence[Mapping[str, Any]],
+    *,
+    title: str,
+    dynamic_range_mag: float = 0.9,
+    shared_presentation_mask_selector: Mapping[str, Any] | None = None,
+    minimum_limiting_magnitude_ab: float | None = None,
+    xlim: tuple[float, float] | None = None,
+    ylim: tuple[float, float] | None = None,
+    ax: Any = None,
+) -> tuple[Any, Any]:
+    """Plot selected curves from a long-form limiting-magnitude catalog.
+
+    Presentation filtering is independent for every curve unless
+    ``shared_presentation_mask_selector`` explicitly identifies the scientific
+    curve whose retained row keys should be shared.
+    """
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    from matplotlib.lines import Line2D
+
+    frame = curves.to_pandas()
+    curve_key_columns = [
+        "integration", "slit_arcsec", "ao_enabled", "bin_factor",
+        "sky_model", "native_element_selection",
+    ]
+    row_key_columns = [
+        *curve_key_columns,
+        "channel", "trace_id", "contiguous_order_run",
+        "bin_index_within_run",
+    ]
+    duplicated_rows = frame.duplicated(row_key_columns, keep=False)
+    if np.any(duplicated_rows):
+        duplicates = frame.loc[
+            duplicated_rows, row_key_columns
+        ].drop_duplicates()
+        raise ValueError(
+            "Catalog has ambiguous duplicate scientific rows:\n"
+            + duplicates.to_string(index=False)
+        )
+    available_curves = frame[curve_key_columns].drop_duplicates()
+
+    def select_curve(selector):
+        selector = {
+            key: value for key, value in selector.items()
+            if key in curve_key_columns
+        }
+        if not selector:
+            raise ValueError("Curve selector contains no scientific catalog fields")
+        matches = available_curves
+        for key, value in selector.items():
+            matches = matches[matches[key] == value]
+        if len(matches) != 1:
+            raise ValueError(
+                f"Curve selector matched {len(matches)} available curves: "
+                f"{selector}\nAvailable curves:\n"
+                + available_curves.to_string(index=False)
+            )
+        key = matches.iloc[0]
+        rows = frame
+        for column in curve_key_columns:
+            rows = rows[rows[column] == key[column]]
+        return rows.copy()
+
+    shared_selection_keys = None
+    if shared_presentation_mask_selector is not None:
+        shared_curve = select_curve(shared_presentation_mask_selector)
+        if minimum_limiting_magnitude_ab is not None:
+            shared_curve = shared_curve[
+                shared_curve["limiting_magnitude_ab"]
+                >= minimum_limiting_magnitude_ab
+            ]
+        shared_display = _limiting_magnitude_display_rows(
+            shared_curve,
+            dynamic_range_mag=dynamic_range_mag,
+        )
+        shared_selection_keys = pd.MultiIndex.from_frame(shared_display[[
+            "channel", "trace_id", "contiguous_order_run",
+            "bin_index_within_run", "nominal_wavelength_low_nm",
+            "nominal_wavelength_high_nm",
+        ]])
+
+    if ax is None:
+        fig, ax = plt.subplots(
+            figsize=(13.2, 4.8),
+            constrained_layout=True,
+        )
+    else:
+        fig = ax.figure
+
+    display_frames = []
+    handles, labels = [], []
+    for index, spec in enumerate(plot_specs):
+        curve = select_curve(spec)
+        if minimum_limiting_magnitude_ab is not None:
+            curve = curve[
+                curve["limiting_magnitude_ab"] >= minimum_limiting_magnitude_ab
+            ]
+        display = _limiting_magnitude_display_rows(
+            curve,
+            dynamic_range_mag=dynamic_range_mag,
+            selection_keys=shared_selection_keys,
+        )
+        display_frames.append(display)
+        color = spec.get("color", f"C{index}")
+        linestyle = spec.get("linestyle", "-")
+        linewidth = (
+            spec.get("linewidth_multiplier", 1.0)
+            * plt.rcParams["lines.linewidth"]
+        )
+        alpha = spec.get("alpha", 0.95)
+        style = {
+            "color": color,
+            "linestyle": linestyle,
+            "linewidth": linewidth,
+            "alpha": alpha,
+        }
+        for channel in list(dict.fromkeys(display["channel"])):
+            channel_rows = display[display["channel"] == channel]
+            for (_trace_id, _order_run, _display_run), run_rows in (
+                channel_rows.groupby(
+                    ["trace_id", "contiguous_order_run", "display_run"],
+                    sort=False,
+                )
+            ):
+                run_rows = run_rows.sort_values("nominal_wavelength_nm")
+                run_style = (
+                    style if len(run_rows) > 1
+                    else {**style, "marker": ".", "markersize": 3}
+                )
+                ax.plot(
+                    run_rows["nominal_wavelength_nm"] / 1000,
+                    run_rows["limiting_magnitude_ab"],
+                    **run_style,
+                )
+        handles.append(Line2D([0], [0], **style))
+        labels.append(spec["label"])
+
+    data = pd.concat(display_frames, ignore_index=True)
+    finite = data["limiting_magnitude_ab"].to_numpy()
+    low, high = np.percentile(finite, [1, 99.5])
+    pad = max(0.2, 0.08 * (high - low))
+    label_y = low - pad + 0.045 * (high - low + 2 * pad)
+    if ylim is None:
+        ax.set_ylim(low - pad, high + pad)
+    else:
+        ax.set_ylim(*ylim)
+    if xlim is not None:
+        ax.set_xlim(*xlim)
+
+    channel_ranges = []
+    for channel in ("B", "G", "R", "YJ", "H", "K"):
+        waves = data.loc[
+            data["channel"] == channel, "nominal_wavelength_nm"
+        ].to_numpy() / 1000
+        if len(waves):
+            channel_ranges.append((channel, np.min(waves), np.max(waves)))
+    for channel, wave_low, wave_high in channel_ranges:
+        ax.text(
+            0.5 * (wave_low + wave_high),
+            label_y,
+            channel,
+            ha="center",
+            va="bottom",
+            fontweight="semibold",
+        )
+    for previous, current in zip(
+        channel_ranges[:-1], channel_ranges[1:], strict=True,
+    ):
+        ax.axvline(
+            0.5 * (previous[2] + current[1]),
+            color="0.5",
+            linewidth=0.6 * plt.rcParams["lines.linewidth"],
+            alpha=0.4,
+        )
+
+    ax.set_xlabel(r"Wavelength [$\mu\mathrm{m}$]")
+    ax.set_ylabel(r"AB magnitude for S/N $= 5$")
+    ax.set_title(title)
+    fig.legend(
+        handles,
+        labels,
+        frameon=False,
+        loc="outside lower center",
+        ncol=min(3, len(handles)),
+        fontsize="small",
+    )
+    return fig, ax

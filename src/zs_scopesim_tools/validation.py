@@ -4234,6 +4234,25 @@ def fixed_bin_no_oh_limiting_magnitude_curves(
     for channel in channel_order:
         channel_rows = channels == channel
         for trace_id in sorted(set(traces[channel_rows])):
+            trace_native = native[
+                (native["channel"] == channel)
+                & (native["trace_id"] == trace_id)
+            ]
+            trace_native = trace_native[np.argsort(trace_native["sample_index"])]
+            native_sample_indices = np.asarray(
+                trace_native["sample_index"], dtype=int
+            )
+            assert np.all(np.diff(native_sample_indices) > 0)
+            native_signal_cumulative = np.r_[
+                0.0, np.cumsum(np.asarray(trace_native["signal_e"], dtype=float))
+            ]
+            native_wave_signal_cumulative = np.r_[
+                0.0,
+                np.cumsum(
+                    np.asarray(trace_native["wave_nm"], dtype=float)
+                    * np.asarray(trace_native["signal_e"], dtype=float)
+                ),
+            ]
             for bin_factor in bin_factors:
                 indices = np.flatnonzero(
                     channel_rows
@@ -4261,15 +4280,27 @@ def fixed_bin_no_oh_limiting_magnitude_curves(
                     run_indices = indices[contiguous_runs == contiguous_order_run]
                     for bin_index_within_run, row_index in enumerate(run_indices):
                         sample = selected[row_index]
-                        native_rows = native[
-                            (native["channel"] == channel)
-                            & (native["trace_id"] == trace_id)
-                            & (native["sample_index"] >= sample["native_start_index"])
-                            & (native["sample_index"] < sample["native_stop_index"])
-                        ]
-                        effective_wave_nm = np.sum(
-                            native_rows["wave_nm"] * native_rows["signal_e"]
-                        ) / np.sum(native_rows["signal_e"])
+                        native_start = int(sample["native_start_index"])
+                        native_stop = int(sample["native_stop_index"])
+                        native_start_position = np.searchsorted(
+                            native_sample_indices, native_start
+                        )
+                        native_stop_position = np.searchsorted(
+                            native_sample_indices, native_stop
+                        )
+                        assert np.array_equal(
+                            native_sample_indices[
+                                native_start_position:native_stop_position
+                            ],
+                            np.arange(native_start, native_stop),
+                        )
+                        effective_wave_nm = (
+                            native_wave_signal_cumulative[native_stop_position]
+                            - native_wave_signal_cumulative[native_start_position]
+                        ) / (
+                            native_signal_cumulative[native_stop_position]
+                            - native_signal_cumulative[native_start_position]
+                        )
                         rows.append({
                             "integration": integration,
                             "slit_arcsec": float(slit_arcsec),

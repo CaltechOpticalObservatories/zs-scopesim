@@ -1154,3 +1154,185 @@ def test_resolving_power_echellogram_smoke():
     np.testing.assert_allclose(segments[0][1, 0], 0)
     np.testing.assert_allclose(segments[-1][1, 0], 200)
     fig.clf()
+
+
+def limiting_magnitude_catalog_for_plot_tests():
+    rows = []
+    curve_specs = [
+        ("simulation", "all elements", 18, [24.0, 20.0, 24.0, 23.0, 23.0]),
+        ("simulation", "S/N-selected", 18, [23.0, 23.0, 23.0, 22.0, 22.0]),
+        ("no OH", "all elements", 1, [24.5, 24.5, 24.5, 23.5, 23.5]),
+    ]
+    geometry = [
+        ("B", "B_1", 1, 0, 400.0),
+        ("B", "B_1", 1, 1, 401.0),
+        ("B", "B_1", 1, 2, 402.0),
+        ("B", "B_1", 2, 0, 410.0),
+        ("G", "G_1", 1, 0, 500.0),
+    ]
+    for sky_model, selection, bin_factor, magnitudes in curve_specs:
+        for (
+            channel, trace_id, contiguous_order_run,
+            bin_index_within_run, wavelength_nm,
+        ), magnitude in zip(geometry, magnitudes, strict=True):
+            rows.append({
+                "integration": "1 hour",
+                "slit_arcsec": 0.70,
+                "ao_enabled": False,
+                "bin_factor": bin_factor,
+                "sky_model": sky_model,
+                "native_element_selection": selection,
+                "channel": channel,
+                "trace_id": trace_id,
+                "contiguous_order_run": contiguous_order_run,
+                "bin_index_within_run": bin_index_within_run,
+                "nominal_wavelength_low_nm": wavelength_nm - 0.5,
+                "nominal_wavelength_high_nm": wavelength_nm + 0.5,
+                "nominal_wavelength_nm": wavelength_nm,
+                "limiting_magnitude_ab": magnitude,
+                "complete_native_bin": True,
+            })
+    return Table(rows=rows)
+
+
+def test_limiting_magnitude_plot_selects_one_curve_and_preserves_runs():
+    catalog = limiting_magnitude_catalog_for_plot_tests()
+    fig, ax = plots.plot_limiting_magnitude_curves(
+        catalog,
+        [{
+            "integration": "1 hour",
+            "slit_arcsec": 0.70,
+            "ao_enabled": False,
+            "bin_factor": 18,
+            "sky_model": "simulation",
+            "native_element_selection": "S/N-selected",
+            "label": "selected",
+            "color": "C2",
+        }],
+        title="Selection",
+    )
+
+    data_lines = [line for line in ax.lines if line.get_color() == "C2"]
+    assert len(data_lines) == 3
+    assert [line.get_xdata().tolist() for line in data_lines] == [
+        [0.4, 0.401, 0.402],
+        [0.41],
+        [0.5],
+    ]
+    assert ax.get_title() == "Selection"
+    assert ax.get_xlabel() == r"Wavelength [$\mu\mathrm{m}$]"
+    assert ax.get_ylabel() == r"AB magnitude for S/N $= 5$"
+    fig.clf()
+
+
+def test_limiting_magnitude_plot_fails_on_missing_or_ambiguous_selector():
+    catalog = limiting_magnitude_catalog_for_plot_tests()
+    ambiguous = {
+        "integration": "1 hour",
+        "slit_arcsec": 0.70,
+        "ao_enabled": False,
+        "label": "ambiguous",
+    }
+    with np.testing.assert_raises_regex(ValueError, "matched 3 available curves"):
+        plots.plot_limiting_magnitude_curves(
+            catalog, [ambiguous], title="Ambiguous",
+        )
+
+    missing = {
+        **ambiguous,
+        "bin_factor": 99,
+        "label": "missing",
+    }
+    with np.testing.assert_raises_regex(ValueError, "matched 0 available curves"):
+        plots.plot_limiting_magnitude_curves(
+            catalog, [missing], title="Missing",
+        )
+
+
+def test_limiting_magnitude_plot_shared_mask_uses_scientific_selector():
+    catalog = limiting_magnitude_catalog_for_plot_tests()
+    simulation_all = {
+        "integration": "1 hour",
+        "slit_arcsec": 0.70,
+        "ao_enabled": False,
+        "bin_factor": 18,
+        "sky_model": "simulation",
+        "native_element_selection": "all elements",
+    }
+    fig, ax = plots.plot_limiting_magnitude_curves(
+        catalog,
+        [
+            {**simulation_all, "label": "reference", "color": "C0"},
+            {
+                **simulation_all,
+                "native_element_selection": "S/N-selected",
+                "label": "selected",
+                "color": "C1",
+            },
+        ],
+        title="Shared mask",
+        shared_presentation_mask_selector=simulation_all,
+    )
+
+    selected_lines = [line for line in ax.lines if line.get_color() == "C1"]
+    selected_wavelengths = np.concatenate([
+        line.get_xdata() for line in selected_lines
+    ])
+    assert 0.401 not in selected_wavelengths
+    np.testing.assert_allclose(
+        np.sort(selected_wavelengths),
+        [0.4, 0.402, 0.41, 0.5],
+    )
+    fig.clf()
+
+
+def test_limiting_magnitude_plot_applies_explicit_minimum_only_to_display():
+    catalog = limiting_magnitude_catalog_for_plot_tests()
+    original_length = len(catalog)
+    fig, ax = plots.plot_limiting_magnitude_curves(
+        catalog,
+        [{
+            "integration": "1 hour",
+            "slit_arcsec": 0.70,
+            "ao_enabled": False,
+            "bin_factor": 18,
+            "sky_model": "simulation",
+            "native_element_selection": "all elements",
+            "label": "all",
+            "color": "C0",
+        }],
+        title="Explicit minimum",
+        minimum_limiting_magnitude_ab=21.0,
+    )
+
+    plotted_wavelengths = np.concatenate([
+        line.get_xdata() for line in ax.lines if line.get_color() == "C0"
+    ])
+    assert 0.401 not in plotted_wavelengths
+    assert len(catalog) == original_length
+    fig.clf()
+
+
+def test_limiting_magnitude_plot_accepts_mixed_native_resolution_curve():
+    catalog = limiting_magnitude_catalog_for_plot_tests()
+    fig, ax = plots.plot_limiting_magnitude_curves(
+        catalog,
+        [{
+            "integration": "1 hour",
+            "slit_arcsec": 0.70,
+            "ao_enabled": False,
+            "bin_factor": 1,
+            "sky_model": "no OH",
+            "native_element_selection": "all elements",
+            "label": "native no OH",
+            "linestyle": "--",
+            "linewidth_multiplier": 0.8,
+        }],
+        title="Native-resolution check",
+        ylim=(19.0, 25.0),
+    )
+
+    np.testing.assert_allclose(ax.get_ylim(), [19.0, 25.0])
+    assert fig.get_size_inches().tolist() == [13.2, 4.8]
+    assert fig.legends[0].get_texts()[0].get_text() == "native no OH"
+    fig.clf()
