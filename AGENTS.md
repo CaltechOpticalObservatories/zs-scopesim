@@ -2,8 +2,10 @@
 Use conda run -n zssim jupyter server list to see what might be active or executing before getting started.
 
 This repository favors transparent, directly inspectable scientific code over generalized library-style abstractions.
-Do not run or imitate Black, Ruff format, or another line-length formatter. Do not mechanically wrap code to satisfy a 
-nominal line length. Never split a tuple-unpacking target across lines, split one comparison across multiple lines, or 
+Black, Ruff, and equivalent automatic line-length formatters are banned from this repository.
+Do not add them to dependencies, scripts, hooks, CI, editor configuration, or project tooling.
+Do not run or imitate them. Do not mechanically wrap code to satisfy a nominal line length.
+Never split a tuple-unpacking target across lines, split one comparison across multiple lines, or
 format method chains with one dot-call per line. Keep logical and scientific expressions intact. If a statement becomes 
 genuinely difficult to read, introduce a meaningful intermediate variable or restructure it. Match the compact style of 
 the surrounding notebook. Before finishing, inspect the diff specifically for mechanically wrapped loops, boolean masks, 

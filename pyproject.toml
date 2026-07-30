@@ -25,9 +25,7 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = [
-  "black",
   "pytest",
-  "ruff",
 ]
 docs = [
   "myst-parser",

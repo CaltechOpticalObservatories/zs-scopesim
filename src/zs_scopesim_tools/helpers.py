@@ -13,11 +13,7 @@ from typing import Any
 
 def repo_root(start: str | pathlib.Path | None = None) -> pathlib.Path:
     """Return the zs-scopesim repository root."""
-    path = (
-        pathlib.Path(start).expanduser().resolve()
-        if start
-        else pathlib.Path(__file__).resolve()
-    )
+    path = pathlib.Path(start).expanduser().resolve() if start else pathlib.Path(__file__).resolve()
     candidates = [path] if path.is_dir() else [path.parent]
     candidates.extend(candidates[0].parents)
     for parent in candidates:
@@ -39,10 +35,7 @@ def resolve_irdb_path(irdb_path: str | pathlib.Path | None = None) -> pathlib.Pa
         return resolved
 
 
-def configure_path_and_logging(
-    irdb_path: str | pathlib.Path | None = None,
-    level: str = "debug",
-) -> str:
+def configure_path_and_logging(irdb_path: str | pathlib.Path | None = None, level: str = "debug") -> str:
     """Configure ScopeSim to find the local IRDB package once."""
     import scopesim as sim
 
@@ -62,17 +55,9 @@ def zshooter_package_dir(irdb_path: str | pathlib.Path) -> pathlib.Path:
     return pathlib.Path(irdb_path).expanduser().resolve() / "ZShooter_v2"
 
 
-def validation_work_dir(
-    irdb_path: str | pathlib.Path | None = None,
-    name: str = "validation_outputs",
-    base_dir: str | pathlib.Path | None = None,
-) -> pathlib.Path:
+def validation_work_dir(irdb_path: str | pathlib.Path | None = None, name: str = "validation_outputs", base_dir: str | pathlib.Path | None = None) -> pathlib.Path:
     """Return a repo-local output directory, avoiding accidental writes into IRDB."""
-    cwd = (
-        pathlib.Path(base_dir).expanduser().resolve()
-        if base_dir
-        else pathlib.Path.cwd().resolve()
-    )
+    cwd = pathlib.Path(base_dir).expanduser().resolve() if base_dir else pathlib.Path.cwd().resolve()
     if irdb_path is not None:
         package_dir = zshooter_package_dir(irdb_path)
         if cwd == package_dir or package_dir in cwd.parents:
@@ -127,11 +112,7 @@ def warning_prevent_sync_alt_ra_dec(cmd: Any) -> None:
     """Populate AltAz command keys without letting RA/Dec override airmass."""
     from astropy import units as u
     from astropy.coordinates import AltAz
-    from scopesim.utils import (
-        airmass2zendist,
-        from_currsys,
-        get_observation_info_from_cmds,
-    )
+    from scopesim.utils import (airmass2zendist, from_currsys, get_observation_info_from_cmds)
 
     def cmd_value(key: str, default: Any = None) -> Any:
         try:
@@ -158,9 +139,7 @@ def warning_prevent_sync_alt_ra_dec(cmd: Any) -> None:
         if hasattr(target, "alt") and hasattr(target, "az"):
             altaz_target = target
         else:
-            altaz_target = target.transform_to(
-                AltAz(obstime=time, location=location),
-            )
+            altaz_target = target.transform_to(AltAz(obstime=time, location=location))
         cmd["!OBS.alt"] = float(altaz_target.alt.to("deg").value)
         cmd["!OBS.az"] = float(altaz_target.az.to("deg").value)
     cmd["!OBS.ra"] = None
@@ -169,32 +148,12 @@ def warning_prevent_sync_alt_ra_dec(cmd: Any) -> None:
 
 def ignore_warnings() -> None:
     """Hide PyCharm debugger's Python 3.14 co_lnotab deprecation warning."""
-    warnings.filterwarnings(
-        "ignore",
-        message="co_lnotab is deprecated, use co_lines instead.",
-        category=DeprecationWarning,
-        module=r".*pydevd_collect_try_except_info",
-    )
-    warnings.filterwarnings(
-        "ignore",
-        message=r"metadata \{'args': \(None,\)\} was set from the constructor.*",
-        category=DeprecationWarning,
-        module=r"bqscales\.traits",
-    )
+    warnings.filterwarnings("ignore", message="co_lnotab is deprecated, use co_lines instead.", category=DeprecationWarning, module=r".*pydevd_collect_try_except_info")
+    warnings.filterwarnings("ignore", message=r"metadata \{'args': \(None,\)\} was set from the constructor.*", category=DeprecationWarning, module=r"bqscales\.traits")
 
-    warnings.filterwarnings(
-        "ignore",
-        message=r"Passing unrecognized arguments to super\(DataGrid\)\.__init__\(display_length=-1\).*",
-        category=DeprecationWarning,
-        module=r"traitlets\.traitlets",
-    )
+    warnings.filterwarnings("ignore", message=r"Passing unrecognized arguments to super\(DataGrid\)\.__init__\(display_length=-1\).*", category=DeprecationWarning, module=r"traitlets\.traitlets")
 
-    warnings.filterwarnings(
-        "ignore",
-        message=r"The fov_grid method is deprecated.*",
-        category=DeprecationWarning,
-        module=r"scopesim\.effects\.spectral_trace_list",
-    )
+    warnings.filterwarnings("ignore", message=r"The fov_grid method is deprecated.*", category=DeprecationWarning, module=r"scopesim\.effects\.spectral_trace_list")
 
 
 def format_yappi_stats(sort: str = "tsub") -> str:
