@@ -2,9 +2,16 @@
 Use conda run -n zssim jupyter server list to see what might be active or executing before getting started.
 
 This repository favors transparent, directly inspectable scientific code over generalized library-style abstractions.
+Do not run or imitate Black, Ruff format, or another line-length formatter. Do not mechanically wrap code to satisfy a 
+nominal line length. Never split a tuple-unpacking target across lines, split one comparison across multiple lines, or 
+format method chains with one dot-call per line. Keep logical and scientific expressions intact. If a statement becomes 
+genuinely difficult to read, introduce a meaningful intermediate variable or restructure it. Match the compact style of 
+the surrounding notebook. Before finishing, inspect the diff specifically for mechanically wrapped loops, boolean masks, 
+function calls, assertions, and method chains, and rewrite them.
+
 
 ### ACP memory guard
-- heap limit is about 4 GiB and distinct from IDE's overall 8GiB heap limit 
+- Node heap limit is about 4 GiB and distinct from IDE's overall 8GiB heap limit 
 - Do not print, serialize, or send entire notebook files, notebook outputs, or full multi-thousand-line diffs through the chat/tool stream. 
 - Inspect notebook source by relevant cell IDs or narrow source ranges. Avoid loading large notebook output blobs into the conversation.
 
