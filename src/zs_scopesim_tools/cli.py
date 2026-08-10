@@ -8,12 +8,14 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, cast
 
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 fallback
     import tomli as tomllib
+
+from zs_scopesim_tools.paths import repo_path, resolve_manifest_path, resolve_src_dir
 
 
 DEFAULT_MANIFEST = "env/zshooter-stack.toml"
@@ -29,6 +31,14 @@ DEFAULT_IMPORTS = (
     ("pyckles", "Pyckles"),
     ("palace", "palace"),
 )
+SYNC_STATUS = {
+    "no_ref": "no ref specified; skipping",
+    "missing_url": "missing and no url is specified",
+    "dirty": "dirty worktree at {path}; use --allow-dirty to override",
+    "fetch": "fetching tags",
+    "checkout": "checking out {ref}",
+    "install": "installing editable",
+}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -65,8 +75,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    manifest = load_manifest(args.manifest)
-    src_dir = resolve_src_dir(manifest, args.src_dir)
+    manifest, src_dir, manifest_path = load_cli_context(args)
     report = {
         "python": {
             "executable": sys.executable,
@@ -74,7 +83,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             "constraint": manifest.get("python", {}).get("constraint"),
             "recommended": manifest.get("python", {}).get("recommended"),
         },
-        "manifest": str(resolve_manifest_path(args.manifest)),
+        "manifest": str(manifest_path),
         "src_dir": str(src_dir),
         "packages": package_report(),
         "palace_resources": palace_resource_report(),
@@ -89,40 +98,36 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def cmd_sync_tags(args: argparse.Namespace) -> int:
-    manifest = load_manifest(args.manifest)
-    src_dir = resolve_src_dir(manifest, args.src_dir)
+    manifest, src_dir, _ = load_cli_context(args)
     failures = 0
-    for name, repo in manifest.get("repos", {}).items():
-        if not repo.get("managed", True):
-            continue
-        path = repo_path(repo, src_dir)
+    for name, repo, path in iter_repos(manifest, src_dir, managed_only=True):
         url = repo.get("url")
         ref = repo.get("ref")
-        if not ref:
-            print(f"{name}: no ref specified; skipping")
+        if not isinstance(ref, str) or not ref:
+            print(f"{name}: {SYNC_STATUS['no_ref']}")
             continue
         if not path.exists():
-            if not url:
-                print(f"{name}: {path} missing and no url is specified")
+            if not isinstance(url, str) or not url:
+                print(f"{name}: {path} {SYNC_STATUS['missing_url']}")
                 failures += 1
                 continue
             print(f"{name}: cloning {url} into {path}")
             run(["git", "clone", url, str(path)], check=True)
         dirty = git_dirty(path)
         if dirty and not args.allow_dirty:
-            print(f"{name}: dirty worktree at {path}; use --allow-dirty to override")
+            print(f"{name}: {SYNC_STATUS['dirty'].format(path=path)}")
             failures += 1
             continue
         if not args.no_fetch:
-            print(f"{name}: fetching tags")
+            print(f"{name}: {SYNC_STATUS['fetch']}")
             run(["git", "-C", str(path), "fetch", "--tags", "origin"], check=False)
-        print(f"{name}: checking out {ref}")
+        print(f"{name}: {SYNC_STATUS['checkout'].format(ref=ref)}")
         result = run(["git", "-C", str(path), "checkout", ref], check=False)
         if result.returncode != 0:
             failures += 1
             continue
         if args.install and repo.get("editable", True):
-            print(f"{name}: installing editable")
+            print(f"{name}: {SYNC_STATUS['install']}")
             result = run([sys.executable, "-m", "pip", "install", "-e", str(path)], check=False)
             if result.returncode != 0:
                 failures += 1
@@ -150,45 +155,26 @@ def cmd_launch_notebooks(args: argparse.Namespace) -> int:
     return run(cmd, check=False).returncode
 
 
-def resolve_manifest_path(path: str) -> Path:
-    candidate = Path(path).expanduser()
-    if candidate.is_absolute():
-        return candidate
-    cwd_candidate = Path.cwd() / candidate
-    if cwd_candidate.exists():
-        return cwd_candidate
-    repo_candidate = repo_root() / candidate
-    return repo_candidate
+def load_cli_context(args: argparse.Namespace) -> tuple[dict[str, Any], Path, Path]:
+    manifest_path = resolve_manifest_path(args.manifest)
+    manifest = load_manifest(manifest_path)
+    src_dir = resolve_src_dir(manifest, args.src_dir)
+    return manifest, src_dir, manifest_path
 
 
-def load_manifest(path: str) -> dict[str, Any]:
-    manifest_path = resolve_manifest_path(path)
+def iter_repos(manifest: dict[str, Any], src_dir: Path, *, managed_only: bool = False
+               ) -> Iterator[tuple[str, dict[str, Any], Path]]:
+    for name, repo in manifest.get("repos", {}).items():
+        if managed_only and not repo.get("managed", True):
+            continue
+        yield name, repo, repo_path(repo, src_dir)
+
+
+####### Manifest and diagnostics helpers ########
+
+def load_manifest(manifest_path: Path) -> dict[str, Any]:
     with manifest_path.open("rb") as handle:
         return tomllib.load(handle)
-
-
-def repo_root() -> Path:
-    path = Path(__file__).resolve()
-    for parent in path.parents:
-        if (parent / "env" / "zshooter-stack.toml").exists():
-            return parent
-    return Path.cwd()
-
-
-def resolve_src_dir(manifest: dict[str, Any], override: str | None) -> Path:
-    value = override or manifest.get("paths", {}).get("src_dir", "~/src")
-    return Path(value).expanduser().resolve()
-
-
-def repo_path(repo: dict[str, Any], src_dir: Path) -> Path:
-    raw_path = Path(repo["path"]).expanduser()
-    if raw_path.is_absolute():
-        return raw_path
-    base = repo.get("relative_to", "src_dir")
-    if base == "repo":
-        return (repo_root() / raw_path).resolve()
-    return (src_dir / raw_path).resolve()
-
 
 def package_report() -> dict[str, dict[str, Any]]:
     report: dict[str, dict[str, Any]] = {}
@@ -221,7 +207,7 @@ def palace_resource_report() -> dict[str, Any]:
             root = importlib.resources.files(package)
             for name in names:
                 package_report_entry[name] = root.joinpath(name).is_file()
-        except Exception as exc:  # noqa: BLE001
+        except (ImportError, FileNotFoundError, AttributeError, TypeError) as exc:
             package_report_entry["error"] = f"{type(exc).__name__}: {exc}"
         report[package] = package_report_entry
     return report
@@ -229,8 +215,7 @@ def palace_resource_report() -> dict[str, Any]:
 
 def repo_report(manifest: dict[str, Any], src_dir: Path) -> dict[str, dict[str, Any]]:
     report: dict[str, dict[str, Any]] = {}
-    for name, repo in manifest.get("repos", {}).items():
-        path = repo_path(repo, src_dir)
+    for name, repo, path in iter_repos(manifest, src_dir):
         entry: dict[str, Any] = {
             "path": str(path),
             "expected_ref": repo.get("ref"),
@@ -261,7 +246,7 @@ def run(cmd: list[str], check: bool, capture: bool = False) -> subprocess.Comple
     kwargs: dict[str, Any] = {"text": True}
     if capture:
         kwargs.update({"stdout": subprocess.PIPE, "stderr": subprocess.PIPE})
-    result = subprocess.run(cmd, **kwargs)
+    result = cast(subprocess.CompletedProcess[str], subprocess.run(cmd, **kwargs))
     if check and result.returncode != 0:
         raise subprocess.CalledProcessError(result.returncode, cmd)
     return result

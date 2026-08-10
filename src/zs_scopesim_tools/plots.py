@@ -6,177 +6,267 @@ import warnings
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from functools import partial
+import logging
 
 import numpy as np
 from astropy import units as u
 from astropy.table import Table
+import matplotlib.pyplot as plt
+from matplotlib.artist import ArtistInspector
+from matplotlib.collections import PathCollection
+from matplotlib.image import AxesImage
+from matplotlib.lines import Line2D
+from synphot import SourceSpectrum
 from synphot.units import PHOTLAM
 
+from scopesim.source.source import Source
+from scopesim.source.source_fields import CubeSourceField, ImageSourceField, TableSourceField, SpectrumSourceField
+from scopesim.utils import quantity_from_table
 
-def _as_float_array(values: Any) -> np.ndarray:
-    if hasattr(values, "value"):
-        values = values.value
-    return np.asarray(values, dtype=float)
-
-
-def _source_label(source: Any) -> str:
-    meta = getattr(source, "meta", {}) or {}
-    for key in ("name", "object", "description", "function_call"):
-        value = meta.get(key)
-        if value:
-            return str(value)
-    return f"{source.__class__.__name__}@{id(source):x}"
-
-
-def _row_label(source: Any, table: Table, row_index: int) -> str:
-    for key in ("label", "name", "object", "source"):
-        if key in table.colnames:
-            value = table[key][row_index]
-            if value is not None and str(value):
-                return str(value)
-    return f"{_source_label(source)} row {row_index}"
-
-
-def _plot_spectrum_values(ax: Any, wave: u.Quantity, values: Any, *, label: str, linewidth: float = 1.5, alpha: float = 1.0, linestyle: str = "-") -> None:
-    unit = getattr(values, "unit", None)
-    plot_values = _as_float_array(values)
-    ylabel = "Flux density"
-    if unit is not None and unit != u.dimensionless_unscaled:
-        try:
-            plot_values = u.Quantity(values).to_value(PHOTLAM) * _PHOTLAM_TO_PH_S_M2_NM
-            ylabel = r"Flux density " r"[photons s$^{-1}$ m$^{-2}$ nm$^{-1}$]"
-        except Exception:
-            ylabel = f"Flux density [{unit}]"
-    ax.plot(wave.to_value(u.um), plot_values, label=label, lw=linewidth, alpha=alpha, ls=linestyle)
-    if not ax.get_ylabel():
-        ax.set_ylabel(ylabel)
-
-
-def _evaluate_spectrum_values(spectrum: Any, wave: u.Quantity, weight: float = 1.0) -> Any:
-    return spectrum(wave) * weight
-
-
-def _source_field_image_data(field: Any) -> np.ndarray | None:
-    if hasattr(field, "data"):
-        return np.asarray(field.data)
-    source_field = getattr(field, "field", None)
-    data = getattr(source_field, "data", None)
-    if data is None:
-        return None
-    data = np.asarray(data)
-    return data if data.ndim >= 2 else None
-
-
-def _is_table_source_field(field: Any) -> bool:
-    table = getattr(field, "field", None)
-    return isinstance(table, Table) and {"x", "y"}.issubset(table.colnames)
-
-
-def _quantity_column(table: Table, name: str, unit: u.UnitBase) -> u.Quantity:
-    values = table[name]
-    quantity = getattr(values, "quantity", values)
-    quantity = u.Quantity(quantity)
-    if quantity.unit == u.dimensionless_unscaled:
-        quantity = quantity.value * unit
-    return quantity.to(unit)
-
-
-def _plot_table_source_field(source: Any, ax_image: Any, ax_spectrum: Any, field: Any, wave: u.Quantity, *, individual: bool, spectrum_linewidth: float, spectrum_alpha: float, spectrum_linestyle: str) -> None:
-    table = field.field
-    x = _quantity_column(table, "x", u.arcsec).to_value(u.arcsec)
-    y = _quantity_column(table, "y", u.arcsec).to_value(u.arcsec)
-    refs = np.asarray(table["ref"], dtype=int) if "ref" in table.colnames else np.zeros(len(table), dtype=int)
-    weights = np.asarray(table["weight"], dtype=float) if "weight" in table.colnames else np.ones(len(table), dtype=float)
-    sizes = 36 + 84 * weights / max(np.nanmax(weights), 1.0)
-    ax_image.axhline(0, color="0.65", lw=0.8, zorder=0)
-    ax_image.axvline(0, color="0.65", lw=0.8, zorder=0)
-    scatter = ax_image.scatter(x, y, c=refs, s=sizes, cmap="tab10", edgecolors="black", linewidths=0.8, alpha=0.9, zorder=3)
-    if len(table) <= 10:
-        for idx, (xpos, ypos) in enumerate(zip(x, y, strict=True)):
-            ax_image.annotate(_row_label(source, table, idx), (xpos, ypos), xytext=(4, 4), textcoords="offset points", fontsize="small", zorder=4)
-    ax_image.set_aspect("equal", adjustable="datalim")
-    ax_image.set_xlabel("x [arcsec]")
-    ax_image.set_ylabel("y [arcsec]")
-    ax_image.set_title("Source Positions")
-    if len(np.unique(refs)) > 1:
-        ax_image.legend(*scatter.legend_elements(prop="colors", fmt="{x:.0f}"), title="ref", frameon=False, loc="best")
-
-    spectra = getattr(field, "spectra", {})
-    if individual:
-        for row_index, ref in enumerate(refs):
-            spectrum = spectra.get(int(ref), spectra.get(ref))
-            if spectrum is None:
-                continue
-            values = _evaluate_spectrum_values(spectrum, wave, weight=float(weights[row_index]))
-            _plot_spectrum_values(ax_spectrum, wave, values, label=_row_label(source, table, row_index), linewidth=spectrum_linewidth, alpha=spectrum_alpha, linestyle=spectrum_linestyle)
-        return
-
-    total_values = None
-    for row_index, ref in enumerate(refs):
-        spectrum = spectra.get(int(ref), spectra.get(ref))
-        if spectrum is None:
-            continue
-        values = _evaluate_spectrum_values(spectrum, wave, weight=float(weights[row_index]))
-        total_values = values if total_values is None else total_values + values
-    if total_values is not None:
-        _plot_spectrum_values(ax_spectrum, wave, total_values, label=f"{_source_label(source)} total ({len(table)} points)", linewidth=spectrum_linewidth, alpha=spectrum_alpha, linestyle=spectrum_linestyle)
-
-
-def _plot_image_source_field(ax_image: Any, ax_spectrum: Any, field: Any, wave: u.Quantity, *, spectrum_linewidth: float, spectrum_alpha: float, spectrum_linestyle: str) -> None:
-    data = _source_field_image_data(field)
-    if data is None:
-        ax_image.text(0.5, 0.5, "No spatial image", ha="center", va="center", transform=ax_image.transAxes)
-        ax_image.set_axis_off()
-    else:
-        if data.ndim > 2:
-            data = np.nanmean(data, axis=0)
-        im = ax_image.imshow(data, origin="lower", cmap="viridis")
-        ax_image.set_title("Spatial Profile")
-        ax_image.set_xlabel("x pixel")
-        ax_image.set_ylabel("y pixel")
-        cbar = ax_image.figure.colorbar(im, ax=ax_image, fraction=0.046, pad=0.025)
-        cbar.set_label("Relative surface brightness")
-
-    try:
-        spectrum = field.spectrum
-    except Exception:
-        spectrum = None
-    if spectrum is not None:
-        _plot_spectrum_values(ax_spectrum, wave, _evaluate_spectrum_values(spectrum, wave), label="spectrum", linewidth=spectrum_linewidth, alpha=spectrum_alpha, linestyle=spectrum_linestyle)
-    else:
-        for ref, candidate in getattr(field, "spectra", {}).items():
-            _plot_spectrum_values(ax_spectrum, wave, _evaluate_spectrum_values(candidate, wave), label=f"ref {ref}", linewidth=spectrum_linewidth, alpha=spectrum_alpha, linestyle=spectrum_linestyle)
-
-
-def plot_source(source: Any, wave: u.Quantity | None = None, *, individual: bool = False, spectrum_yscale: str = "linear", spectrum_linewidth: float = 1.5, spectrum_alpha: float = 1.0, spectrum_linestyle: str = "-"):
-    """Plot each source field's spatial profile/positions and spectrum."""
-    import matplotlib.pyplot as plt
-
-    wave = wave if wave is not None else np.linspace(0.3, 2.5, 1001) * u.um
-    num_fields = len(source.fields)
-    if num_fields == 0:
-        raise ValueError("Source contains no fields. For point sources built with " "scopesim.source.source.Source, pass x=[...], y=[...], and ref=[...] " "arrays so ScopeSim creates a table-backed source field.")
-    fig, axs = plt.subplots(figsize=(6, 2 * num_fields), nrows=num_fields, ncols=2, width_ratios=[1, 2], constrained_layout=True)
-    if num_fields == 1:
-        axs = np.array([axs])
-    for idx, field in enumerate(source.fields):
-        ax_image, ax_spectrum = axs[idx]
-        if _is_table_source_field(field):
-            _plot_table_source_field(source, ax_image, ax_spectrum, field, wave, individual=individual,
-                                     spectrum_linewidth=spectrum_linewidth, spectrum_alpha=spectrum_alpha, spectrum_linestyle=spectrum_linestyle)
-        else:
-            _plot_image_source_field(ax_image, ax_spectrum, field, wave, spectrum_linewidth=spectrum_linewidth, spectrum_alpha=spectrum_alpha, spectrum_linestyle=spectrum_linestyle)
-        ax_spectrum.set_title("Spectrum")
-        ax_spectrum.set_xlabel("Wavelength [um]")
-        ax_spectrum.set_yscale(spectrum_yscale)
-        if ax_spectrum.get_legend_handles_labels()[0]:
-            ax_spectrum.legend(frameon=False)
-    return fig, axs
-
+logger = logging.getLogger(__name__)
 
 _PHOTLAM_TO_PH_S_M2_NM = 1e5
 _SPECTRAL_SURFACE_BRIGHTNESS_LABEL = r"Spectral surface brightness " r"[photons s$^{-1}$ m$^{-2}$ nm$^{-1}$ arcsec$^{-2}$]"
+
+def validated_mpl_kwargs(kind: Literal['line', 'scatter', 'image'], kwargs: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not kwargs:
+        return {}
+
+    resolved = dict(kwargs)
+    if kind == "line":
+        sample_factory = Line2D
+    elif kind == "scatter":
+        sample_factory = partial(PathCollection, paths=[])
+    elif kind == "image":
+        sample_factory = partial(AxesImage, ax=None)
+    else:
+        raise ValueError(f"Invalid Matplotlib kind: {kind}")
+
+    try:
+        valid_keys = set(ArtistInspector(sample_factory()).get_setters())
+    except Exception as e:
+        logger.warning(f"Could not query valid keys for the requested matplotlib artist of kind {kind}. Returning "
+                       f"unvalidated kwargs.")
+        return resolved
+
+    invalid = sorted(set(resolved) - valid_keys)
+    if invalid:
+        raise ValueError(f"Invalid Matplotlib {kind} kwargs: {', '.join(invalid)}")
+    return resolved
+
+
+class PlotScene:
+    def __init__(self,
+                 fig: plt.Figure | None = None,
+                 axs: plt.Axes | list[plt.Axes] | None = None,
+                 spectrum_yscale: str = "linear",
+                 spectrum_unit: str = "PHOTLAM",
+                 line_kwargs: Mapping[str, Any] | None = None,
+                 image_kwargs: Mapping[str, Any] | None = None,
+                 scatter_kwargs: Mapping[str, Any] | None = None):
+        """
+        Initialize plotting layout and style for source scene plots.
+        :param fig: Matplotlib pyplot Figure object
+        :param axs: Matpltolib pyplot Axes object or list of Axes
+        :param spectrum_yscale: string to set y-axis (flux) scaling of spectrum plot, e.g. linear, log
+        :param spectrum_unit: string to set flux units ("PHOTLAM" or astropy.Unit() parsable string)
+        :param line_kwargs: style keyword arguments to pass to the plt.plot, plt.axvline or plt.axhline functions
+        :param image_kwargs: style keyword arguments to pass to the plt.imshow function
+        :param scatter_kwargs: style keyword arguments to pass to the plt.scatter function
+        """
+        self.line_kwargs = validated_mpl_kwargs(kind='line', kwargs=line_kwargs)
+        self.image_kwargs = validated_mpl_kwargs(kind='image', kwargs=image_kwargs)
+        self.scatter_kwargs = validated_mpl_kwargs(kind='scatter', kwargs=scatter_kwargs)
+        self.spectrum_yscale = spectrum_yscale
+        self.spectrum_unit = PHOTLAM if spectrum_unit == "PHOTLAM" else u.Unit(spectrum_unit)
+        self.fig = fig
+        self.axs = axs
+
+    def from_source(self, source: Source, wave: u.Quantity | None = None, *,
+                    individual: bool = False, pixel_scale: float | None = None):
+        """
+        Iterate over source fields and plot each field's spatial profile/positions and spectrum.
+        Parameters
+        ----------
+        source : Source
+            The source to plot.
+        wave : u.Quantity, optional
+            The wavelengths to evaluate the spectrum at.
+        individual : bool, default False
+            If True, plot each TableSourceField's spectrum individually.
+        pixel_scale : float, default None
+            Pixel scale in arcsec/pixel to set ticklabels for HDU sources
+        """
+
+        def source_label() -> str:
+            meta = getattr(source, "meta", {}) or {}
+            for key in ("name", "object", "description", "function_call"):
+                value = meta.get(key)
+                if value:
+                    return str(value)
+            return f"{source.__class__.__name__}@{id(source):x}"
+
+        wave = wave if wave is not None else np.linspace(0.3, 2.5, 1001) * u.um
+        fields = getattr(source, "fields", None) or []
+        n_fields = len(fields)
+        if n_fields == 0:
+            raise ValueError("Source contains no fields. For point sources built with scopesim.source.source.Source, "
+                             "pass x=[...], y=[...], and ref=[...] arrays so ScopeSim creates a table-backed source field.")
+
+        if self.fig is None and self.axs is None:
+            fig, axs = plt.subplots(figsize=(6, 2 * n_fields), nrows=n_fields, ncols=2, width_ratios=[1, 2],
+                                              constrained_layout=True)
+        else:
+            fig, axs = self.fig, self.axs
+
+        if n_fields == 1:
+            axs = np.array([axs])
+        for idx, field in enumerate(fields):
+            ax_image, ax_spectrum = axs[idx]
+            if isinstance(field, TableSourceField):
+                ax_image, ax_spectrum = self._plot_table_source_field(ax_image, ax_spectrum, field, wave,
+                                                                      source_label(), individual=individual)
+            elif isinstance(field, (ImageSourceField, CubeSourceField)):
+                ax_image, ax_spectrum = self._plot_image_source_field(ax_image, ax_spectrum, field, wave,
+                                                                      pixel_scale=pixel_scale)
+            elif isinstance(field, SpectrumSourceField):
+                ax_image.text(0.5, 0.5, "No spatial data in field", ha="center", va="center",
+                              transform=ax_image.transAxes)
+                ax_image.set_axis_off()
+                spectra = field.spectra
+                for ref, spectrum in spectra.items():
+                    ax_spectrum = self._plot_spectrum(ax_spectrum, wave, spectrum(wave), label=str(ref))
+            else:
+                raise ValueError("Unknown field type in source.")
+            ax_spectrum.set_title("Spectrum", fontsize=10)
+            ax_spectrum.set_xlabel("Wavelength [um]", fontsize=9)
+            ax_spectrum.set_yscale(self.spectrum_yscale)
+            if ax_spectrum.get_legend_handles_labels()[0]:
+                ax_spectrum.legend(frameon=False)
+        return fig, axs
+
+    def _plot_spectrum(self, ax: Any, wave: u.Quantity, flux: Any, *, label: str):
+        unit = getattr(flux, "unit", None)
+        if unit is not None and unit != u.dimensionless_unscaled:
+            try:
+                plot_values = u.Quantity(flux).to(PHOTLAM).to_value(self.spectrum_unit)
+                ylabel = f"Flux density [{self.spectrum_unit}]"
+            except Exception:
+                plot_values = np.asarray(flux, dtype=float)
+                ylabel = f"Flux density [{unit}]"
+        else:
+            plot_values = np.asarray(flux, dtype=float)
+            ylabel = "Flux density"
+        style = {"linewidth": 1.5, "alpha": 1.0, "linestyle": "-"}
+        style.update(self.line_kwargs)
+        ax.plot(wave.to_value(u.um), plot_values, label=label, **style)
+        if not ax.get_ylabel():
+            ax.set_ylabel(ylabel, fontsize=9)
+        return ax
+
+    def _plot_table_source_field(self, ax_image: Any, ax_spectrum: Any, field: TableSourceField, wave: u.Quantity,
+                                 source_label: str, *, individual: bool):
+        def row_label(row_index: int) -> str:
+            for key in ("label", "name", "object", "source"):
+                if key in table.colnames:
+                    value = table[key][row_index]
+                    if value is not None and str(value):
+                        return str(value)
+            return f"{source_label} row {row_index}"
+
+        table = field.field
+        x = quantity_from_table("x", table, u.arcsec).to_value(u.arcsec)
+        y = quantity_from_table("y", table, u.arcsec).to_value(u.arcsec)
+        refs = np.asarray(table["ref"], dtype=int) if "ref" in table.colnames else np.zeros(len(table), dtype=int)
+        weights = np.asarray(table["weight"], dtype=float) if "weight" in table.colnames else np.ones(len(table), dtype=float)
+        sizes = 36 + 84 * weights / max(np.nanmax(weights), 1.0)
+
+        axis_style = {"color": "0.65", "linewidth": 0.8, "zorder": 0}
+        axis_style.update(self.line_kwargs)
+        ax_image.axhline(0, **axis_style)
+        ax_image.axvline(0, **axis_style)
+
+        scatter_style = {"c": refs, "s": sizes, "cmap": "tab10", "edgecolors": "black", "linewidths": 0.8, "alpha": 0.9, "zorder": 3}
+        scatter_style.update(self.scatter_kwargs)
+        scatter = ax_image.scatter(x, y, **scatter_style)
+
+        if len(table) <= 10:
+            for idx, (xpos, ypos) in enumerate(zip(x, y, strict=True)):
+                ax_image.annotate(row_label(idx), (xpos, ypos), xytext=(4, 4), textcoords="offset points", fontsize="small", zorder=4)
+        ax_image.set_aspect("equal", adjustable="datalim")
+        ax_image.set_xlabel("x [arcsec]", fontsize=9)
+        ax_image.set_ylabel("y [arcsec]", fontsize=9)
+        ax_image.set_title("Source Positions", fontsize=10)
+        if len(np.unique(refs)) > 1:
+            ax_image.legend(*scatter.legend_elements(prop="colors", fmt="{x:.0f}"), title="ref", frameon=False, loc="best")
+
+        total_flux = None
+        spectra = field.spectra
+        for row_index, ref in enumerate(refs):
+            spectrum = spectra.get(ref)
+            if isinstance(spectrum, SourceSpectrum):
+                if individual:
+                    ax_spectrum = self._plot_spectrum(ax_spectrum, wave, spectrum(wave) * float(weights[row_index]),
+                                        label=row_label(row_index))
+                else:
+                    flux = spectrum(wave) * float(weights[row_index])
+                    total_flux = flux if total_flux is None else total_flux + flux
+            else:
+                logger.warning(f"Spectrum object for row {row_index} with ref index {ref} is not a SourceSpectrum,"
+                               f"skipping.")
+        if total_flux.sum() > 0:
+            ax_spectrum = self._plot_spectrum(ax_spectrum, wave, total_flux, label=f"{source_label} total ({len(table)} points)")
+        return ax_image, ax_spectrum
+
+    def _plot_image_source_field(self, ax_image: Any, ax_spectrum: Any, field: ImageSourceField | CubeSourceField,
+                                 wave: u.Quantity, *, pixel_scale: float | None = None):
+        data = getattr(field, "data", None)
+        if data is None:
+            ax_image.text(0.5, 0.5, "No spatial image", ha="center", va="center", transform=ax_image.transAxes)
+            ax_image.set_axis_off()
+        else:
+            data = np.asarray(data)
+            imdata = np.nanmean(data, axis=0) if data.ndim > 2 else data
+            image_style = {"origin": "lower", "cmap": "viridis"}
+            image_style.update(self.image_kwargs)
+            im = ax_image.imshow(imdata, **image_style)
+            ny, nx = imdata.shape[:2]
+            xticks = np.linspace(0, nx, 3)
+            yticks = np.linspace(0, ny, 3)
+            ax_image.set_xticks(xticks)
+            ax_image.set_yticks(yticks)
+            if pixel_scale is not None:
+                x_center = nx / 2.0
+                y_center = ny / 2.0
+                ax_image.set_xticklabels(np.round((xticks - x_center) * pixel_scale,2).astype(str))
+                ax_image.set_yticklabels(np.round((yticks - y_center) * pixel_scale, 2).astype(str))
+                ax_image.set_xlabel("x [arcsec]", fontsize=9)
+                ax_image.set_ylabel("y [arcsec]", fontsize=9)
+            else:
+                ax_image.set_xlabel("x [pixel]", fontsize=9)
+                ax_image.set_ylabel("y [pixel]", fontsize=9)
+            ax_image.set_title("Spatial Profile", fontsize=10)
+            cbar = ax_image.figure.colorbar(im, ax=ax_image, fraction=0.046, pad=0.025)
+            cbar.set_label("Relative surface brightness", fontsize=8)
+
+        if isinstance(field, CubeSourceField):
+            if data is not None:
+                wave = field.waveset
+                spectrum = np.nanmean(data, axis=(1, 2))
+                logger.info(f"Plotting average spectrum for CubeSourceField object")
+                ax_spectrum = self._plot_spectrum(ax_spectrum, wave, spectrum, label="Pixel average")
+                return ax_image, ax_spectrum
+        elif isinstance(field, ImageSourceField):
+            spectra = getattr(field, "spectra", None)
+            if spectra:
+                for label, candidate in spectra.items():
+                    ax_spectrum = self._plot_spectrum(ax_spectrum, wave, candidate(wave), label=str(label))
+                return ax_image, ax_spectrum
+        ax_spectrum.text(0.5, 0.5, "No spectrum available", ha="center", va="center", transform=ax_spectrum.transAxes)
+        ax_spectrum.set_axis_off()
+        return ax_image, ax_spectrum
 
 
 def _plot_spectral_surface_brightness(values: Any) -> np.ndarray:
@@ -189,7 +279,7 @@ def _plot_spectral_surface_brightness(values: Any) -> np.ndarray:
     try:
         photlam_values = u.Quantity(values).to_value(PHOTLAM)
     except Exception:
-        photlam_values = _as_float_array(values)
+        photlam_values = np.asarray(values, dtype=float)
     return np.asarray(photlam_values, dtype=float) * _PHOTLAM_TO_PH_S_M2_NM
 
 
