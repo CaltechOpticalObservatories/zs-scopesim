@@ -9,7 +9,7 @@ src_dir = "~/src"
 url = "https://github.com/CaltechOpticalObservatories/ScopeSim.git"
 path = "ScopeSim"
 relative_to = "src_dir"
-ref = "spie2026"
+ref = "jeb/spie2026"
 editable = true
 managed = true
 
@@ -17,7 +17,7 @@ managed = true
 url = "https://github.com/CaltechOpticalObservatories/irdb.git"
 path = "irdb"
 relative_to = "src_dir"
-ref = "spie2026"
+ref = "jeb/spie2026"
 editable = true
 managed = true
 
@@ -32,7 +32,7 @@ managed = true
 [repos.zs_scopesim]
 path = "."
 relative_to = "repo"
-ref = "spie2026"
+ref = "jeb/spie2026"
 editable = true
 managed = false
 
@@ -57,6 +57,7 @@ packages = [
   "pytest",
   "ipywidgets",
   "IProgress",
-  "jupyter"
+  "jupyter",
+  "h5py"
 
 ]

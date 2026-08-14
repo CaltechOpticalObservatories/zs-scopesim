@@ -5,10 +5,14 @@ import importlib
 import importlib.metadata
 import importlib.resources
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Iterator, cast
+
+from packaging.requirements import Requirement
+from packaging.version import Version
 
 try:
     import tomllib
@@ -25,7 +29,6 @@ DEFAULT_IMPORTS = (
     ("matplotlib", "matplotlib"),
     ("scopesim", "ScopeSim"),
     ("scopesim_templates", "ScopeSim_Templates"),
-    ("irdb", "irdb"),
     ("spextra", "speXtra"),
     ("skycalc_ipy", "skycalc_ipy"),
     ("pyckles", "Pyckles"),
@@ -53,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     doctor_parser = subparsers.add_parser("doctor", help="Report environment, package, and git state.")
     doctor_parser.add_argument("--src-dir", help="Override source checkout directory.")
     doctor_parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    doctor_parser.add_argument("--fix", action="store_true", help="Repair missing or invalid managed repositories.")
     doctor_parser.set_defaults(func=cmd_doctor)
 
     sync_parser = subparsers.add_parser("sync-tags", help="Checkout manifest refs for managed editable repos.")
@@ -76,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     manifest, src_dir, manifest_path = load_cli_context(args)
+    repairs = repair_managed_repos(manifest, src_dir) if args.fix else []
     report = {
         "python": {
             "executable": sys.executable,
@@ -86,15 +91,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         "manifest": str(manifest_path),
         "src_dir": str(src_dir),
         "packages": package_report(),
+        "dependencies": dependency_report("ScopeSim"),
         "palace_resources": palace_resource_report(),
         "repos": repo_report(manifest, src_dir),
+        "repairs": repairs,
     }
+    report["healthy"] = report_is_healthy(report)
 
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         print_text_report(report)
-    return 0
+    return 0 if report["healthy"] else 1
 
 
 def cmd_sync_tags(args: argparse.Namespace) -> int:
@@ -184,15 +192,40 @@ def package_report() -> dict[str, dict[str, Any]]:
             module = importlib.import_module(module_name)
             entry["importable"] = True
             entry["file"] = getattr(module, "__file__", None)
-            entry["version"] = getattr(module, "__version__", None)
+            version = getattr(module, "__version__", None)
+            entry["version"] = str(version) if version is not None else None
         except Exception as exc:  # noqa: BLE001 - diagnostics must not fail on broken imports
             entry["error"] = f"{type(exc).__name__}: {exc}"
         try:
             entry["distribution_version"] = importlib.metadata.version(dist_name)
         except importlib.metadata.PackageNotFoundError:
             pass
+        distributions = [distribution for distribution in importlib.metadata.distributions()
+                         if distribution.metadata.get("Name", "").lower() == dist_name.lower()]
+        entry["distribution_versions"] = [distribution.version for distribution in distributions]
+        entry["distribution_locations"] = [str(distribution._path) for distribution in distributions]
         report[module_name] = entry
     return report
+
+
+def dependency_report(distribution_name: str) -> list[dict[str, Any]]:
+    issues = []
+    try:
+        requirements = importlib.metadata.requires(distribution_name) or []
+    except importlib.metadata.PackageNotFoundError:
+        return [{"distribution": distribution_name, "error": "distribution is not installed"}]
+    for requirement_text in requirements:
+        requirement = Requirement(requirement_text)
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            continue
+        try:
+            installed = importlib.metadata.version(requirement.name)
+        except importlib.metadata.PackageNotFoundError:
+            issues.append({"requirement": str(requirement), "error": "not installed"})
+            continue
+        if requirement.specifier and Version(installed) not in requirement.specifier:
+            issues.append({"requirement": str(requirement), "installed": installed})
+    return issues
 
 
 def palace_resource_report() -> dict[str, Any]:
@@ -220,14 +253,90 @@ def repo_report(manifest: dict[str, Any], src_dir: Path) -> dict[str, dict[str, 
             "path": str(path),
             "expected_ref": repo.get("ref"),
             "exists": path.exists(),
+            "managed": repo.get("managed", True),
+            "issues": [],
+            "warnings": [],
         }
-        if path.exists():
+        if not path.exists():
+            entry["issues"].append("missing")
+        elif not is_git_repo(path):
+            entry["git"] = False
+            entry["issues"].append("not a git repository")
+        else:
+            entry["git"] = True
             entry["head"] = git_output(path, ["rev-parse", "HEAD"])
             entry["branch"] = git_output(path, ["branch", "--show-current"])
             entry["tags"] = git_output(path, ["tag", "--points-at", "HEAD"]).splitlines()
             entry["dirty"] = git_dirty(path)
+            entry["remote_url"] = git_output(path, ["remote", "get-url", "origin"])
+            expected_ref = repo.get("ref")
+            if expected_ref and entry["branch"] != expected_ref and expected_ref not in entry["tags"]:
+                entry["issues"].append(f"expected ref {expected_ref}")
+            expected_url = repo.get("url")
+            if expected_url and canonical_git_url(entry["remote_url"]) != canonical_git_url(expected_url):
+                entry["issues"].append(f"origin does not match {expected_url}")
+            if entry["dirty"]:
+                entry["warnings"].append("dirty worktree")
         report[name] = entry
     return report
+
+
+def report_is_healthy(report: dict[str, Any]) -> bool:
+    repos_healthy = all(not entry["issues"] for entry in report["repos"].values())
+    packages_healthy = all(entry["importable"] and len(set(entry["distribution_versions"])) <= 1
+                           for entry in report["packages"].values())
+    resources_healthy = all(all(value is True for value in entry.values())
+                            for entry in report["palace_resources"].values())
+    return repos_healthy and packages_healthy and resources_healthy and not report["dependencies"]
+
+
+def canonical_git_url(url: str) -> str:
+    value = url.strip().removesuffix(".git")
+    if value.startswith("git@"):
+        host, path = value[4:].split(":", 1)
+        return f"{host.lower()}/{path.lower()}"
+    if "://" in value:
+        value = value.split("://", 1)[1]
+    return value.lower()
+
+
+def is_git_repo(path: Path) -> bool:
+    return run(["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"], check=False,
+               capture=True).returncode == 0
+
+
+def repair_managed_repos(manifest: dict[str, Any], src_dir: Path) -> list[dict[str, str]]:
+    repairs = []
+    src_dir.mkdir(parents=True, exist_ok=True)
+    for name, repo, path in iter_repos(manifest, src_dir, managed_only=True):
+        if path.exists() and is_git_repo(path):
+            continue
+        url = repo.get("url")
+        ref = repo.get("ref")
+        if not url or not ref:
+            repairs.append({"repo": name, "status": "failed", "detail": "manifest requires url and ref"})
+            continue
+        backup = path.with_name(f"{path.name}-deleteme")
+        moved = False
+        if path.exists():
+            if backup.exists():
+                repairs.append({"repo": name, "status": "failed", "detail": f"backup exists: {backup}"})
+                continue
+            path.replace(backup)
+            moved = True
+        result = run(["git", "clone", url, str(path)], check=False, capture=True)
+        if result.returncode == 0:
+            result = run(["git", "-C", str(path), "checkout", ref], check=False, capture=True)
+        if result.returncode == 0:
+            repairs.append({"repo": name, "status": "repaired", "detail": str(path)})
+            continue
+        if path.exists():
+            shutil.rmtree(path)
+        if moved:
+            backup.replace(path)
+        detail = result.stderr.strip() or result.stdout.strip() or "git command failed"
+        repairs.append({"repo": name, "status": "failed", "detail": detail})
+    return repairs
 
 
 def git_output(path: Path, args: list[str]) -> str:
@@ -266,6 +375,10 @@ def print_text_report(report: dict[str, Any]) -> None:
             print(f"  {name}: ok ({version})")
         else:
             print(f"  {name}: missing or broken ({entry.get('error', 'unknown error')})")
+        if len(set(entry["distribution_versions"])) > 1:
+            print(f"    duplicate distributions: {entry['distribution_versions']}")
+    if report["dependencies"]:
+        print(f"Dependency issues: {report['dependencies']}")
     print()
     print("PALACE resources")
     for package, entry in report["palace_resources"].items():
@@ -276,9 +389,17 @@ def print_text_report(report: dict[str, Any]) -> None:
         if not entry["exists"]:
             print(f"  {name}: missing at {entry['path']} expected={entry.get('expected_ref')}")
             continue
+        if not entry.get("git"):
+            print(f"  {name}: not a git repository at {entry['path']}")
+            continue
         tag_text = ",".join(entry.get("tags", [])) or "no tag"
         dirty = " dirty" if entry.get("dirty") else ""
         print(f"  {name}: {entry.get('branch') or 'detached'} {entry.get('head')} [{tag_text}]{dirty}")
+        for issue in entry["issues"]:
+            print(f"    issue: {issue}")
+    for repair in report["repairs"]:
+        print(f"Repair {repair['repo']}: {repair['status']} ({repair['detail']})")
+    print(f"Healthy: {report['healthy']}")
 
 
 if __name__ == "__main__":

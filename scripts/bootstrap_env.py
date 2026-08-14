@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -10,7 +11,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from zs_scopesim_tools.cli import git_dirty, load_manifest
+from zs_scopesim_tools.cli import git_dirty, is_git_repo, load_manifest
 from zs_scopesim_tools.paths import resolve_manifest_path, resolve_src_dir, repo_path  # noqa: E402
 
 
@@ -29,21 +30,25 @@ def main() -> int:
     parser.add_argument("--no-fetch", action="store_true", help="Skip git fetch when --sync-refs is used.")
     parser.add_argument("--no-clone-missing", action="store_true",
                         help="Do not clone managed repos that are not already present.")
+    parser.add_argument("--recreate-env", action="store_true",
+                        help="Remove and recreate the selected conda/mamba environment or venv.")
     args = parser.parse_args()
 
     manifest = load_manifest(resolve_manifest_path(args.manifest))
     src_dir = resolve_src_dir(manifest, args.src_dir)
     python_version = args.python or manifest.get("python", {}).get("recommended")
-    env_python = prepare_environment(args.manager, args.env_name, Path(args.venv), python_version)
+    env_python = prepare_environment(args.manager, args.env_name, Path(args.venv), python_version,
+                                     recreate=args.recreate_env)
 
     failures = 0
+    editable_paths = []
     src_dir.mkdir(parents=True, exist_ok=True)
     for name, repo in manifest.get("repos", {}).items():
         if not repo.get("managed", True):
             continue
         path = repo_path(repo, src_dir)
         created = ensure_repo(name, repo, path, clone_missing=not args.no_clone_missing)
-        if not path.exists():
+        if not path.exists() or not is_git_repo(path):
             failures += 1
             continue
         if created:
@@ -56,29 +61,38 @@ def main() -> int:
         else:
             print(f"{name}: leaving existing checkout unchanged at {path}")
         if repo.get("editable", True):
-            run([str(env_python), "-m", "pip", "install", "-e", str(path)])
+            editable_paths.append(path)
+
+    if failures:
+        print(f"Repository setup failed for {failures} managed checkout(s).", file=sys.stderr)
+        return 1
 
     palace_path = REPO_ROOT / manifest.get("local", {}).get("palace", {}).get("path", "PALACE")
-    run([str(env_python), "-m", "pip", "install", "-e", str(palace_path)])
-    run([str(env_python), "-m", "pip", "install", "-e", str(REPO_ROOT)])
-
+    editable_paths.extend([palace_path, REPO_ROOT])
     packages = manifest.get("pip", {}).get("packages", [])
-    if packages:
-        run([str(env_python), "-m", "pip", "install", *packages])
+    install_cmd = [str(env_python), "-m", "pip", "install"]
+    for path in editable_paths:
+        install_cmd.extend(["-e", str(path)])
+    install_cmd.extend(packages)
+    run(install_cmd)
 
     run([str(env_python), "-m", "ipykernel", "install", "--user", "--name", args.env_name,
          "--display-name", f"Python ({args.env_name})"])
-    if failures:
-        print(f"Completed with {failures} repo setup failure(s).", file=sys.stderr)
-        return 1
     return 0
 
 
-def prepare_environment(manager: str, env_name: str, venv_path: Path, python_version: str | None) -> Path:
+def prepare_environment(manager: str, env_name: str, venv_path: Path, python_version: str | None, *,
+                        recreate: bool = False) -> Path:
     if manager == "existing":
+        if recreate:
+            raise ValueError("--recreate-env cannot be used with --manager existing")
         return Path(sys.executable)
     if manager in {"mamba", "conda"}:
-        if conda_env_exists(manager, env_name):
+        exists = conda_env_exists(manager, env_name)
+        if recreate and exists:
+            run([manager, "env", "remove", "-y", "-n", env_name])
+            exists = False
+        if exists:
             print(f"{manager}: using existing environment {env_name}")
         else:
             create_cmd = [manager, "create", "-y", "-n", env_name]
@@ -89,6 +103,10 @@ def prepare_environment(manager: str, env_name: str, venv_path: Path, python_ver
         return Path(run([manager, "run", "-n", env_name, "python", "-c",
                          "import sys; print(sys.executable)"], capture=True).stdout.strip())
     venv = venv_path.expanduser().resolve()
+    if recreate and venv.exists():
+        if venv in {Path.home().resolve(), REPO_ROOT.resolve()} or not (venv / "pyvenv.cfg").is_file():
+            raise ValueError(f"Refusing to remove non-venv path: {venv}")
+        shutil.rmtree(venv)
     if not (venv / "bin" / "python").exists():
         cmd = [sys.executable, "-m", "venv", str(venv)]
         run(cmd)
@@ -115,6 +133,9 @@ def ensure_repo(name: str, repo: dict, path: Path, clone_missing: bool) -> bool:
             return False
         run(["git", "clone", repo["url"], str(path)])
         return True
+    if not is_git_repo(path):
+        print(f"{name}: invalid checkout at {path}; run zs-sim doctor --fix", file=sys.stderr)
+        return False
     print(f"{name}: using {path}")
     return False
 

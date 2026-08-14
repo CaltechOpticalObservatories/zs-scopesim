@@ -9,38 +9,23 @@ from scopesim.utils import airmass2zendist
 from zs_scopesim_tools import helpers
 
 
-def test_zshooter_package_dir_points_inside_irdb_checkout(tmp_path):
-    assert helpers.zshooter_package_dir(tmp_path) == tmp_path / "ZShooter_v2"
+def test_configure_irdb_path_sets_scopesim_search_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(helpers, "resolve_irdb_path", lambda fallback=None: tmp_path)
+    monkeypatch.setitem(helpers.sim.rc.__config__, "!SIM.file.search_path", [])
+
+    resolved = helpers.configure_irdb_path()
+
+    assert resolved == str(tmp_path)
+    assert helpers.sim.rc.__config__["!SIM.file.local_packages_path"] == str(tmp_path)
+    assert helpers.sim.rc.__config__["!SIM.file.search_path"] == [str(tmp_path)]
 
 
-def test_validation_work_dir_uses_base_dir_outside_irdb(tmp_path):
-    output_dir = helpers.validation_work_dir(
-        irdb_path=tmp_path / "irdb",
-        name="out",
-        base_dir=tmp_path / "work",
-    )
+def test_instrument_package_dir_uses_configured_irdb(tmp_path, monkeypatch):
+    instrument = tmp_path / "ZShooter_v2"
+    instrument.mkdir()
+    monkeypatch.setitem(helpers.sim.rc.__config__, "!SIM.file.local_packages_path", str(tmp_path))
 
-    assert output_dir == tmp_path / "work" / "out"
-    assert output_dir.is_dir()
-
-
-def test_validation_work_dir_avoids_writing_inside_irdb(tmp_path, monkeypatch):
-    irdb_path = tmp_path / "irdb"
-    package_dir = irdb_path / "ZShooter_v2"
-    package_dir.mkdir(parents=True)
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-    monkeypatch.setattr(helpers, "repo_root", lambda start=None: repo_dir)
-
-    output_dir = helpers.validation_work_dir(
-        irdb_path=irdb_path,
-        name="out",
-        base_dir=package_dir,
-    )
-
-    assert output_dir.name == "out"
-    assert output_dir == repo_dir / "out"
-    assert Path("irdb") not in output_dir.relative_to(repo_dir).parents
+    assert helpers.instrument_package_dir("ZShooter_v2") == instrument
 
 
 def test_warning_prevent_sync_alt_ra_dec_uses_airmass_without_radec(monkeypatch):

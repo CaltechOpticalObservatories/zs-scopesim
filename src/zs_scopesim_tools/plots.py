@@ -34,6 +34,88 @@ logger = logging.getLogger(__name__)
 _PHOTLAM_TO_PH_S_M2_NM = 1e5
 _SPECTRAL_SURFACE_BRIGHTNESS_LABEL = r"Spectral surface brightness " r"[photons s$^{-1}$ m$^{-2}$ nm$^{-1}$ arcsec$^{-2}$]"
 
+def _source_label(source: Any) -> str:
+    meta = getattr(source, "meta", {}) or {}
+    for key in ("name", "object", "description", "function_call"):
+        if meta.get(key):
+            return str(meta[key])
+    return f"{source.__class__.__name__}@{id(source):x}"
+
+def _quantity_column(table: Table, name: str, unit: u.UnitBase) -> u.Quantity:
+    values = table[name]
+    quantity = u.Quantity(getattr(values, "quantity", values))
+    if quantity.unit == u.dimensionless_unscaled:
+        quantity = quantity.value * unit
+    return quantity.to(unit)
+
+def _plot_source_spectrum(ax: Any, wave: u.Quantity, values: Any, *, label: str, linewidth: float,
+                          alpha: float, linestyle: str) -> None:
+    unit = getattr(values, "unit", None)
+    plot_values = np.asarray(getattr(values, "value", values), dtype=float)
+    ylabel = "Flux density"
+    if unit is not None and unit != u.dimensionless_unscaled:
+        try:
+            plot_values = u.Quantity(values).to_value(PHOTLAM) * _PHOTLAM_TO_PH_S_M2_NM
+            ylabel = r"Flux density [photons s$^{-1}$ m$^{-2}$ nm$^{-1}$]"
+        except Exception:
+            ylabel = f"Flux density [{unit}]"
+    ax.plot(wave.to_value(u.um), plot_values, label=label, lw=linewidth, alpha=alpha, ls=linestyle)
+    if not ax.get_ylabel():
+        ax.set_ylabel(ylabel)
+
+def plot_source(source: Any, wave: u.Quantity | None = None, *, individual: bool = False,
+                spectrum_yscale: str = "linear", spectrum_linewidth: float = 1.5,
+                spectrum_alpha: float = 1.0, spectrum_linestyle: str = "-"):
+    """Plot each source field's spatial profile or positions and spectrum."""
+    wave = wave if wave is not None else np.linspace(0.3, 2.5, 1001) * u.um
+    fields = getattr(source, "fields", None) or []
+    if not fields:
+        raise ValueError("Source contains no fields. Pass coordinates so ScopeSim creates a spatial source field.")
+    fig, axs = plt.subplots(figsize=(6, 2 * len(fields)), nrows=len(fields), ncols=2,
+                            width_ratios=[1, 2], constrained_layout=True)
+    if len(fields) == 1:
+        axs = np.array([axs])
+    for field_index, field in enumerate(fields):
+        ax_image, ax_spectrum = axs[field_index]
+        table = getattr(field, "field", None)
+        if isinstance(table, Table) and {"x", "y"}.issubset(table.colnames):
+            x = _quantity_column(table, "x", u.arcsec).to_value(u.arcsec)
+            y = _quantity_column(table, "y", u.arcsec).to_value(u.arcsec)
+            refs = np.asarray(table["ref"], dtype=int) if "ref" in table.colnames else np.zeros(len(table), dtype=int)
+            weights = np.asarray(table["weight"], dtype=float) if "weight" in table.colnames else np.ones(len(table))
+            ax_image.scatter(x, y, c=refs, s=36 + 84 * weights / max(np.max(weights), 1.0), cmap="tab10",
+                             edgecolors="black", linewidths=0.8, alpha=0.9)
+            ax_image.set_aspect("equal", adjustable="datalim")
+            ax_image.set_xlabel("x [arcsec]")
+            ax_image.set_ylabel("y [arcsec]")
+            spectra = field.spectra
+            total = None
+            for row_index, ref in enumerate(refs):
+                values = spectra[int(ref)](wave) * weights[row_index]
+                if individual:
+                    label = str(table["label"][row_index]) if "label" in table.colnames else f"{_source_label(source)} row {row_index}"
+                    _plot_source_spectrum(ax_spectrum, wave, values, label=label, linewidth=spectrum_linewidth,
+                                          alpha=spectrum_alpha, linestyle=spectrum_linestyle)
+                else:
+                    total = values if total is None else total + values
+            if total is not None and not individual:
+                _plot_source_spectrum(ax_spectrum, wave, total, label=f"{_source_label(source)} total ({len(table)} points)",
+                                      linewidth=spectrum_linewidth, alpha=spectrum_alpha, linestyle=spectrum_linestyle)
+        else:
+            data = getattr(field, "data", getattr(table, "data", None))
+            if data is not None:
+                image = np.asarray(data)
+                ax_image.imshow(np.mean(image, axis=0) if image.ndim > 2 else image, origin="lower", cmap="viridis")
+            for ref, spectrum in getattr(field, "spectra", {}).items():
+                _plot_source_spectrum(ax_spectrum, wave, spectrum(wave), label=f"ref {ref}",
+                                      linewidth=spectrum_linewidth, alpha=spectrum_alpha, linestyle=spectrum_linestyle)
+        ax_spectrum.set_title("Spectrum")
+        ax_spectrum.set_xlabel("Wavelength [um]")
+        ax_spectrum.set_yscale(spectrum_yscale)
+        if ax_spectrum.get_legend_handles_labels()[0]:
+            ax_spectrum.legend(frameon=False)
+    return fig, axs
+
 def validated_mpl_kwargs(kind: Literal['line', 'scatter', 'image'], kwargs: Mapping[str, Any] | None) -> dict[str, Any]:
     if not kwargs:
         return {}

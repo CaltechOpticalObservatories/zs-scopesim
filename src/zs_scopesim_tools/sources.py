@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections import OrderedDict
 from collections.abc import Sequence
 from typing import Any
 from functools import lru_cache
@@ -12,14 +13,13 @@ from astropy import units as u
 from astropy.table import Table, vstack
 from synphot import SourceSpectrum
 from synphot.units import PHOTLAM, FLAM, convert_flux
+from astropy.constants import c
 from astropy.cosmology import Planck18
 import h5py
-import bisect
 
 import scopesim.source.source_templates as source_templates
 from spextra import Spextrum
 from zs_scopesim_tools.helpers import instrument_package_dir
-from zs_scopesim_tools.paths import repo_root
 
 
 DEFAULT_LAMP_LINE_FILENAMES = ("ThAr_XSHOOTER_UVB_lines.dat", "Ne_IR_MOSFIRE_lines.dat", "Ar_IR_MOSFIRE_lines.dat")
@@ -91,7 +91,7 @@ def lamp_flat(*, line_dir: str | Path | None = None, filenames: Sequence[str] = 
     else:
         line_dir = Path(line_dir).expanduser().resolve()
 
-    lines = _read_lamp_lines(line_dir, filenames=filenames)
+    lines = _read_lamp_lines(line_dir, filenames=tuple(filenames))
     centers = np.asarray(lines["wave"], dtype=float)  # Angstrom
     amplitudes = np.asarray(lines["amplitude"], dtype=float) * scale_amplitude
     fwhm = centers / resolving_power # Angstrom
@@ -116,6 +116,68 @@ def constant_photon_flux_flat(amplitude: float = 0.001, extent: float = 60,
     spectrum_model = source_templates.ConstFlux1D(amplitude=amplitude)
     spectrum = empirical_spectrum(waves, spectrum_model(waves))
     return source_templates.uniform_source(spectrum, extent=extent)
+
+def slit_frame_offsets(separation: u.Quantity = 1.0 * u.arcsec, angle_on_slit: u.Quantity = 0.0 * u.deg, *, centered: bool = True) -> tuple[u.Quantity, u.Quantity]:
+    """Return two source offsets with x along the slit and y across the slit."""
+    sep = u.Quantity(separation).to(u.arcsec)
+    angle = u.Quantity(angle_on_slit).to(u.rad)
+    dx = sep * np.cos(angle)
+    dy = sep * np.sin(angle)
+    if centered:
+        return u.Quantity([-0.5 * dx.value, 0.5 * dx.value], dx.unit), u.Quantity([-0.5 * dy.value, 0.5 * dy.value], dy.unit)
+    return u.Quantity([0.0, dx.value], dx.unit), u.Quantity([0.0, dy.value], dy.unit)
+
+def angle_from_cmds(cmds: Any, key: str = "!OBS.pupil_angle", default: u.Quantity = 0.0 * u.deg) -> u.Quantity:
+    """Return an angle setting from a ScopeSim command object."""
+    from scopesim.utils import from_currsys
+
+    value = from_currsys(key, cmds) if key in cmds else default
+    return u.Quantity(value, u.deg).to(u.deg)
+
+def two_point_source(*, separation: u.Quantity = 1.0 * u.arcsec, angle_on_slit: u.Quantity = 0.0 * u.deg,
+                     center: tuple[u.Quantity, u.Quantity] = (0.0 * u.arcsec, 0.0 * u.arcsec),
+                     centered: bool = True, spectrum: Any | None = None, mag: float = 20.0,
+                     weights: Sequence[float] = (1.0, 1.0)):
+    """Build a two-point-source scene for slit-loss and ADC validation."""
+    if len(weights) != 2:
+        raise ValueError("weights must contain exactly two values")
+
+    x_offsets, y_offsets = slit_frame_offsets(separation=separation, angle_on_slit=angle_on_slit, centered=centered)
+    x = u.Quantity(center[0]).to(u.arcsec) + x_offsets
+    y = u.Quantity(center[1]).to(u.arcsec) + y_offsets
+    spectrum = spectrum if spectrum is not None else source_templates.ab_spectrum(mag=mag)
+    table = Table(data=[x.to_value(u.arcsec), y.to_value(u.arcsec), np.asarray(weights, dtype=float),
+                        np.zeros(2, dtype=int), ["source_0", "source_1"]],
+                  names=["x", "y", "weight", "ref", "label"], units=[u.arcsec, u.arcsec, None, None, None])
+    table.meta.update({"angle_on_slit": u.Quantity(angle_on_slit).to_value(u.deg), "angle_on_slit_unit": "deg",
+                       "separation": u.Quantity(separation).to_value(u.arcsec), "separation_unit": "arcsec",
+                       "centered": centered, "frame": "slit", "x_convention": "along slit", "y_convention": "across slit"})
+    source = source_templates.Source(spectra=[spectrum], table=table)
+    source.meta.update({"function_call": "two_point_source", "angle_on_slit": table.meta["angle_on_slit"],
+                        "angle_on_slit_unit": "deg"})
+    return source
+
+def field_angle_demo_sources(*, along_separation: u.Quantity = 5.0 * u.arcsec,
+                             across_separation: u.Quantity = 0.9 * u.arcsec,
+                             angle_on_slit: u.Quantity = 0.0 * u.deg, along_mag: float = 15.0,
+                             across_mag: float = 17.0, spectrum: Any | None = None) -> OrderedDict[str, Any]:
+    """Return the two source scenes used for field-angle and slit validation."""
+    angle_on_slit = u.Quantity(angle_on_slit, u.deg).to(u.deg)
+    scenarios = OrderedDict([
+        ("along_slit_centered", two_point_source(separation=along_separation, angle_on_slit=angle_on_slit,
+                                                  centered=True, mag=along_mag, spectrum=spectrum)),
+        ("across_slit_one_off", two_point_source(separation=across_separation,
+                                                  angle_on_slit=angle_on_slit + 90 * u.deg,
+                                                  centered=False, mag=across_mag, spectrum=spectrum)),
+    ])
+    descriptions = {"along_slit_centered": "Pair centered on the slit and separated along the slit.",
+                    "across_slit_one_off": "Pair separated across the slit with the second source off slit."}
+    for name, source in scenarios.items():
+        source.meta.update({"name": name, "scenario": name, "function_call": "field_angle_demo_sources",
+                            "description": descriptions[name], "scene_angle_on_slit": angle_on_slit.to_value(u.deg),
+                            "scene_angle_on_slit_unit": "deg",
+                            "workflow_note": "Set angle_on_slit explicitly in the slit frame, then rebuild this source scene and rerun observe/readout."})
+    return scenarios
 
 def empirical_spectrum(wave: u.Quantity, flux: u.Quantity):
     """
@@ -181,61 +243,42 @@ def transient(*, x: float = 0.0, y: float = 0.0,
     # create transient source
     return source_templates.Source(x=[x], y=[y], ref=[0.], weight=[1.0], spectra=spectra, name=name)
 
-def kilonova_spectra(model_files: list[str] | None = None,
-                      phases: list[float] | None = None,
-                      redshift: float = 0.0,
-                      combine_models: bool = True,
-                      ):
-    if model_files is None:
-        modelroot = repo_root() / 'notebooks' / 'source_data' / 'Kasen2017'
-        model_files = [str(modelroot / 'knova_d1_n10_m0.025_vk0.30_Xlan1e-4.0.h5'),
-                       str(modelroot / 'knova_d1_n10_m0.040_vk0.15_Xlan1e-1.5.h5')]
-    if phases is None:
-        phases = [1.5, 7.5]
+def kilonova_spectra(model_files: Sequence[str | Path], phases: Sequence[float] = (1.5, 7.5), *,
+                      redshift: float, combine_models: bool = True):
+    """Read Kasen-model spectra and interpolate them to requested rest-frame phases in days."""
+    if redshift <= 0:
+        raise ValueError("redshift must be positive so the model luminosity has a finite flux scale")
 
-    spectra = {}
-    # open model files
+    distance = Planck18.luminosity_distance(redshift).to_value(u.cm)
+    speed_of_light = c.to_value(u.cm / u.s)
+    spectra = {phase: [] for phase in phases}
+
     for model_file in model_files:
-        fin = h5py.File(model_file, 'r')
+        with h5py.File(model_file, "r") as model:
+            nu = np.array(model["nu"], dtype=float)
+            times = np.array(model["time"], dtype=float) / 86400
+            lnu_all = np.array(model["Lnu"], dtype=float)
 
-        # frequency in Hz
-        nu = np.array(fin['nu'], dtype='d')
-        # array of time in seconds
-        times = np.array(fin['time'])
-        # covert time to days
-        times = times / 3600.0 / 24.0
+        for phase in phases:
+            if phase < times[0] or phase > times[-1]:
+                raise ValueError(f"phase {phase} d is outside the model range {times[0]}--{times[-1]} d")
+            upper = np.searchsorted(times, phase)
+            if upper == 0 or times[upper] == phase:
+                lnu = lnu_all[upper]
+            else:
+                lower = upper - 1
+                fraction = (phase - times[lower]) / (times[upper] - times[lower])
+                lnu = lnu_all[lower] + fraction * (lnu_all[upper] - lnu_all[lower])
 
-        # specific luminosity (ergs/s/Hz)
-        # this is a 2D array, Lnu[times][nu]
-        Lnu_all = np.array(fin['Lnu'], dtype='d')
-
-        # get the spectrum at phase (days)
-        for t in phases:
-            # index corresponding to t
-            it = bisect.bisect(times, t)
-            # spectrum at this epoch
-            Lnu = Lnu_all[it, :]
-
-            # in Flambda (ergs/s/Angstrom)
-            c = 2.99e10
-            lam = c / nu * 1e8
-            Llam = Lnu * nu ** 2.0 / c / 1e8
-
-            # in flux density units (ergs/s/cm^2/Angstrom)
-            D = Planck18.luminosity_distance(redshift).to('cm').value
-            Llam = Llam / (4 * np.pi * D ** 2)
-
-            # convert it to PHOTLAM and SourceSpectrum object
-            spec = empirical_spectrum(lam * u.AA, Llam * FLAM)
-            spectra[t] = [spec] if spectra.get(t, None) is None else spectra[t] + [spec]
+            wavelength = speed_of_light / nu * 1e8
+            llam = lnu * nu ** 2 / speed_of_light / 1e8
+            flux = llam / (4 * np.pi * distance ** 2)
+            spectra[phase].append(empirical_spectrum(wavelength * u.AA, flux * FLAM))
 
     if combine_models:
-        for t, specs in spectra.items():
-            # combine spectra at this phase
-            combined_spec = None
-            for spec in specs:
-                combined_spec = spec if combined_spec is None else combined_spec + spec
-            spectra[t] = combined_spec
-
+        for phase, model_spectra in spectra.items():
+            combined = model_spectra[0]
+            for spectrum in model_spectra[1:]:
+                combined += spectrum
+            spectra[phase] = combined
     return spectra
-

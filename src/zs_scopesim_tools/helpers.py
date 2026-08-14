@@ -91,7 +91,15 @@ def disable_scopesim_progress_bars(disable: bool = True):
 
 def warning_prevent_sync_alt_ra_dec(cmd: Any) -> None:
     """Populate AltAz command keys without letting RA/Dec override airmass."""
-    from scopesim.utils import (airmass2zendist, from_currsys)
+    from astropy import units as u
+    from astropy.coordinates import AltAz
+    from scopesim.utils import airmass2zendist, from_currsys, get_observation_info_from_cmds
+
+    def degree_value(value: Any) -> float:
+        quantity = u.Quantity(value)
+        if quantity.unit == u.dimensionless_unscaled:
+            return float(quantity.value)
+        return float(quantity.to_value(u.deg))
 
     alt = from_currsys("!OBS.alt", cmd) if "!OBS.alt" in cmd else None
     az = from_currsys("!OBS.az", cmd) if "!OBS.az" in cmd else 0.0
@@ -103,13 +111,18 @@ def warning_prevent_sync_alt_ra_dec(cmd: Any) -> None:
         if airmass is not None:
             airmass = float(airmass)
             alt_airmass = 90.0 - airmass2zendist(airmass)
-            if not abs(alt_airmass - airmass) < 0.01:
+            if not abs(alt_airmass - degree_value(alt)) < 0.01:
                 warnings.warn(f"Both !OBS.alt ({alt}) and !OBS.airmass ({airmass}) are set, but they are inconsistent. "
                           f"Using !OBS.alt and ignoring !OBS.airmass.", UserWarning)
-        cmd["!OBS.alt"] = alt
-        cmd["!OBS.az"] = az
-        cmd["!OBS.ra"] = None
-        cmd["!OBS.dec"] = None
+        cmd["!OBS.alt"] = degree_value(alt)
+        cmd["!OBS.az"] = degree_value(az)
+    else:
+        target, location, time = get_observation_info_from_cmds(cmd)
+        altaz_target = target if hasattr(target, "alt") and hasattr(target, "az") else target.transform_to(AltAz(obstime=time, location=location))
+        cmd["!OBS.alt"] = degree_value(altaz_target.alt)
+        cmd["!OBS.az"] = degree_value(altaz_target.az)
+    cmd["!OBS.ra"] = None
+    cmd["!OBS.dec"] = None
 
 def ignore_warnings() -> None:
     """Hide common notebook/debugger deprecation warnings."""
