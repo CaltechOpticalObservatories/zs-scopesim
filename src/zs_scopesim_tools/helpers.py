@@ -2,31 +2,28 @@
 
 from __future__ import annotations
 
-import importlib.resources
 import inspect
 import io
-import pathlib
+from pathlib import Path
 import warnings
 from contextlib import contextmanager
 from typing import Any
+import pandas as pd
+from astropy.io import fits
+from astropy.table import Table
+from IPython.display import display
 
 import scopesim as sim
 import scopesim.optics.optical_train as optical_train
+from scopesim.utils import from_currsys
+
+from zs_scopesim_tools.paths import resolve_irdb_path, make_output_dir
 
 ####### Path abstractions ########
-
-def configure_irdb_path(irdb_path: str | pathlib.Path | None = None) -> str:
+def configure_irdb_path(fallback_irdb_path: str | Path | None = None) -> str:
     """Resolve the local IRDB checkout or installed editable package root.
      Then Configure ScopeSim to find the local IRDB package once."""
-    try:
-        resolved = pathlib.Path(importlib.resources.files("irdb")).parent.resolve()
-    except ModuleNotFoundError:
-        if irdb_path is None:
-            irdb_path = pathlib.Path.home() / "src" / "irdb"
-        resolved = pathlib.Path(irdb_path).expanduser().resolve()
-        if not resolved.exists():
-            raise FileNotFoundError(resolved)
-    resolved = str(resolved)
+    resolved = str(resolve_irdb_path(fallback_irdb_path))
 
     sim.rc.__config__["!SIM.file.local_packages_path"] = resolved
     search_path = sim.rc.__config__["!SIM.file.search_path"]
@@ -34,11 +31,23 @@ def configure_irdb_path(irdb_path: str | pathlib.Path | None = None) -> str:
         search_path.append(resolved)
     return resolved
 
-def instrument_package_dir(instrument: str, irdb_path: str | pathlib.Path | None = None) -> pathlib.Path:
-    """Return the instrument package directory inside an IRDB checkout."""
-    if irdb_path is None:
-        irdb_path = configure_irdb_path()
-    return pathlib.Path(irdb_path).expanduser().resolve() / instrument
+def instrument_package_dir(instrument: str) -> Path:
+    """Return the instrument package directory inside IRDB checkout."""
+    inst_path = Path(sim.rc.__config__["!SIM.file.local_packages_path"]).resolve() / instrument
+    if not inst_path.exists():
+        inst_path = resolve_irdb_path() / instrument
+        if inst_path.exists():
+            warnings.warn(f"Instrument package {instrument} not found in ScopeSim local packages path: "
+                          f"{sim.rc.__config__['!SIM.file.local_packages_path']}, "
+                          f"but found in: {inst_path}. Configuring ScopeSim to use this IRDB path instead.")
+            configure_irdb_path(inst_path.parent)
+        else:
+            raise FileNotFoundError(inst_path)
+    return inst_path
+
+def make_local_output_dir(dirname: str = "outputs") -> Path:
+    """Return a repo-local output directory, avoiding accidental writes into the IRDB checkout."""
+    return make_output_dir(dirname=dirname, avoid_path=resolve_irdb_path())
 
 ####### Configuring logging ##########
 
@@ -147,3 +156,136 @@ def show_yappi_stats(sort: str = "tsub", print_output=True) -> str:
     if print_output:
         print(formatted)
     return formatted
+
+def display_frame(data, *, columns=None, rename=None, formats=None):
+    if isinstance(data, Table):
+        view = data[columns] if columns is not None else data
+        frame = view.to_pandas()
+    else:
+        frame = pd.DataFrame(data)
+        if columns is not None:
+            frame = frame.loc[:, columns]
+    if rename:
+        frame = frame.rename(columns=rename)
+    styler = frame.style.hide(axis="index")
+    if formats:
+        active_formats = {key: value for key, value in formats.items() if key in frame.columns}
+        styler = styler.format(active_formats, na_rep="--")
+    display(styler)
+
+###################### Observing helpers ######################
+def list_effects(cmds):
+    """Return a list of effect names in the optical train for the given commands without initialising the train."""
+    data = []
+    for yaml_dict in cmds.yaml_dicts:
+        yname = yaml_dict["name"]
+        alias = yaml_dict["alias"]
+        for eff in yaml_dict.get("effects", []):
+            kwargs = eff.get("kwargs", {})
+            data.append({"included": from_currsys(eff.get("include", True), cmds), "effect": eff["name"], "class": eff["class"],
+                         "config": f"{yname} ({alias})", "selector": from_currsys(kwargs.get("selector", ""), cmds),
+                         "data file": from_currsys(kwargs.get("filename", ""), cmds)
+                         })
+    return pd.DataFrame(data)
+
+
+_BACKGROUND_SELECTORS = {"sky", "sky_continuum", "sky_lines"}
+
+@contextmanager
+def disable_background(name_or_names, train):
+    if name_or_names is None:
+        yield
+        return
+
+    requested = {name_or_names} if isinstance(name_or_names, str) else set(name_or_names)
+    unknown = requested - _BACKGROUND_SELECTORS
+    if unknown:
+        raise ValueError(f"Unknown background selector(s): {sorted(unknown)}")
+
+    disable_continuum = "sky" in requested or "sky_continuum" in requested
+    disable_lines = "sky" in requested or "sky_lines" in requested
+
+    sky_continuum = train["continuum_emission"]
+    palace = train["airglow_and_interline_continuum"]
+
+    saved = {
+        "sky_continuum_include": sky_continuum.include,
+        "palace_include": palace.include,
+        "only_line": palace.meta["only_line"],
+        "only_continuum": palace.meta["only_continuum"],
+    }
+
+    try:
+        sky_continuum.include = saved["sky_continuum_include"] and not disable_continuum
+        palace.include = saved["palace_include"] and not (disable_continuum and disable_lines)
+        palace.meta["only_line"] = disable_continuum and not disable_lines
+        palace.meta["only_continuum"] = disable_lines and not disable_continuum
+        yield
+    finally:
+        sky_continuum.include = saved["sky_continuum_include"]
+        palace.include = saved["palace_include"]
+        palace.meta["only_line"] = saved["only_line"]
+        palace.meta["only_continuum"] = saved["only_continuum"]
+
+def simulate(cmds, *,
+             source=None,
+             disable_effects=None,
+             disable_backgrounds=None,
+             hide_progress_bars=True):
+    """Run a ScopeSim observation with optional effect disabling and progress bar suppression."""
+    train = sim.OpticalTrain(cmds)
+
+    effect_names = list(disable_effects or [])
+    for effect in effect_names:
+        if effect in train.effects['name']:
+            train[effect].include = False
+        else:
+            warnings.warn(f"Effect with name {effect} not present in the train.")
+
+    with disable_background(disable_backgrounds, train), disable_scopesim_progress_bars(hide_progress_bars):
+        if source is None:
+            train.observe()
+        else:
+            train.observe(source)
+        hdul = train.readout()
+    return train, hdul
+
+def add_cmds_to_readout_header(hdul: fits.HDUList, cmds: sim.UserCommands, train: sim.OpticalTrain):
+    """Add the command dictionary to the readout FITS header using the SimulationConfigFitsKeywords effect.
+    New headers get added to the primary HDU of the readout FITS file.
+    """
+    hdreff = sim.effects.fits_headers.SimulationConfigFitsKeywords(cmds=cmds)
+    if isinstance(hdul, fits.HDUList):
+        return hdreff.apply_to(hdul, optical_train=train)
+    else:
+        raise TypeError(f"Expected hdul to be an instance of astropy.io.fits.HDUList, got {type(hdul)} instead.")
+
+def save_readout_to_fits(hdul: fits.HDUList, filename: str):
+    """Save the readout HDUList to a FITS file."""
+    if isinstance(hdul, fits.HDUList):
+        hdul.writeto(filename, overwrite=True)
+    else:
+        raise TypeError(f"Expected hdul to be an instance of astropy.io.fits.HDUList, got {type(hdul)} instead.")
+
+def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Path,
+                          *, filename_prefix: str = 'sim', imagetype: str = 'OBJECT',
+                          cmds: sim.UserCommands | None = None, train: sim.OpticalTrain | None = None):
+    """Save a list of readout HDULists to FITS files."""
+    output_dir = Path(output_dir).resolve()
+    if not output_dir.exists():
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    channels = ["blue", "green", "red", "yj", "h", "k"]
+    outfiles = []
+
+    for i, hdul in enumerate(list_of_hdul):
+        if cmds is not None and train is not None:
+            hdul = add_cmds_to_readout_header(hdul, cmds, train)
+            hdul[1].header['EXPTIME'] = hdul[0].header[f"HIERARCH SIM CONFIG OBS dit_{channels[i]}"]
+            hdul[1].header['OBJECT'] = filename_prefix.upper()
+            hdul[1].header['HIERARCH IMAGETYPE'] = imagetype.upper()
+
+        filename = output_dir / f"{filename_prefix}_{channels[i]}.fits"
+        save_readout_to_fits(hdul, str(filename))
+        outfiles.append(filename)
+    return outfiles

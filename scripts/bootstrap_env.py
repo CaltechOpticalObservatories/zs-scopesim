@@ -10,7 +10,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from zs_scopesim_tools.cli import git_dirty, load_manifest, repo_path, resolve_src_dir  # noqa: E402
+from zs_scopesim_tools.cli import git_dirty, load_manifest
+from zs_scopesim_tools.paths import resolve_manifest_path, resolve_src_dir, repo_path  # noqa: E402
 
 
 def main() -> int:
@@ -30,7 +31,7 @@ def main() -> int:
                         help="Do not clone managed repos that are not already present.")
     args = parser.parse_args()
 
-    manifest = load_manifest(args.manifest)
+    manifest = load_manifest(resolve_manifest_path(args.manifest))
     src_dir = resolve_src_dir(manifest, args.src_dir)
     python_version = args.python or manifest.get("python", {}).get("recommended")
     env_python = prepare_environment(args.manager, args.env_name, Path(args.venv), python_version)

@@ -12,15 +12,19 @@ import logging
 
 import numpy as np
 from astropy import units as u
+from astropy.io import fits
 from astropy.table import Table
+import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.artist import ArtistInspector
-from matplotlib.collections import PathCollection
+from matplotlib.collections import PathCollection, LineCollection
+from matplotlib.colors import LogNorm, Normalize, PowerNorm, SymLogNorm
 from matplotlib.image import AxesImage
 from matplotlib.lines import Line2D
+from matplotlib.patches import Rectangle
+
 from synphot import SourceSpectrum
 from synphot.units import PHOTLAM
-
 from scopesim.source.source import Source
 from scopesim.source.source_fields import CubeSourceField, ImageSourceField, TableSourceField, SpectrumSourceField
 from scopesim.utils import quantity_from_table
@@ -238,10 +242,10 @@ class PlotScene:
             ax_image.set_xticks(xticks)
             ax_image.set_yticks(yticks)
             if pixel_scale is not None:
-                x_center = nx / 2.0
-                y_center = ny / 2.0
-                ax_image.set_xticklabels(np.round((xticks - x_center) * pixel_scale,2).astype(str))
-                ax_image.set_yticklabels(np.round((yticks - y_center) * pixel_scale, 2).astype(str))
+                x_center = (field.header["CRVAL1"] * u.deg).to_value(u.arcsec)
+                y_center = (field.header["CRVAL2"] * u.deg).to_value(u.arcsec)
+                ax_image.set_xticklabels(np.round((xticks-nx//2) * pixel_scale + x_center,2).astype(str))
+                ax_image.set_yticklabels(np.round((yticks-ny//2) * pixel_scale + y_center, 2).astype(str))
                 ax_image.set_xlabel("x [arcsec]", fontsize=9)
                 ax_image.set_ylabel("y [arcsec]", fontsize=9)
             else:
@@ -285,8 +289,6 @@ def _plot_spectral_surface_brightness(values: Any) -> np.ndarray:
 
 def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
     """Plot post-disperser diffuse spectra and integrated image-plane rates."""
-    import matplotlib.pyplot as plt
-
     wave = data["wave_nm"].to_value(u.nm)
     fig, axes = plt.subplots(2, 3, figsize=(16, 8.2), sharex=True, constrained_layout=True)
     colors = {
@@ -341,8 +343,6 @@ def plot_post_disperser_diffuse_background(data: Mapping[str, Any]):
 
 def plot_emissivity_sanity(data: Mapping[str, Any]):
     """Plot split pre/post-disperser emissivity sanity-check data."""
-    import matplotlib.pyplot as plt
-
     wave = data["wave_nm"].to_value(u.nm)
     base_width = plt.rcParams["lines.linewidth"]
     fig, axes = plt.subplots(2, 3, figsize=(16, 7.5), sharex=True, sharey=True, constrained_layout=True)
@@ -431,8 +431,6 @@ def plot_emissivity_sanity(data: Mapping[str, Any]):
 
 def plot_detector_background_budget(table: Table):
     """Plot additive detector-background and noise terms by channel."""
-    import matplotlib.pyplot as plt
-
     base_width = plt.rcParams["lines.linewidth"]
     channels = [str(value) for value in table["channel"]]
     x = np.arange(len(channels))
@@ -588,8 +586,6 @@ def plot_transmission_sanity(
     combined_title: str = "All Channels: Components, Instrument, and Total", exclude_lines: Sequence[str] | None = None,
 ):
     """Plot component-level and all-channel throughput sanity checks."""
-    import matplotlib.pyplot as plt
-
     if not show_individual_channels and not show_combined_channels:
         raise ValueError("At least one of show_individual_channels or " "show_combined_channels must be True.")
 
@@ -709,9 +705,6 @@ def plot_transmission_sanity(
 
 def plot_slit_pair_geometry(table: Table, *, slit_width: u.Quantity = 0.7 * u.arcsec, slit_length: u.Quantity = 10 * u.arcsec):
     """Plot a two-point source geometry relative to a rectangular slit."""
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Rectangle
-
     x = u.Quantity(table["x"]).to_value(u.arcsec)
     y = u.Quantity(table["y"]).to_value(u.arcsec)
     width = u.Quantity(slit_width).to_value(u.arcsec)
@@ -736,9 +729,6 @@ def plot_slit_pair_geometry(table: Table, *, slit_width: u.Quantity = 0.7 * u.ar
 
 def plot_slit_adc_psf_scenes(data: Mapping[str, Any]):
     """Plot PSF-convolved slit scenes with AD-only and ADC-residual shifts."""
-    import matplotlib.pyplot as plt
-    from matplotlib.patches import Rectangle
-
     scenarios = data["scenarios"]
     variants = data["variants"]
     x = u.Quantity(data["x_arcsec"]).to_value(u.arcsec)
@@ -900,8 +890,6 @@ def _slit_legend_label(role: str, values_by_arm: Mapping[str, float], selected_v
 
 
 def _add_adc_off_ticks(ax: Any, x: np.ndarray, y: np.ndarray, *, color: Any, alpha: float, linewidth: float, zorder: float, tick_count: int = 13) -> None:
-    from matplotlib.collections import LineCollection
-
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     finite = np.flatnonzero(np.isfinite(x) & np.isfinite(y))
@@ -957,9 +945,6 @@ def _visible_slit_loss_curves(arm: Mapping[str, Any], *, show_airmass_states: bo
 
 def plot_slit_loss_by_arm(data: Mapping[str, Any], *, show_airmass_states: bool = False, show_adc_states: bool = False):
     """Plot centered point-source slit loss for each spectrograph arm."""
-    import matplotlib.pyplot as plt
-    from matplotlib.lines import Line2D
-
     base_width = plt.rcParams["lines.linewidth"]
     arms = data["arms"]
     visible_by_arm = OrderedDict((arm_name, _visible_slit_loss_curves(arm, show_airmass_states=show_airmass_states, show_adc_states=show_adc_states)) for arm_name, arm in arms.items())
@@ -1090,8 +1075,6 @@ def plot_slit_loss_by_arm(data: Mapping[str, Any], *, show_airmass_states: bool 
 
 def plot_slit_width_loss(data: Mapping[str, Any]):
     """Plot centered point-source slit loss as a function of slit width."""
-    import matplotlib.pyplot as plt
-
     base_width = plt.rcParams["lines.linewidth"]
     arms = data["arms"]
     if len(arms) != 2:
@@ -1154,8 +1137,6 @@ def _readout_image_data(channel_hdul: Any) -> np.ndarray:
 
 def _readout_image_hdu(channel_hdul: Any) -> Any:
     if isinstance(channel_hdul, np.ndarray):
-        from astropy.io import fits
-
         return fits.ImageHDU(data=np.asarray(channel_hdul, dtype=float))
     image_hdu = channel_hdul if hasattr(channel_hdul, "data") else channel_hdul[1]
     return image_hdu
@@ -1163,8 +1144,6 @@ def _readout_image_hdu(channel_hdul: Any) -> Any:
 
 def _write_readout_product(path: Path, channel_hdul: Any) -> None:
     if isinstance(channel_hdul, np.ndarray):
-        from astropy.io import fits
-
         fits.PrimaryHDU(data=np.asarray(channel_hdul, dtype=float)).writeto(path, overwrite=True)
         return
 
@@ -1176,8 +1155,6 @@ def _write_readout_product(path: Path, channel_hdul: Any) -> None:
     if hasattr(image_hdu, "writeto"):
         image_hdu.writeto(path, overwrite=True)
         return
-
-    from astropy.io import fits
 
     fits.HDUList([
         fits.PrimaryHDU(),
@@ -1281,9 +1258,6 @@ def _readout_display_limits(data: np.ndarray, clip: float | None, *, symmetric: 
     return vmin, vmax, label
 
 
-def _is_scalar_limit(value: Any) -> bool:
-    return value is None or isinstance(value, str) or np.ndim(value) == 0
-
 
 def _readout_panel_limits(value: Any, titles: Sequence[str], n_images: int, name: str) -> list[float | None]:
     if isinstance(value, Mapping):
@@ -1293,7 +1267,7 @@ def _readout_panel_limits(value: Any, titles: Sequence[str], n_images: int, name
             panel_values.append(None if item is None else float(item))
         return panel_values
 
-    if _is_scalar_limit(value):
+    if value is None or isinstance(value, str) or np.ndim(value) == 0:
         return [None if value is None else float(value)] * n_images
 
     values = list(value)
@@ -1310,8 +1284,6 @@ def _readout_group_limit_value(values: Sequence[float | None], group: Sequence[i
 
 
 def _readout_image_norm(data: np.ndarray, *, image_scale: str, vmin: float, vmax: float):
-    from matplotlib.colors import LogNorm, Normalize, PowerNorm, SymLogNorm
-
     scale = image_scale.lower()
     if scale == "linear":
         return Normalize(vmin=vmin, vmax=vmax)
@@ -1340,8 +1312,6 @@ def _view_value(view: Mapping[str, Any] | None, *keys: str, default: Any = None)
 
 
 def _detector_grid_axes(n_images: int, *, row_height: float = 3.8):
-    import matplotlib.pyplot as plt
-
     ncols = min(3, max(1, n_images))
     nrows = int(np.ceil(n_images / ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(4.4 * ncols, row_height * nrows), squeeze=False, constrained_layout=True)
@@ -1349,8 +1319,8 @@ def _detector_grid_axes(n_images: int, *, row_height: float = 3.8):
 
 
 def _configure_detector_colorbar_ticks(colorbar: Any, norm: Any) -> None:
-    from matplotlib.colors import LogNorm, SymLogNorm
-    from matplotlib.ticker import (FixedLocator, LogFormatterSciNotation, LogLocator, MaxNLocator, ScalarFormatter, SymmetricalLogLocator)
+    from matplotlib.ticker import (FixedLocator, LogFormatterSciNotation, LogLocator, MaxNLocator, ScalarFormatter,
+                                   SymmetricalLogLocator)
 
     if isinstance(norm, SymLogNorm):
         locator = SymmetricalLogLocator(linthresh=norm.linthresh, base=10)
@@ -1420,7 +1390,8 @@ def _readout_group_limits(images: Sequence[np.ndarray], titles: Sequence[str], g
     return limits
 
 
-def _plot_detector_image_grid(images: list[np.ndarray], titles: list[str], *, clip: float | None, symmetric: bool, cmap: str,
+def _plot_detector_image_grid(images: list[np.ndarray], titles: list[str], *,
+                              clip: float | None, symmetric: bool, cmap: str,
                               title_suffix: str = "", annotate_delta: bool = False, annotate_stats: bool = False, zero_floor: bool = False,
                               shared_scale: bool | Sequence[Sequence[int | str]] = False, colorbar_mode: str = "per-panel", colorbar_label: str | None = None,
                               vmin: Any = None, vmax: Any = None, image_scale: str = "linear", image_interpolation: str = "hanning"):
@@ -1527,8 +1498,6 @@ def plot_readout_delta_overview(signal_hdul: Any, reference_hdul: Any, titles: l
 
 def plot_detector_cross_dispersion_cut(images: Sequence[np.ndarray], titles: Sequence[str] | None = None, *, central_columns: int = 50, title_suffix: str = "", ylabel: str = "Median value"):
     """Plot row profiles from the median of central detector columns."""
-    import matplotlib.pyplot as plt
-
     image_arrays = [np.asarray(image, dtype=float) for image in images]
     titles = list(titles) if titles is not None else [f"detector {idx}" for idx in range(len(image_arrays))]
     ncols = min(3, max(1, len(image_arrays)))
@@ -1698,8 +1667,6 @@ def show_and_save_hdul(
             files["reference"].append(path)
 
     if readout_dir is not None and save_delta:
-        from astropy.io import fits
-
         for title, image, channel_hdul in zip(titles, delta_images, readouts, strict=True):
             header = getattr(_readout_image_hdu(channel_hdul), "header", None)
             image_hdu = fits.ImageHDU(data=np.asarray(image, dtype=float), header=header.copy() if header is not None else None, name="DELTA")
@@ -1712,10 +1679,6 @@ def show_and_save_hdul(
 
 def plot_resolving_power_echellogram(table: Table, *, cmap: str = "viridis", vmin: float | None = None, vmax: float | None = None, trace_width_fraction: float | list[float] | tuple[float, ...] = 0.2, max_display_samples_per_trace: int | None = None):
     """Plot resolving power on the detector planes."""
-    import matplotlib.pyplot as plt
-    from matplotlib.collections import LineCollection
-    from matplotlib.colors import Normalize
-
     if max_display_samples_per_trace is not None and max_display_samples_per_trace < 2:
         raise ValueError("max_display_samples_per_trace must be at least 2.")
 
@@ -1810,8 +1773,6 @@ def plot_resolving_power_echellogram(table: Table, *, cmap: str = "viridis", vmi
 
 def _limiting_magnitude_display_rows(curve, *, dynamic_range_mag, selection_keys=None):
     """Apply the established per-order limiting-magnitude presentation mask."""
-    import pandas as pd
-
     frame = curve.copy()
     valid = np.isfinite(frame["limiting_magnitude_ab"]) & frame["complete_native_bin"].to_numpy(dtype=bool)
     frame["_display_valid"] = valid
@@ -1874,10 +1835,6 @@ def plot_limiting_magnitude_curves(
     ``order_rolling_median_bins`` smooths only plotted magnitudes, separately
     within every contiguous displayed order run.
     """
-    import matplotlib.pyplot as plt
-    import pandas as pd
-    from matplotlib.lines import Line2D
-
     frame = curves.to_pandas()
     curve_key_columns = [
         "integration", "slit_arcsec", "ao_enabled", "bin_factor",

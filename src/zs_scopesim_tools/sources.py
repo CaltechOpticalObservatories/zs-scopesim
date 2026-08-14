@@ -10,10 +10,16 @@ from functools import lru_cache
 import numpy as np
 from astropy import units as u
 from astropy.table import Table, vstack
-from synphot.units import PHOTLAM, convert_flux
+from synphot import SourceSpectrum
+from synphot.units import PHOTLAM, FLAM, convert_flux
+from astropy.cosmology import Planck18
+import h5py
+import bisect
 
 import scopesim.source.source_templates as source_templates
+from spextra import Spextrum
 from zs_scopesim_tools.helpers import instrument_package_dir
+from zs_scopesim_tools.paths import repo_root
 
 
 DEFAULT_LAMP_LINE_FILENAMES = ("ThAr_XSHOOTER_UVB_lines.dat", "Ne_IR_MOSFIRE_lines.dat", "Ar_IR_MOSFIRE_lines.dat")
@@ -77,7 +83,8 @@ def _read_lamp_lines(line_dir: Path, filenames: Sequence[str] = DEFAULT_LAMP_LIN
     return vstack(tables, metadata_conflicts="silent")
 
 def lamp_flat(*, line_dir: str | Path | None = None, filenames: Sequence[str] = DEFAULT_LAMP_LINE_FILENAMES,
-              wave_step: u.Quantity = 0.05 * u.AA, resolving_power: float = 8e4, extent: float = 60):
+              wave_step: u.Quantity = 0.05 * u.AA, resolving_power: float = 8e4, extent: float = 60,
+              scale_amplitude: float = 1.0):
     """Build a calibration-line flat source with flux-preserving line sampling."""
     if line_dir is None:
         line_dir = instrument_package_dir("ZShooter_v2") / "lamp_lines"
@@ -86,7 +93,7 @@ def lamp_flat(*, line_dir: str | Path | None = None, filenames: Sequence[str] = 
 
     lines = _read_lamp_lines(line_dir, filenames=filenames)
     centers = np.asarray(lines["wave"], dtype=float)  # Angstrom
-    amplitudes = np.asarray(lines["amplitude"], dtype=float)
+    amplitudes = np.asarray(lines["amplitude"], dtype=float) * scale_amplitude
     fwhm = centers / resolving_power # Angstrom
 
     wave_min = max(100.0, np.nanmin(centers) - 20 * np.nanmax(fwhm))
@@ -121,10 +128,10 @@ def empirical_spectrum(wave: u.Quantity, flux: u.Quantity):
         flux = flux * PHOTLAM
     flux = convert_flux(wave, flux, PHOTLAM)
     return source_templates.SourceSpectrum(source_templates.Empirical1D,
-                                           points=wave.to_value(u.AA), lookup_table=flux.value)
+                                           points=wave.to_value(u.AA), lookup_table=flux.value, z_type="conserve_flux")
 
 def transient(*, x: float = 0.0, y: float = 0.0,
-              spextrum_template: str | None = None,
+              spextrum_template: str | SourceSpectrum | None = None,
               wavelength: u.Quantity | None = None,
               flux: u.Quantity | None = None,
               scale_to_redshift: float | None = None,
@@ -139,6 +146,7 @@ def transient(*, x: float = 0.0, y: float = 0.0,
         y position in arcsec
     :param spextrum_template: str
         Name of spextrum template, e.g. sne/sn1a (find templates here: https://scopesim.univie.ac.at/spextra/database/libraries/)
+        or a SourceSpectrum object
     :param wavelength: u.Quantity
         Wavelength array (if spextrum_template is None)
     :param flux: u.Quantity
@@ -152,18 +160,82 @@ def transient(*, x: float = 0.0, y: float = 0.0,
     :return: Source object
     """
     if spextrum_template is not None:
-        from spextra import Spextrum
-        sed = Spextrum(spextrum_template)
-        sed = sed.redshift(scale_to_redshift) if scale_to_redshift is not None else sed
-        if scale_to_mag is not None:
-            if not isinstance(scale_to_mag, u.Quantity):
-                scale_to_mag = scale_to_mag * u.ABmag
-            sed = sed.scale_to_magnitude(scale_to_mag, filter_curve)
-        spectra = [sed]
+        if isinstance(spextrum_template, str):
+            sed = Spextrum(template_name=spextrum_template)
+        elif isinstance(spextrum_template, SourceSpectrum):
+            sed = Spextrum(modelclass=spextrum_template)
+        else:
+            raise TypeError("spextrum_template must be a string or a SourceSpectrum object.")
     elif wavelength is not None and flux is not None:
-        spectra = [empirical_spectrum(wavelength, flux)]
+        sed = empirical_spectrum(wavelength, flux)
+        sed = Spextrum(modelclass=sed)  # convert to Spextrum for consistency
     else:
         raise ValueError("Either spextrum_template or both wavelength and flux must be provided.")
+
+    sed = sed.redshift(scale_to_redshift) if scale_to_redshift is not None else sed
+    if scale_to_mag is not None:
+        if not isinstance(scale_to_mag, u.Quantity):
+            scale_to_mag = scale_to_mag * u.ABmag
+        sed = sed.scale_to_magnitude(scale_to_mag, filter_curve)
+    spectra = [sed]
     # create transient source
     return source_templates.Source(x=[x], y=[y], ref=[0.], weight=[1.0], spectra=spectra, name=name)
+
+def kilonova_spectra(model_files: list[str] | None = None,
+                      phases: list[float] | None = None,
+                      redshift: float = 0.0,
+                      combine_models: bool = True,
+                      ):
+    if model_files is None:
+        modelroot = repo_root() / 'notebooks' / 'source_data' / 'Kasen2017'
+        model_files = [str(modelroot / 'knova_d1_n10_m0.025_vk0.30_Xlan1e-4.0.h5'),
+                       str(modelroot / 'knova_d1_n10_m0.040_vk0.15_Xlan1e-1.5.h5')]
+    if phases is None:
+        phases = [1.5, 7.5]
+
+    spectra = {}
+    # open model files
+    for model_file in model_files:
+        fin = h5py.File(model_file, 'r')
+
+        # frequency in Hz
+        nu = np.array(fin['nu'], dtype='d')
+        # array of time in seconds
+        times = np.array(fin['time'])
+        # covert time to days
+        times = times / 3600.0 / 24.0
+
+        # specific luminosity (ergs/s/Hz)
+        # this is a 2D array, Lnu[times][nu]
+        Lnu_all = np.array(fin['Lnu'], dtype='d')
+
+        # get the spectrum at phase (days)
+        for t in phases:
+            # index corresponding to t
+            it = bisect.bisect(times, t)
+            # spectrum at this epoch
+            Lnu = Lnu_all[it, :]
+
+            # in Flambda (ergs/s/Angstrom)
+            c = 2.99e10
+            lam = c / nu * 1e8
+            Llam = Lnu * nu ** 2.0 / c / 1e8
+
+            # in flux density units (ergs/s/cm^2/Angstrom)
+            D = Planck18.luminosity_distance(redshift).to('cm').value
+            Llam = Llam / (4 * np.pi * D ** 2)
+
+            # convert it to PHOTLAM and SourceSpectrum object
+            spec = empirical_spectrum(lam * u.AA, Llam * FLAM)
+            spectra[t] = [spec] if spectra.get(t, None) is None else spectra[t] + [spec]
+
+    if combine_models:
+        for t, specs in spectra.items():
+            # combine spectra at this phase
+            combined_spec = None
+            for spec in specs:
+                combined_spec = spec if combined_spec is None else combined_spec + spec
+            spectra[t] = combined_spec
+
+    return spectra
 

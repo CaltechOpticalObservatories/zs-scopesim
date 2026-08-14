@@ -1,5 +1,6 @@
 from typing import Any
 from pathlib import Path
+import importlib.resources
 
 def repo_root(start: str | Path | None = None) -> Path:
     """Return repository root given start path or using this file's parent."""
@@ -12,6 +13,7 @@ def repo_root(start: str | Path | None = None) -> Path:
     return Path.cwd().resolve()
 
 def resolve_manifest_path(path: str) -> Path:
+    """Return the absolute path to a manifest file, resolving relative to cwd or repo root."""
     candidate = Path(path).expanduser()
     if candidate.is_absolute():
         return candidate
@@ -22,10 +24,12 @@ def resolve_manifest_path(path: str) -> Path:
     return repo_candidate
 
 def resolve_src_dir(manifest: dict[str, Any], override: str | None) -> Path:
+    """Return the absolute path to the source directory, using override if given, else manifest."""
     value = override or manifest.get("paths", {}).get("src_dir", "~/src")
     return Path(value).expanduser().resolve()
 
 def repo_path(repo: dict[str, Any], src_dir: Path) -> Path:
+    """Return the absolute path to a repo given its manifest entry and the src_dir."""
     raw_path = Path(repo["path"]).expanduser()
     if raw_path.is_absolute():
         return raw_path
@@ -34,9 +38,21 @@ def repo_path(repo: dict[str, Any], src_dir: Path) -> Path:
         return (repo_root() / raw_path).resolve()
     return (src_dir / raw_path).resolve()
 
-def make_output_dir(dirname: str = "validation_outputs",
+def resolve_irdb_path(fallback_irdb_path: str | Path | None = None) -> Path:
+    """Return the local IRDB checkout or installed editable package root."""
+    try:
+        resolved = Path(importlib.resources.files("irdb")).parent.resolve()
+    except ModuleNotFoundError:
+        if fallback_irdb_path is None:
+            fallback_irdb_path = Path.home() / "src" / "irdb"
+        resolved = Path(fallback_irdb_path).expanduser().resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(resolved)
+    return resolved
+
+def make_output_dir(dirname: str = "outputs",
                     base_path: str | Path | None = None,
-                    avoid_path: str | Path | None = None,) -> Path:
+                    avoid_path: str | Path | None = None) -> Path:
     """Return a repo-local output directory, avoiding accidental writes into certain paths if given."""
     cwd = Path(base_path).expanduser().resolve() if base_path else Path.cwd().resolve()
     if avoid_path is not None:
