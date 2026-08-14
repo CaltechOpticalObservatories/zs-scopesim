@@ -14,13 +14,6 @@ from synphot.units import PHOTLAM
 
 from scopesim.utils import from_currsys
 
-from .plots import (
-    plot_detector_background_budget, plot_detector_image_grid, plot_emissivity_sanity, plot_post_disperser_diffuse_background,
-    plot_readout_delta_overview, plot_readout_cross_dispersion_cut, plot_readout_overview,
-    plot_slit_adc_psf_scenes, plot_slit_loss_by_arm, plot_slit_pair_geometry, plot_slit_width_loss,
-    plot_source, plot_resolving_power_echellogram, plot_transmission_sanity,
-)
-
 
 def effect_name(effect: Any) -> str:
     """Return the notebook-facing name of a ScopeSim effect."""
