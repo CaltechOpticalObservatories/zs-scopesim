@@ -193,6 +193,11 @@ _BACKGROUND_SELECTORS = {"sky", "sky_continuum", "sky_lines"}
 
 @contextmanager
 def disable_background(name_or_names, train):
+    """
+    Context manager to temporarily disable specific background selectors in the ScopeSim optical train.
+    :param name_or_names: list of background selector names to disable, or a single name as a string. Valid options are "sky", "sky_continuum", and "sky_lines".
+    :param train: optical train instance (scopesim.OpticalTrain) to modify.
+    """
     if name_or_names is None:
         yield
         return
@@ -232,7 +237,22 @@ def simulate(cmds, *,
              disable_effects=None,
              disable_backgrounds=None,
              hide_progress_bars=True):
-    """Run a ScopeSim observation with optional effect disabling and progress bar suppression."""
+    """
+    Run a ScopeSim observation with optional effect disabling and progress bar suppression.
+
+    Parameters
+    ----------
+    cmds : sim.UserCommands
+        The ScopeSim user commands for the observation.
+    source : sim.Source | None, optional
+        The source to observe. If None, empty sky is simulated.
+    disable_effects : list[str] | None, optional
+        A list of effect names to disable during the observation.
+    disable_backgrounds : list[str] | None, optional
+        A list of background selectors to disable during the observation, options are "sky", "sky_continuum", and "sky_lines".
+    hide_progress_bars : bool, optional
+        If True, suppress the tqdm progress bars during the observation.
+    """
     train = sim.OpticalTrain(cmds)
 
     effect_names = list(disable_effects or [])
@@ -270,7 +290,15 @@ def save_readout_to_fits(hdul: fits.HDUList, filename: str):
 def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Path,
                           *, filename_prefix: str = 'sim', imagetype: str = 'OBJECT',
                           cmds: sim.UserCommands | None = None, train: sim.OpticalTrain | None = None):
-    """Save a list of readout HDULists to FITS files."""
+    """
+    Save a list of readout HDULists to FITS files from ZShooter spectral channels.
+    :param list_of_hdul: List of HDULists corresponding to the ZShooter channels (blue, green, red, yj, h, k).
+    :param output_dir: Directory to save the FITS files.
+    :param filename_prefix: Prefix for the output filenames (default: 'sim').
+    :param imagetype: Value for the HIERARCH IMAGETYPE header keyword (default: 'OBJECT').
+    :param cmds: Optional UserCommands object to add to the FITS headers.
+    :param train: Optional OpticalTrain object to use for header information.
+    """
     output_dir = Path(output_dir).resolve()
     if not output_dir.exists():
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -285,7 +313,7 @@ def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Pa
             hdul[1].header['OBJECT'] = filename_prefix.upper()
             hdul[1].header['HIERARCH IMAGETYPE'] = imagetype.upper()
 
-        filename = output_dir / f"{filename_prefix}_{channels[i]}.fits"
+        filename = output_dir / f"{filename_prefix}_{channels[i].upper()}.fits"
         save_readout_to_fits(hdul, str(filename))
         outfiles.append(filename)
     return outfiles
