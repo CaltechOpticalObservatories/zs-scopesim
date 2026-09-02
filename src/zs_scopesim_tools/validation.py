@@ -668,11 +668,11 @@ def trace_catalog_table(trace_list: Any) -> Table:
     return Table(rows=sorted(rows, key=lambda row: row["trace_id"]))
 
 
-def trace_resolution_diagnostic_table(ztrain: Any, *, trace_list_name: str = "trace_list_analytical", allow_diagnostic_psf: bool = False) -> Table:
+def trace_resolution_diagnostic_table(ztrain: Any, *, trace_list_name: str = "trace_list_analytical") -> Table:
     """Return the complete native-resolution grid from the configured train."""
     seeing = _required_cmd_quantity(ztrain.cmds, "!OBS.seeing", u.arcsec)
     zenith_angle = _zenith_angle_from_airmass(_required_cmd_float(ztrain.cmds, "!OBS.airmass"))
-    fwhm_func, _ = _configured_psf_fwhm_func(ztrain, allow_diagnostic_fallback=allow_diagnostic_psf)
+    fwhm_func, _ = _configured_psf_fwhm_func(ztrain)
     trace_list = get_effect(ztrain, trace_list_name)
     spectrographs = get_effect(ztrain, "trace_eff_analytical")._spectrographs
     slit_selector = get_effect(ztrain, "slitwheel_selector")
@@ -773,7 +773,7 @@ def trace_resolution_diagnostic_table(ztrain: Any, *, trace_list_name: str = "tr
                 raise ValueError(f"Trace {trace_id!r} has non-positive or non-finite native dispersion.")
 
             resolving_power = wave_nm / (spectral_fwhm_pix * dispersion_nm_pix)
-            psf_fwhm = fwhm_func(wave_nm * u.nm, zenith_angle, seeing).to_value(u.arcsec)
+            psf_fwhm = fwhm_func(wave_nm * u.nm).to_value(u.arcsec)
             spatial_fwhm_pix = psf_fwhm / pixel_scale_arcsec
             resel_footprint_pix = spectral_fwhm_pix * spatial_fwhm_pix
 
@@ -1629,34 +1629,16 @@ def _natural_seeing_fwhm(wave: u.Quantity, seeing: u.Quantity, zenith_angle: u.Q
     return (u.Quantity(seeing).to(u.arcsec) * (u.Quantity(wave).to(u.nm) / u.Quantity(pivot).to(u.nm)) ** -0.2 / np.cos(z_rad) ** 0.6).to(u.arcsec)
 
 
-def _diagnostic_fallback_psf_fwhm(wave: u.Quantity, zenith_angle: u.Quantity, seeing: u.Quantity) -> u.Quantity:
-    return _natural_seeing_fwhm(wave, seeing, zenith_angle)
-
-
-def _active_moffat_psf(train_or_cmds: Any) -> Any | None:
-    if not hasattr(train_or_cmds, "optics_manager"):
-        return None
+def _configured_psf_fwhm_func(train_or_cmds: Any) -> tuple[Callable[[u.Quantity, u.Quantity, u.Quantity], u.Quantity], Any | None]:
+    assert hasattr(train_or_cmds, "optics_manager")
+    ret_effect = None
     for effect in active_effects(train_or_cmds):
-        if effect.__class__.__name__ in {"AOEnhanceablePSF", "MoffatPSF"}:
-            if callable(getattr(effect, "fwhm", None)):
-                return effect
-    return None
-
-
-def _scopesim_psf_fwhm_func(effect: Any) -> Callable[[u.Quantity, u.Quantity, u.Quantity], u.Quantity]:
-    def fwhm(wave: u.Quantity, _zenith_angle: u.Quantity, _seeing: u.Quantity) -> u.Quantity:
-        return _quantity_with_default_unit(effect.fwhm(u.Quantity(wave).to(u.um)), u.arcsec)
-
-    return fwhm
-
-
-def _configured_psf_fwhm_func(train_or_cmds: Any, *, allow_diagnostic_fallback: bool = False) -> tuple[Callable[[u.Quantity, u.Quantity, u.Quantity], u.Quantity], Any | None]:
-    effect = _active_moffat_psf(train_or_cmds)
-    if effect is None:
-        if not allow_diagnostic_fallback:
-            raise ValueError("No active ScopeSim Moffat-like PSF effect was found. Pass " "allow_diagnostic_psf=True only for an explicit diagnostic " "seeing-law calculation.")
-        return _diagnostic_fallback_psf_fwhm, None
-    return _scopesim_psf_fwhm_func(effect), effect
+        if effect.__class__.__name__ in {"AOEnhanceablePSF",}:
+            ret_effect = effect
+            break
+    if ret_effect is None:
+        raise ValueError("No active AOEnhanceablePSF effect was found.")
+    return ret_effect.fwhm, ret_effect
 
 
 def _atmospheric_refraction_shift(wave: u.Quantity, zenith_angle: u.Quantity, cmds: Any, *, wave_ref: u.Quantity = 500 * u.nm) -> u.Quantity:
@@ -1700,7 +1682,7 @@ def _scene_image(positions: Table, wave: u.Quantity, shifts: u.Quantity, x_grid:
     x = u.Quantity(positions["x"]).to_value(u.arcsec)
     y = u.Quantity(positions["y"]).to_value(u.arcsec)
     weights = np.asarray(positions["weight"], dtype=float) if "weight" in positions.colnames else np.ones(len(positions), dtype=float)
-    fwhm_values = fwhm_func(wave, zenith_angle, seeing).to_value(u.arcsec)
+    fwhm_values = fwhm_func(wave).to_value(u.arcsec)
     shift_values = u.Quantity(shifts).to_value(u.arcsec)
 
     image = np.zeros_like(x_grid, dtype=float)
@@ -1711,12 +1693,14 @@ def _scene_image(positions: Table, wave: u.Quantity, shifts: u.Quantity, x_grid:
 
 
 def _slit_throughput_curve(wave: u.Quantity, shifts: u.Quantity, *, seeing: u.Quantity, zenith_angle: u.Quantity, slit_width: u.Quantity, slit_length: u.Quantity, beta: float, grid_step: u.Quantity, fwhm_func: Callable[[u.Quantity, u.Quantity, u.Quantity], u.Quantity] | None = None) -> np.ndarray:
+    """ Tagged for deletion or as a plausable idea for a test of a scopesim PSF effect plus slit wheel aperture.
+    This function is not acceptable for use in scopesim notebooks as it does not compute slit throughput using the effects in the simulator."""
     wave = u.Quantity(wave).to(u.nm)
     shifts_arcsec = u.Quantity(shifts).to_value(u.arcsec)
     if fwhm_func is None:
         fwhm = _natural_seeing_fwhm(wave, seeing, zenith_angle)
     else:
-        fwhm = fwhm_func(wave, zenith_angle, seeing)
+        fwhm = fwhm_func(wave)
     fwhm_values = u.Quantity(fwhm).to_value(u.arcsec)
     width = u.Quantity(slit_width).to_value(u.arcsec)
     length = u.Quantity(slit_length).to_value(u.arcsec)
@@ -1742,6 +1726,7 @@ def _slit_throughput_curve(wave: u.Quantity, shifts: u.Quantity, *, seeing: u.Qu
 
 
 def _active_ao_enhanceable_psf(train_or_cmds: Any) -> Any | None:
+    """ This function must be deleted and the caller not permitted to replicate its contents the absense of the effect should be a fatal exception that is allow to propagate up"""
     if not hasattr(train_or_cmds, "optics_manager"):
         return None
     for effect in active_effects(train_or_cmds):
@@ -1750,52 +1735,31 @@ def _active_ao_enhanceable_psf(train_or_cmds: Any) -> Any | None:
     return None
 
 
-def _slit_loss_psf_modes(train_or_cmds: Any, beta: float, *, seeing: u.Quantity, allow_diagnostic_fallback: bool = False) -> OrderedDict[str, dict[str, Any]]:
-    base_fwhm_func, psf_effect = _configured_psf_fwhm_func(train_or_cmds, allow_diagnostic_fallback=allow_diagnostic_fallback)
-    base_beta = float(getattr(psf_effect, "alpha", beta) or beta)
-    if psf_effect is None:
-        base_note = "Fallback diagnostic seeing law; no active ScopeSim Moffat-like " "PSF effect was available."
-    else:
-        base_note = f"FWHM from active ScopeSim {effect_name(psf_effect)} " f"({psf_effect.__class__.__name__})."
+def _slit_loss_psf_modes(train_or_cmds: Any, *, seeing: u.Quantity) -> OrderedDict[str, dict[str, Any]]:
+    _, psf_effect = _configured_psf_fwhm_func(train_or_cmds)
+
+    base_note = f"FWHM from active ScopeSim {effect_name(psf_effect)} " f"({psf_effect.__class__.__name__})."
+
+    ao_enabled = psf_effect.meta["enable_ao"]
+    assert isinstance(ao_enabled, bool)
 
     modes: OrderedDict[str, dict[str, Any]] = OrderedDict()
     modes["no_ao"] = {
         "label": f'{_format_arcsec_value(seeing)}" NS',
         "style": "-",
-        "beta": base_beta,
-        "fwhm_func": base_fwhm_func,
-        "current": True,
-        "note": base_note,
+        "beta": psf_effect.natural_alpha,
+        "fwhm_func": psf_effect.natural_fwhm,
+        "current": not ao_enabled,
+        "note": "NS " + base_note,
     }
-
-    effect = _active_ao_enhanceable_psf(train_or_cmds)
-    if effect is None or not hasattr(effect, "ao_scale"):
-        return modes
-
-    ao_enabled = _metadata_bool(effect.meta.get("enable_ao"), default=False)
-    modes["no_ao"]["current"] = not ao_enabled
-    is_absolute = _metadata_bool(getattr(effect, "meta", {}).get("is_absolute"), default=True)
-
-    def ao_fwhm(wave: u.Quantity, zenith_angle: u.Quantity, seeing: u.Quantity) -> u.Quantity:
-        values = effect.ao_scale(u.Quantity(wave).to(u.um))
-        if is_absolute:
-            return _quantity_with_default_unit(values, u.arcsec)
-
-        scale = _as_float_array(values)
-        return (base_fwhm_func(wave, zenith_angle, seeing) * scale).to(u.arcsec)
 
     modes["ao"] = {
         "label": "AO",
         "style": "--",
-        "beta": float(getattr(effect, "alpha", beta) or beta),
-        "fwhm_func": ao_fwhm,
+        "beta": psf_effect.ao_alpha,
+        "fwhm_func": psf_effect.ao_fwhm,
         "current": ao_enabled,
-        "note": (
-            "AO design FWHM from active AOEnhanceablePSF. "
-            "Dimensionless absolute AO tables are interpreted as arcsec, "
-            "matching ScopeSim's PSF quantification convention. "
-            "This diagnostic curve does not change the optical train."
-        ),
+        "note": "AO "+ base_note,
     }
     return modes
 
@@ -1880,6 +1844,8 @@ def _slit_loss_airmass_specs(current_airmass: float) -> OrderedDict[str, dict[st
     return specs
 
 
+# TODO build_slit_adc_psf_scene_data is a strong candidate for deletion or refactoring as it is not used by spie2026
+#  and appears to use a number of things (like beta=) that should be being pulled from the simulator, not passed
 def build_slit_adc_psf_scene_data(
     train_or_cmds: Any, sources: Mapping[str, Any], *, slit_width: u.Quantity, slit_length: u.Quantity = 10.0 * u.arcsec, wave_nm: u.Quantity | None = None,
     wave_ref: u.Quantity = 500.0 * u.nm, adc_zenith_angle_error: u.Quantity = 0.9 * u.deg, grid_step: u.Quantity = 0.035 * u.arcsec, beta: float = 4.765, allow_diagnostic_psf: bool = False,
@@ -1897,7 +1863,7 @@ def build_slit_adc_psf_scene_data(
     zenith_angle = _zenith_angle_from_cmds(cmds)
     slit_width = u.Quantity(slit_width).to(u.arcsec)
     slit_length = u.Quantity(slit_length).to(u.arcsec)
-    fwhm_func, psf_effect = _configured_psf_fwhm_func(train_or_cmds, allow_diagnostic_fallback=allow_diagnostic_psf)
+    fwhm_func, psf_effect = _configured_psf_fwhm_func(train_or_cmds)
     adc_error, adc_note = _adc_zenith_angle_error(train_or_cmds, adc_zenith_angle_error)
 
     ad_shift = _atmospheric_refraction_shift(wave, zenith_angle, cmds, wave_ref=wave_ref)
@@ -1919,7 +1885,7 @@ def build_slit_adc_psf_scene_data(
     all_x = np.concatenate([u.Quantity(table["x"]).to_value(u.arcsec) for table in source_tables.values()])
     all_y = np.concatenate([u.Quantity(table["y"]).to_value(u.arcsec) for table in source_tables.values()])
     max_shift = max(float(np.nanmax(np.abs(variant["shift_arcsec"].to_value(u.arcsec)))) for variant in variants.values())
-    max_fwhm = float(np.nanmax(fwhm_func(wave, zenith_angle, seeing).to_value(u.arcsec)))
+    max_fwhm = float(np.nanmax(fwhm_func(wave).to_value(u.arcsec)))
     width = slit_width.to_value(u.arcsec)
     length = slit_length.to_value(u.arcsec)
     x_extent = max(1.12 * length, float(np.ptp(all_x)) + 6 * max_fwhm)
@@ -1964,7 +1930,7 @@ def build_slit_adc_psf_scene_data(
 
 def build_slit_loss_data(
     train_or_cmds: Any, *, arms: Mapping[str, tuple[u.Quantity, u.Quantity, str]] | None = None, n_wave: int = 180, slit_length: u.Quantity = 10.0 * u.arcsec,
-    wave_ref: u.Quantity = 500.0 * u.nm, adc_zenith_angle_error: u.Quantity = 0.9 * u.deg, grid_step: u.Quantity = 0.04 * u.arcsec, beta: float = 4.765, allow_diagnostic_psf: bool = False,
+    wave_ref: u.Quantity = 500.0 * u.nm, adc_zenith_angle_error: u.Quantity = 0.9 * u.deg, grid_step: u.Quantity = 0.04 * u.arcsec,
 ) -> dict[str, Any]:
     """Return centered point-source slit-loss curves by arm."""
     cmds = _cmds_from_train_or_cmds(train_or_cmds)
@@ -1972,7 +1938,7 @@ def build_slit_loss_data(
     seeing = _required_cmd_quantity(cmds, "!OBS.seeing", u.arcsec)
     airmass = max(1.0, _required_cmd_float(cmds, "!OBS.airmass"))
     current_zenith_angle = _zenith_angle_from_airmass(airmass)
-    psf_modes = _slit_loss_psf_modes(train_or_cmds, beta, seeing=seeing, allow_diagnostic_fallback=allow_diagnostic_psf)
+    psf_modes = _slit_loss_psf_modes(train_or_cmds, seeing=seeing)
     adc_error, adc_note = _adc_zenith_angle_error(train_or_cmds, adc_zenith_angle_error)
     airmass_specs = _slit_loss_airmass_specs(airmass)
     adc_specs = OrderedDict({
@@ -2054,10 +2020,7 @@ def build_slit_loss_data(
                 airmass_key = alias_airmass_keys[airmass_name]
                 target = f"{psf_name}_slit_{slit_name}_airmass_" f"{airmass_key}_{adc_name}"
                 if target in curves:
-                    curves[f"{psf_name}_{old_name}"] = {
-                        **curves[target],
-                        "alias_for": target,
-                    }
+                    curves[f"{psf_name}_{old_name}"] = {**curves[target], "alias_for": target}
         arm_data[arm_name] = {
             "wave_nm": wave,
             "slit_width_arcsec": slit_width,
@@ -2087,7 +2050,7 @@ def build_slit_loss_data(
 
 def build_slit_width_loss_data(
     train_or_cmds: Any, *, slit_widths: u.Quantity | None = None, arms: Mapping[str, tuple[u.Quantity, str]] | None = None, slit_length: u.Quantity = 10.0 * u.arcsec,
-    grid_step: u.Quantity = 0.04 * u.arcsec, beta: float = 4.765, allow_diagnostic_psf: bool = False,
+    grid_step: u.Quantity = 0.04 * u.arcsec,
 ) -> dict[str, Any]:
     """Return centered point-source slit loss over a sweep of slit widths.
 
@@ -2102,7 +2065,7 @@ def build_slit_width_loss_data(
     arms = arms or OrderedDict({"VIS": (np.array([350, 500, 750, 950]) * u.nm, "!INST.vis_curr_slit"), "NIR": (np.array([1000, 1250, 1650, 2200]) * u.nm, "!INST.nir_curr_slit"),})
     seeing = _required_cmd_quantity(cmds, "!OBS.seeing", u.arcsec)
     zenith_angle = _zenith_angle_from_cmds(cmds)
-    psf_modes = _slit_loss_psf_modes(train_or_cmds, beta, seeing=seeing, allow_diagnostic_fallback=allow_diagnostic_psf)
+    psf_modes = _slit_loss_psf_modes(train_or_cmds, seeing=seeing)
 
     arm_data: OrderedDict[str, dict[str, Any]] = OrderedDict()
     for arm_name, (wave_values, slit_key) in arms.items():
@@ -2408,79 +2371,6 @@ def _trace_dispersion_nm_per_pixel(trace: Any, image_plane: Any | None, wave_mid
     if not np.isfinite(pixel_distance) or pixel_distance <= 0:
         return np.nan
     return float((wave_pair[1] - wave_pair[0]).to_value(u.nm) / pixel_distance)
-
-
-def resolution_element_footprint_table(ztrain: Any, *, spectral_resolution: float | None = None, allow_diagnostic_psf: bool = False) -> Table:
-    """Return a per-channel FWHM resolution-element footprint estimate.
-
-    The spectral footprint is derived from ``lambda / R`` and the trace
-    wavelength-to-detector-pixel mapping. The spatial footprint is derived from
-    the active PSF FWHM and the image-plane pixel area. This is a compact
-    detector-scale sanity estimate, not an extracted-spectrum model.
-    """
-    if spectral_resolution is None:
-        spectral_resolution = _required_cmd_float(ztrain.cmds, "!SIM.spectral.spectral_resolution")
-    if not np.isfinite(spectral_resolution) or spectral_resolution <= 0:
-        raise ValueError("Spectral resolution must be finite and positive; got " f"{spectral_resolution!r}.")
-    seeing = _required_cmd_quantity(ztrain.cmds, "!OBS.seeing", u.arcsec)
-    zenith_angle = _zenith_angle_from_airmass(_required_cmd_float(ztrain.cmds, "!OBS.airmass"))
-    fwhm_func, psf_effect = _configured_psf_fwhm_func(ztrain, allow_diagnostic_fallback=allow_diagnostic_psf)
-    traces_for_aperture = traces_by_aperture(get_effect(ztrain, "trace_list_analytical"))
-
-    rows: list[dict[str, Any]] = []
-    for aperture_id, traces in traces_for_aperture.items():
-        label = channel_label(aperture_id, traces)
-        image_plane_id = int(traces[0].meta["image_plane_id"]) if traces else aperture_id
-        image_plane = ztrain.image_planes[image_plane_id] if hasattr(ztrain, "image_planes") and image_plane_id < len(ztrain.image_planes) else None
-        pixel_area = _image_plane_pixel_area(ztrain, image_plane_id)
-        pixel_scale = np.sqrt(pixel_area.to_value(u.arcsec**2))
-        wave_mid_values = []
-        resolution_elements = []
-        dispersion_values = []
-        spectral_pixels = []
-        psf_values = []
-        spatial_pixels = []
-        for trace in traces:
-            wave_mid_nm = 500.0 * float(trace.wave_min + trace.wave_max)
-            resolution_element_nm = wave_mid_nm / spectral_resolution
-            dispersion_nm_pix = _trace_dispersion_nm_per_pixel(trace, image_plane, wave_mid_nm)
-            spectral_fwhm_pix = resolution_element_nm / dispersion_nm_pix if np.isfinite(dispersion_nm_pix) and dispersion_nm_pix > 0 else np.nan
-            psf_fwhm = fwhm_func(np.array([wave_mid_nm]) * u.nm, zenith_angle, seeing)[0].to_value(u.arcsec)
-            spatial_fwhm_pix = psf_fwhm / pixel_scale if np.isfinite(pixel_scale) and pixel_scale > 0 else np.nan
-            wave_mid_values.append(wave_mid_nm)
-            resolution_elements.append(resolution_element_nm)
-            dispersion_values.append(dispersion_nm_pix)
-            spectral_pixels.append(spectral_fwhm_pix)
-            psf_values.append(psf_fwhm)
-            spatial_pixels.append(spatial_fwhm_pix)
-
-        spectral_fwhm_pix = float(np.nanmedian(spectral_pixels))
-        spatial_fwhm_pix = float(np.nanmedian(spatial_pixels))
-        resel_pixels = max(spectral_fwhm_pix, 1.0) * max(spatial_fwhm_pix, 1.0) if np.isfinite(spectral_fwhm_pix) and np.isfinite(spatial_fwhm_pix) else np.nan
-        rows.append({
-            "aperture_id": int(aperture_id),
-            "channel": label,
-            "image_plane_id": image_plane_id,
-            "current_slit_arcsec": _current_slit_arcsec(ztrain, label),
-            "spectral_resolution_R": float(spectral_resolution),
-            "wavelength_median_nm": float(np.nanmedian(wave_mid_values)),
-            "resolution_element_median_nm": float(np.nanmedian(resolution_elements)),
-            "dispersion_median_nm_pix": float(np.nanmedian(dispersion_values)),
-            "spectral_fwhm_pix": spectral_fwhm_pix,
-            "psf_fwhm_median_arcsec": float(np.nanmedian(psf_values)),
-            "pixel_scale_arcsec_pix": float(pixel_scale),
-            "spatial_fwhm_pix": spatial_fwhm_pix,
-            "resel_pixels_fwhm": float(resel_pixels),
-            "snr_resel_scale": float(np.sqrt(resel_pixels)),
-            "n_orders": len(traces),
-            "psf_model": effect_name(psf_effect) if psf_effect is not None else "diagnostic",
-            "note": (
-                "Approximate FWHM footprint: spectral term from lambda/R and "
-                "trace dispersion; spatial term from active PSF FWHM and "
-                "image-plane pixel area. This is not an optimal extraction."
-            ),
-        })
-    return Table(rows=rows)
 
 
 def resolution_element_snr_summary_table(snr_images: list[np.ndarray], footprint_table: Table, *, titles: list[str] | None = None) -> Table:
