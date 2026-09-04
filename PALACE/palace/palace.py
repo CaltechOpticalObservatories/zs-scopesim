@@ -682,16 +682,14 @@ def model(**parlist):
     '''
 
     #Valid parameter list?
-    if len(parlist) == 0:
-        print('No valid parameter list')
-        spec = Table()
-        return spec
-    
+    if not parlist:
+        raise ValueError('No valid parameter list')
+
     #Read model data
     lintab, conttab, vartab = readdata(**parlist)
+
     if len(vartab) == 0:
-        spec = vartab
-        return spec
+        raise ValueError('No variability data')
 
     #Calculate climatological scaling factors for each species
     scalfac = calcscalfac(vartab, **parlist)
@@ -746,7 +744,7 @@ def readdata(**parlist):
     vartab: astropy table with variability data (errors if empty)
     '''
 
-    err = False
+    err = []
 
     #Names of model files in data folder
     linfile = 'palace_lines.fits'
@@ -776,9 +774,10 @@ def readdata(**parlist):
             lintab = tlin[tlin['chem'] == parlist['species']]
         else:
             lintab = tlin
+
     except BaseException as errtext:
-        print('linfile: %s' % (errtext))
-        err = True
+        err.append('linfile: %s' % (errtext))
+
                   
     #Continuum components    
     try:
@@ -823,9 +822,10 @@ def readdata(**parlist):
                         conttab.meta.pop('HLAYER' + stri)
             else:
                 conttab = Table()
+
     except BaseException as errtext:
-        print('contfile: %s' % (errtext))
-        err = True
+        err.append('contfile: %s' % (errtext))
+
 
     #Variability data 
     try:
@@ -861,14 +861,11 @@ def readdata(**parlist):
                     vartab.meta.pop('CHEM' + strj)
                     vartab.meta.pop('VARID' + strj)
     except BaseException as errtext:
-        print('varfile: %s' % (errtext))
-        err = True
+        err.append('varfile: %s' % (errtext))
 
     #Return empty tables in the case of errors    
     if err:
-        lintab = Table()
-        conttab = Table()
-        vartab = Table()
+        raise ValueError(err)
 
     #Add meta data for temporal extension of output wavelength grid
     lintab.meta['MAXSIG'] = maxsig
@@ -2092,7 +2089,8 @@ def _convolve_p(flux0, dflux0, imin, imax, rsig, xerf0, dxerf, yerf):
             
         #Get position in array of error function values
         ierf = ((x * errfac - xerfmin) // dxerf).astype('int32')
-        ierf = np.clip(ierf, 0, nerf - 1)
+        ierf[ierf < 0] = 0
+        ierf[ierf >= nerf] = nerf - 1
                 
         #Get weights for each relevant pixel from integration of error
         #function

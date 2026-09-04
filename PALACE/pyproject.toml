@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "Cython>=3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "palace"
+version = "1.0.0"
+description = "Paranal Airglow Line and Continuum Emission model"
+readme = "README.txt"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+authors = [
+  { name = "Stefan Noll", email = "st@noll-x.de" },
+]
+dependencies = [
+  "astropy>=6",
+  "cython>=3",
+  "matplotlib>=3.8",
+  "numpy>=1.26",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Scientific/Engineering :: Astronomy",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["palace*"]
+
+[tool.setuptools.package-data]
+"palace.config" = ["*.par"]
+"palace.data" = ["*.fits"]

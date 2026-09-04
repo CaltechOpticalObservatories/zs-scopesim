@@ -1,0 +1,2145 @@
+from __future__ import annotations
+
+import numpy as np
+import pytest
+from astropy import units as u
+from astropy.io import fits
+from astropy.table import QTable, Table
+from synphot.units import PHOTLAM
+
+from zs_scopesim_tools import validation as val
+
+
+class ConstantCurve:
+    def __init__(self, value):
+        self.value = value
+
+    def __call__(self, wave):
+        return np.full(wave.size, self.value)
+
+
+class ConstantEmission:
+    def __init__(self, value):
+        self.value = value
+
+    def __call__(self, wave):
+        return np.full(wave.size, self.value) * PHOTLAM
+
+
+class FakeSurface:
+    def __init__(
+        self,
+        transmission=1.0,
+        reflection=0.0,
+        emissivity=0.0,
+        emission=0.0,
+    ):
+        self.transmission = ConstantCurve(transmission)
+        self.reflection = ConstantCurve(reflection)
+        self.emissivity = ConstantCurve(emissivity)
+        self.emission = ConstantEmission(emission)
+        self.throughput = self.transmission
+        self.meta = {"temperature": 120}
+        self.table = Table({"wavelength": [1.0], "transmission": [transmission]})
+
+
+class FakeSurfaceList:
+    def __init__(self):
+        self.table = Table({
+            "name": ["Pre", "Camera"],
+            "action": ["transmission", "transmission"],
+            "throughput_group": ["preoptics", "camera"],
+            "emission_phase": ["pre_disperser", "post_disperser"],
+        })
+        self.surfaces = {
+            "Pre": FakeSurface(transmission=0.5, emissivity=0.1, emission=100.0),
+            "Camera": FakeSurface(transmission=0.8, emissivity=0.2, emission=2.0),
+        }
+
+
+class FakeUntaggedSurfaceList:
+    def __init__(self):
+        self.table = Table({
+            "name": ["M1", "M2"],
+            "action": ["reflection", "reflection"],
+        })
+        self.surfaces = {
+            "M1": FakeSurface(reflection=0.9, emissivity=0.1, emission=1.0),
+            "M2": FakeSurface(reflection=0.8, emissivity=0.2, emission=2.0),
+        }
+        self.meta = {"name": "telescope_reflection"}
+
+
+class FakeADCSurfaceList(FakeSurfaceList):
+    def __init__(self):
+        super().__init__()
+        self.table = Table({
+            "name": ["VIS_ADC_12", "VIS_ADC_34"],
+            "action": ["transmission", "transmission"],
+            "throughput_group": ["preoptics", "preoptics"],
+            "emission_phase": ["pre_disperser", "pre_disperser"],
+        })
+
+
+class FakeEffectWithMissingTable:
+    table = None
+
+
+class FakeDetectorQE:
+    meta = {"name": "fake_detector_qe", "filename": "QE_fake.dat"}
+    throughput = ConstantCurve(0.5)
+
+
+class FakeTaperedQuantumEfficiency:
+    uses_detector_footprint = True
+
+    def __init__(self):
+        self.meta = {
+            "name": "fake_tapered_qe",
+            "center_wave_min": 0.3,
+            "center_wave_max": 0.4,
+            "flat_width": 0.06,
+            "transition_width": 0.18,
+            "peak": 0.95,
+        }
+        self.footprints = []
+
+    def throughput(self, wave):
+        return np.full(wave.size, 0.6)
+
+    def effective_diffuse_throughput(self, wave, footprint=None):
+        self.footprints.append(footprint)
+        return np.full(wave.size, 0.7)
+
+
+class FakeTEREffect:
+    include = True
+
+    def __init__(
+        self,
+        transmission=1.0,
+        reflection=0.0,
+        emissivity=0.0,
+        emission=0.0,
+        **meta,
+    ):
+        self.meta = {
+            "name": "fake_ter",
+            "action": "transmission",
+            "throughput_group": "fake_ter",
+            "emission_phase": "none",
+            **meta,
+        }
+        self.surface = FakeSurface(
+            transmission=transmission,
+            reflection=reflection,
+            emissivity=emissivity,
+            emission=emission,
+        )
+
+
+class FakeDichroic:
+    def __init__(self, transmission, reflection):
+        self.surface = FakeSurface(transmission=transmission, reflection=reflection)
+
+
+class FakeDichroicTree:
+    def __init__(self):
+        self.table = Table({
+            "aperture_id": [0],
+            "d1": ["T"],
+            "d2": ["R"],
+            "unused": ["X"],
+        })
+        self.dichroics = {
+            "d1": FakeDichroic(transmission=0.8, reflection=0.1),
+            "d2": FakeDichroic(transmission=0.7, reflection=0.5),
+        }
+
+
+class FakeTrace:
+    def __init__(self, trace_id, aperture_id, image_plane_id, wave_min, wave_max):
+        self.trace_id = trace_id
+        self.wave_min = wave_min
+        self.wave_max = wave_max
+        self.meta = {
+            "trace_id": trace_id,
+            "aperture_id": aperture_id,
+            "image_plane_id": image_plane_id,
+            "extension_id": 2,
+        }
+
+
+class FakeTraceList:
+    def __init__(self):
+        self.spectral_traces = {
+            "R_2": FakeTrace("R_2", 1, 3, 0.5, 0.6),
+            "B_1": FakeTrace("B_1", 0, 2, 0.3, 0.4),
+        }
+
+
+class FakeGeometryTrace:
+    trace_id = "B_1"
+    wave_min = 1.0
+    wave_max = 1.1
+
+    def __init__(self):
+        self.meta = {
+            "trace_id": self.trace_id,
+            "aperture_id": 0,
+            "image_plane_id": 0,
+            "extension_id": 2,
+            "nominal_fwhm_pix": 4.5,
+            "nominal_slit_width": 0.7,
+            "plate_scale": 17.5,
+            "pixel_size": 0.01,
+        }
+        wave = np.array([1.0, 1.02, 1.05, 1.08, 1.1])
+        self.table = Table({
+            "wavelength": np.tile(wave, 3) * u.um,
+            "s": np.repeat([-1.0, 0.0, 1.0], wave.size) * u.arcsec,
+            "x": np.tile([-2.0, -1.0, 0.0, 1.0, 2.0], 3) * u.mm,
+            "y": np.repeat([-0.1, 0.0, 0.1], wave.size) * u.mm,
+        })
+
+
+class FakeGeometryTraceList:
+    def __init__(self):
+        self.spectral_traces = {"B_1": FakeGeometryTrace()}
+
+
+class FakeSpectrograph:
+    def __init__(self, orders, fsr_edges=(1.015, 1.085)):
+        self.orders = np.asarray(orders, dtype=int)
+        self.fsr_edges = u.Quantity([fsr_edges] * len(self.orders), u.um)
+
+    def order_mask(self, wave, fsr_edge=False):
+        assert fsr_edge
+        wave_um = wave.to_value(u.um)
+        return np.array([
+            (wave_um > low.to_value(u.um)) & (wave_um < high.to_value(u.um))
+            for low, high in self.fsr_edges
+        ])
+
+    def edge_wave(self, fsr=True):
+        assert fsr
+        return self.fsr_edges
+
+
+class FakeCurrentSlit:
+    def __init__(self, width=0.7):
+        self.data = Table({"y": [-0.5 * width, 0.5 * width] * u.arcsec})
+
+
+class FakeSlitWheel:
+    def __init__(self, width=0.7):
+        self.current_slit = FakeCurrentSlit(width)
+
+
+class FakeTraceEfficiency:
+    include = True
+    display_name = "trace_eff_analytical"
+    meta = {"name": display_name}
+
+    def __init__(self, spectrographs=None):
+        self._spectrographs = spectrographs or {}
+
+    def efficiency_generator(self, trace_id, wave):
+        return np.full(wave.size, 0.9)
+
+
+class FakeImagePlane:
+    def __init__(self, header):
+        self.header = header
+
+
+class FakeDetector:
+    def __init__(self, header):
+        self.header = header
+
+
+class FakeTraceFOV:
+    trace_id = "B_1"
+
+
+def fake_trace_detector_coordinates(*, xi=0 * u.arcsec, wavelengths=None):
+    node_wave = np.array([1.0, 1.02, 1.05, 1.08, 1.1])
+    node_x = np.array([0.0, 10.0, 25.0, 40.0, 50.0])
+    if wavelengths is None:
+        wave = node_wave
+    else:
+        wave = u.Quantity(wavelengths["B_1"]).to_value(u.um)
+    detector_x = np.interp(wave, node_wave, node_x)
+    detector_y = 5.0 + 0.05 * detector_x
+    return QTable({
+        "readout_index": np.zeros(len(wave), dtype=int),
+        "image_plane_id": np.zeros(len(wave), dtype=int),
+        "detector_id": np.ones(len(wave), dtype=int),
+        "trace_id": ["B_1"] * len(wave),
+        "wavelength": wave * u.um,
+        "xi": np.full(len(wave), u.Quantity(xi).to_value(u.arcsec)) * u.arcsec,
+        "detector_x": detector_x * u.pixel,
+        "detector_y": detector_y * u.pixel,
+    })
+
+
+def make_fake_trace_resolution_train(
+    *,
+    mapped=None,
+    fovs=None,
+    include_order_authority=True,
+    slit_width=0.7,
+    fsr_edges=(1.015, 1.085),
+):
+    header = fits.Header({
+        "NAXIS": 2,
+        "NAXIS1": 200,
+        "NAXIS2": 50,
+        "CTYPE1D": "LINEAR",
+        "CTYPE2D": "LINEAR",
+        "CUNIT1D": "mm",
+        "CUNIT2D": "mm",
+        "CRVAL1D": 0.0,
+        "CRVAL2D": 0.0,
+        "CRPIX1D": 1.0,
+        "CRPIX2D": 1.0,
+        "CDELT1D": 0.01,
+        "CDELT2D": 0.01,
+    })
+    effects = [
+        named_effect(FakeGeometryTraceList(), "trace_list_analytical"),
+        FakeNamedSelector(
+            "slitwheel_selector",
+            "aperture_id",
+            {0: FakeSlitWheel(slit_width)},
+        ),
+    ]
+    if include_order_authority:
+        effects.insert(1, FakeTraceEfficiency({
+            "B": FakeSpectrograph([1], fsr_edges=fsr_edges),
+        }))
+
+    train = type("FakeTraceResolutionTrain", (), {})()
+    train.cmds = {
+        "!OBS.airmass": 1.0,
+        "!OBS.seeing": 0.5,
+        "!INST.vis_curr_slit": 0.7,
+        "!INST.nir_curr_slit": 0.7,
+    }
+    train.image_planes = [FakeImagePlane(header)]
+    train.detector_managers = [[FakeDetector(header.copy())]]
+    train.fov_manager = type(
+        "FakeFOVManager",
+        (),
+        {"fovs": [FakeTraceFOV()] if fovs is None else fovs},
+    )()
+    train.trace_detector_coordinates = (
+        fake_trace_detector_coordinates
+        if mapped is None else lambda **_kwargs: mapped
+    )
+    train.optics_manager = type(
+        "FakeOptics",
+        (),
+        {"all_effects": effects},
+    )()
+    return train
+
+
+class FakeTrainWithImagePlane:
+    cmds = {"!INST.plate_scale": 10.0}
+
+    def __init__(self):
+        header = fits.Header({
+            "CDELT1D": 0.015,
+            "CUNIT1D": "mm",
+            "CDELT2D": 0.015,
+            "CUNIT2D": "mm",
+        })
+        self.image_planes = [FakeImagePlane(header)]
+
+
+class FakeDiffuseEffect:
+    include = True
+    meta = {
+        "filename": "optics/LIST_fake.dat",
+        "detector_qe_filename": "detector_specs/QE_fake.dat",
+    }
+
+    def __init__(self, rate):
+        self.rate = rate
+
+    def background_value(self, image_plane):
+        return self.rate
+
+
+class FakeConfiguredPostDiffuseEffect:
+    include = True
+    meta = {
+        "name": "configured_post_diffuse",
+        "filename": "optics/LIST_fake.dat",
+        "emission_phase": "post_disperser",
+    }
+
+    def __init__(self, downstream=0.25):
+        self._surface_list = FakeSurfaceList()
+        self._detector_qe = FakeDetectorQE()
+        self._positional_qe = None
+        self.downstream = downstream
+
+    def _downstream_throughput_values(self, wave):
+        return np.full(wave.size, self.downstream)
+
+
+class FakeSelector:
+    display_name = "post_echelle_diffuse_background_selector"
+    include = True
+    meta = {"name": display_name}
+
+    def __init__(self):
+        self.wheel_effects = {2: FakeDiffuseEffect(1.0)}
+
+
+class FakeOpticsManager:
+    def __init__(self):
+        self.all_effects = [FakeSelector()]
+
+
+class FakeTrainWithDiffuseEffect(FakeTrainWithImagePlane):
+    def __init__(self):
+        super().__init__()
+        self.image_planes = [None, None, *self.image_planes]
+        self.optics_manager = FakeOpticsManager()
+
+
+class DetectorList:
+    include = True
+
+    def __init__(self):
+        self.meta = {
+            "name": "detector_b",
+            "image_plane_id": 0,
+            "detector": "CCD_B",
+        }
+        self.table = Table({
+            "id": [0],
+            "x_size": [2],
+            "y_size": [2],
+            "pixel_size": [0.015],
+            "gain": [1.0],
+        })
+
+
+class FakeSelectedEffect:
+    include = True
+
+    def __init__(self, **meta):
+        self.meta = meta
+
+
+class FakeNamedSelector:
+    def __init__(self, name, selector_key, effects, *, include=True):
+        self.include = include
+        self.display_name = name
+        self.meta = {"name": name, "selector_key": selector_key}
+        self.wheel_effects = effects
+
+    def get_effect(self, selector_value):
+        return self.wheel_effects.get(selector_value)
+
+
+class FakePSFEffect:
+    include = True
+    display_name = "seeing_psf"
+    meta = {"name": display_name, "fwhm": "!OBS.seeing"}
+
+
+class AOEnhanceablePSF:
+    include = True
+    display_name = "seeing_psf"
+    alpha = 3.25
+
+    def __init__(
+        self, scale=0.2, *, is_absolute=True, fwhm=0.6,
+        enable_ao=False,
+    ):
+        self.scale = scale
+        self.fwhm_arcsec = fwhm
+        self.seen_wave_units = []
+        self.seen_fwhm_units = []
+        self.meta = {
+            "name": self.display_name,
+            "is_absolute": is_absolute,
+            "enable_ao": enable_ao,
+        }
+
+    def fwhm(self, wave):
+        self.seen_fwhm_units.append(u.Quantity(wave).unit)
+        return np.full(wave.size, self.fwhm_arcsec) * u.arcsec
+
+    def ao_scale(self, wave):
+        self.seen_wave_units.append(u.Quantity(wave).unit)
+        return np.full(wave.size, self.scale)
+
+
+def named_effect(effect, name, *, include=True):
+    effect.include = include
+    effect.display_name = name
+    meta = getattr(effect, "meta", {}) or {}
+    meta.setdefault("name", name)
+    effect.meta = meta
+    return effect
+
+
+class FakeScienceOpticsManager:
+    def __init__(self, qe_selectors, optical_selectors):
+        self.all_effects = [
+            named_effect(FakeDichroicTree(), "dichroic_tree"),
+            FakeNamedSelector(
+                "channel_optics_selector",
+                "aperture_id",
+                {0: FakeSurfaceList()},
+            ),
+            *optical_selectors,
+            *qe_selectors,
+            named_effect(FakeTraceList(), "trace_list_analytical"),
+            FakeTraceEfficiency(),
+        ]
+
+
+class FakeScienceTrain:
+    def __init__(self, qe_selectors, optical_selectors=()):
+        self.cmds = {
+            "!TEL.area": "1 m2",
+            "!INST.plate_scale": 10.0,
+        }
+        header = fits.Header({
+            "CDELT1D": 0.015,
+            "CUNIT1D": "mm",
+            "CDELT2D": 0.015,
+            "CUNIT2D": "mm",
+        })
+        self.image_planes = [None, None, FakeImagePlane(header)]
+        self.optics_manager = FakeScienceOpticsManager(
+            qe_selectors, optical_selectors,
+        )
+
+
+class FakeBudgetOpticsManager:
+    def __init__(self):
+        self.all_effects = [
+            DetectorList(),
+            FakeNamedSelector(
+                "exposure_integration_selector",
+                "detector_id",
+                {0: FakeSelectedEffect(dit=10.0, ndit=3)},
+            ),
+            FakeNamedSelector(
+                "dark_current_selector",
+                "detector_id",
+                {0: FakeSelectedEffect(value=0.1, dit=10.0, ndit=3)},
+            ),
+            FakeNamedSelector(
+                "readout_noise_selector",
+                "detector_id",
+                {0: FakeSelectedEffect(noise_std=5.0, ndit=3)},
+            ),
+            FakeNamedSelector(
+                "bias_selector",
+                "detector_id",
+                {0: FakeSelectedEffect(bias=1040.0)},
+            ),
+        ]
+
+
+class FakeBudgetTrain(FakeTrainWithImagePlane):
+    cmds = {}
+
+    def __init__(self):
+        super().__init__()
+        self.optics_manager = FakeBudgetOpticsManager()
+
+
+class FakeAOOpticsManager:
+    def __init__(self, effect=None):
+        self.all_effects = [
+            FakeNamedSelector(
+                "slitwheel_selector",
+                "aperture_id",
+                {
+                    0: FakeSelectedEffect(
+                        current_slit="!INST.vis_curr_slit",
+                        slit_names=[1.25, 0.7, 0.5, 0.33],
+                    ),
+                    3: FakeSelectedEffect(
+                        current_slit="!INST.nir_curr_slit",
+                        slit_names=[1.25, 0.7, 0.5, 0.33],
+                    ),
+                },
+            ),
+            effect or AOEnhanceablePSF(),
+        ]
+
+
+class FakeAOTrain:
+    def __init__(self, effect=None):
+        self.cmds = {
+            "!OBS.airmass": 1.3,
+            "!OBS.seeing": 0.6,
+            "!ATMO.temperature": 9.0,
+            "!ATMO.pressure": 0.75,
+            "!ATMO.humidity": 0.15,
+            "!ATMO.x_co2": 450.0,
+            "!INST.vis_curr_slit": 0.7,
+        }
+        self.optics_manager = FakeAOOpticsManager(effect)
+
+
+def test_effect_name_handles_objects_without_meta():
+    obj = object()
+    assert val.effect_name(obj).startswith("<object object at ")
+
+
+def test_surface_group_for_row_prefers_explicit_metadata():
+    row = FakeSurfaceList().table[0]
+    assert val.surface_group_for_row(row) == "preoptics"
+
+
+def test_emission_phase_for_row_prefers_explicit_metadata():
+    row = FakeSurfaceList().table[1]
+    assert val.emission_phase_for_row(row) == "post_disperser"
+
+
+def test_emission_phase_for_row_normalizes_common_aliases():
+    row = Table({"name": ["Filter"], "emission_phase": ["postdisperser"]})[0]
+    assert val.emission_phase_for_row(row) == "post_disperser"
+
+
+def test_surface_group_for_row_rejects_missing_metadata():
+    row = Table({"name": ["VIS_Camera_1"], "emission_phase": ["post_disperser"]})[0]
+
+    with np.testing.assert_raises_regex(ValueError, "throughput_group"):
+        val.surface_group_for_row(row)
+
+
+def test_emission_phase_for_row_rejects_missing_metadata():
+    row = Table({"name": ["VIS_Camera_1"], "throughput_group": ["camera"]})[0]
+
+    with np.testing.assert_raises_regex(ValueError, "emission_phase"):
+        val.emission_phase_for_row(row)
+
+
+def test_optical_surface_rows_accepts_explicit_missing_component_group():
+    wave = np.linspace(1, 2, 4) * u.um
+    effect = FakeTEREffect(transmission=0.5, emission_phase="post_disperser")
+    del effect.meta["throughput_group"]
+    selector = FakeNamedSelector("untagged_filter_selector", "aperture_id", {0: effect})
+    components = [{
+        "selector": selector,
+        "selector_name": "untagged_filter_selector",
+        "effect": effect,
+    }]
+
+    rows = val.optical_surface_rows(
+        components,
+        wave,
+        component_metadata={
+            "untagged_filter_selector": {"throughput_group": "blocking_filter"},
+        },
+    )
+
+    assert rows[0]["group"] == "blocking_filter"
+    assert rows[0]["emission_phase"] == "post_disperser"
+
+
+def test_optical_surface_rows_rejects_conflicting_component_group():
+    wave = np.linspace(1, 2, 4) * u.um
+    effect = FakeTEREffect(transmission=0.5, throughput_group="configured")
+    selector = FakeNamedSelector("tagged_filter_selector", "aperture_id", {0: effect})
+    components = [{
+        "selector": selector,
+        "selector_name": "tagged_filter_selector",
+        "effect": effect,
+    }]
+
+    with np.testing.assert_raises_regex(ValueError, "conflicts"):
+        val.optical_surface_rows(
+            components,
+            wave,
+            component_metadata={
+                "tagged_filter_selector": {"throughput_group": "override"},
+            },
+        )
+
+
+def test_channel_optical_components_includes_static_surface_lists():
+    static_surface_list = named_effect(
+        FakeUntaggedSurfaceList(), "telescope_reflection",
+    )
+    train = FakeScienceTrain(
+        [FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        )],
+        optical_selectors=[static_surface_list],
+    )
+
+    components = val.channel_optical_components(train, aperture_id=0)
+
+    names = [component["selector_name"] for component in components]
+    assert "telescope_reflection" in names
+    assert "channel_optics_selector" in names
+
+
+def test_optical_surface_rows_accepts_static_surface_list_metadata():
+    wave = np.linspace(1, 2, 4) * u.um
+    surface_list = named_effect(
+        FakeUntaggedSurfaceList(), "telescope_reflection",
+    )
+    components = [{
+        "selector": surface_list,
+        "selector_name": "telescope_reflection",
+        "effect": surface_list,
+    }]
+
+    rows = val.optical_surface_rows(
+        components,
+        wave,
+        component_metadata={
+            "telescope_reflection": {
+                "throughput_group": "telescope",
+                "emission_phase": "pre_disperser",
+            },
+        },
+    )
+
+    assert [row["surface_name"] for row in rows] == ["M1", "M2"]
+    assert {row["group"] for row in rows} == {"telescope"}
+    assert {row["emission_phase"] for row in rows} == {"pre_disperser"}
+
+
+def test_effective_diffuse_qe_uses_average_positional_qe():
+    wave = np.linspace(1, 2, 4) * u.um
+    spatial_map = np.array([[0.8, 1.0], [0.6, 1.0]])
+    qe = val.effective_diffuse_qe(FakeDetectorQE(), wave, spatial_map)
+
+    np.testing.assert_allclose(qe, np.full(wave.size, 0.425))
+
+
+def test_effective_diffuse_qe_uses_effect_footprint_average():
+    wave = np.linspace(1, 2, 4) * u.um
+    footprint = object()
+    detector_qe = FakeTaperedQuantumEfficiency()
+
+    qe = val.effective_diffuse_qe(
+        detector_qe, wave, footprint=footprint,
+    )
+
+    np.testing.assert_allclose(qe, np.full(wave.size, 0.7))
+    assert detector_qe.footprints == [footprint]
+
+
+def test_build_transmission_sanity_data_can_auto_select_enabled_qe():
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain([
+        FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+            include=False,
+        ),
+        FakeNamedSelector(
+            "tapered_detector_qe_selector",
+            "aperture_id",
+            {0: FakeTaperedQuantumEfficiency()},
+        ),
+    ])
+
+    data = val.build_transmission_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    channel = data["channels"][0]
+    np.testing.assert_allclose(channel["detector_qe"], [0.7, 0.7])
+    np.testing.assert_allclose(channel["detector_qe_midpoint"], [0.6, 0.6])
+    np.testing.assert_allclose(
+        channel["pre_disperser_instrument_total"], [0.16, 0.16],
+    )
+    np.testing.assert_allclose(channel["pre_disperser_total"], [0.16, 0.16])
+    order = next(iter(channel["orders"].values()))
+    np.testing.assert_allclose(order["instrument"], order["total"])
+    np.testing.assert_allclose(
+        order["total_with_telescope_no_slit"],
+        order["total"],
+    )
+    assert channel["order_detector_qe_methods"] == ["spectral throughput"]
+
+
+def test_build_transmission_sanity_data_masks_order_qe_to_trace_span():
+    wave_nm = np.array([290.0, 350.0, 410.0]) * u.nm
+    train = FakeScienceTrain([
+        FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        ),
+    ])
+
+    data = val.build_transmission_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    order = data["channels"][0]["orders"]["B_1"]
+    np.testing.assert_allclose(
+        order["detector_qe"],
+        [np.nan, 0.5, np.nan],
+        equal_nan=True,
+    )
+    np.testing.assert_allclose(
+        order["disperser"],
+        [np.nan, 0.9, np.nan],
+        equal_nan=True,
+    )
+    val.validate_transmission_sanity_data(data)
+
+
+def test_build_transmission_sanity_data_skips_orders_outside_wave_grid():
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain([
+        FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        ),
+    ])
+    trace_list = val.get_effect(train, "trace_list_analytical")
+    trace_list.spectral_traces["B_0"] = FakeTrace("B_0", 0, 2, 0.30, 0.31)
+
+    data = val.build_transmission_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    channel = data["channels"][0]
+    assert "B_0" not in channel["orders"]
+    assert "B_1" in channel["orders"]
+    val.validate_transmission_sanity_data(data)
+
+
+def test_build_transmission_sanity_data_includes_extra_optical_selector():
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain(
+        [FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        )],
+        optical_selectors=[FakeNamedSelector(
+            "ir_blocking_filter_selector",
+            "aperture_id",
+            {0: FakeTEREffect(
+                transmission=0.25,
+                throughput_group="ir_blocking_filter",
+            )},
+        )],
+    )
+
+    data = val.build_transmission_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    channel = data["channels"][0]
+    np.testing.assert_allclose(channel["optics_groups"]["preoptics"], [0.5, 0.5])
+    np.testing.assert_allclose(
+        channel["optics_groups"]["ir_blocking_filter"], [0.25, 0.25],
+    )
+    np.testing.assert_allclose(channel["pre_disperser_total"], [0.04, 0.04])
+
+
+def test_build_emissivity_sanity_data_accepts_non_surface_qe():
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain([
+        FakeNamedSelector(
+            "tapered_detector_qe_selector",
+            "aperture_id",
+            {0: FakeTaperedQuantumEfficiency()},
+        ),
+    ])
+
+    data = val.build_emissivity_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    channel = data["channels"][0]
+    np.testing.assert_allclose(channel["detector_qe"], [0.7, 0.7])
+    np.testing.assert_allclose(
+        channel["post_disperser_after_qe"], [1.4, 1.4],
+    )
+    details = data["details"]
+    qe_rows = details[np.asarray(details["group"], dtype=str) == "detector_qe"]
+    assert len(qe_rows) == 1
+    assert qe_rows[0]["effect_class"] == "FakeTaperedQuantumEfficiency"
+    assert qe_rows[0]["transmission_source"] == "configured"
+
+
+def test_build_emissivity_sanity_data_applies_downstream_extra_selector(monkeypatch):
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    extra_selector = FakeNamedSelector(
+        "ir_blocking_filter_selector",
+        "aperture_id",
+        {0: FakeTEREffect(
+            transmission=0.25,
+            throughput_group="ir_blocking_filter",
+            emission_phase="post_disperser",
+        )},
+    )
+    train = FakeScienceTrain(
+        [FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        )],
+        optical_selectors=[extra_selector],
+    )
+    monkeypatch.setattr(val, "_telescope_area", lambda _ztrain: 1 * u.m**2)
+    monkeypatch.setattr(
+        val, "_image_plane_pixel_area", lambda _ztrain, _id: 1 * u.arcsec**2,
+    )
+
+    data = val.build_emissivity_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    channel = data["channels"][0]
+    np.testing.assert_allclose(
+        channel["post_disperser_after_qe"], [0.25, 0.25],
+    )
+    np.testing.assert_allclose(
+        channel["post_disperser_without_blocking_after_qe"], [1.0, 1.0],
+    )
+    np.testing.assert_allclose(channel["post_disperser_blocked_delta"], [0.75, 0.75])
+    np.testing.assert_allclose(
+        channel["post_disperser_extract_equiv_rate_ph_s"],
+        [2.5e5, 2.5e5],
+    )
+    details = data["details"]
+    assert "ir_blocking_filter" in set(details["group"])
+    filter_rows = details[
+        np.asarray(details["group"], dtype=str) == "ir_blocking_filter"
+    ]
+    assert filter_rows[0]["emission_phase"] == "post_disperser"
+    assert filter_rows[0]["peak_output_thermal_emission"] == 0.0
+
+
+def test_post_disperser_diffuse_data_applies_downstream_extra_selector(monkeypatch):
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain(
+        [FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        )],
+        optical_selectors=[FakeNamedSelector(
+            "ir_blocking_filter_selector",
+            "aperture_id",
+            {0: FakeTEREffect(
+                transmission=0.25,
+                throughput_group="ir_blocking_filter",
+                emission_phase="post_disperser",
+            )},
+        )],
+    )
+    train.image_planes = [None, None, FakeImagePlane(fits.Header())]
+    monkeypatch.setattr(val, "_image_plane_pixel_area", lambda _ztrain, _id: 1 * u.arcsec**2)
+    monkeypatch.setattr(val, "_telescope_area", lambda _ztrain: 1 * u.m**2)
+
+    data = val.build_post_disperser_diffuse_background_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    spectrum = data["channels"][0]["spectra"]["camera"]
+    np.testing.assert_allclose(spectrum.value, [0.25, 0.25])
+    unblocked = data["channels"][0]["spectra_without_blocking"]["camera"]
+    np.testing.assert_allclose(unblocked.value, [1.0, 1.0])
+    assert data["channels"][0]["total_rate_without_blocking_ph_s_pix"] > (
+        data["channels"][0]["total_rate_ph_s_pix"]
+    )
+
+
+def test_post_disperser_diffuse_data_prefers_configured_effect_downstream(
+    monkeypatch,
+):
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain(
+        [FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        )],
+        optical_selectors=[FakeNamedSelector(
+            "post_echelle_diffuse_background_selector",
+            "image_plane_id",
+            {2: FakeConfiguredPostDiffuseEffect(downstream=0.25)},
+        )],
+    )
+    monkeypatch.setattr(
+        val,
+        "_image_plane_pixel_area",
+        lambda _ztrain, _id: 1 * u.arcsec**2,
+    )
+    monkeypatch.setattr(val, "_telescope_area", lambda _ztrain: 1 * u.m**2)
+
+    data = val.build_post_disperser_diffuse_background_data(
+        train,
+        wave_nm=wave_nm,
+        qe_selector_name=None,
+    )
+
+    spectrum = data["channels"][0]["spectra"]["camera"]
+    unblocked = data["channels"][0]["spectra_without_blocking"]["camera"]
+    np.testing.assert_allclose(unblocked.value, [1.0, 1.0])
+    np.testing.assert_allclose(spectrum.value, [0.25, 0.25])
+    assert data["channels"][0]["total_rate_without_blocking_ph_s_pix"] > (
+        data["channels"][0]["total_rate_ph_s_pix"]
+    )
+
+
+def test_detector_qe_accounting_table_reports_paths(monkeypatch):
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain([
+        FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        ),
+    ])
+    train.image_planes = [None, None, FakeImagePlane(fits.Header())]
+    monkeypatch.setattr(
+        val, "_image_plane_pixel_area", lambda _ztrain, _id: 1 * u.arcsec**2,
+    )
+    monkeypatch.setattr(val, "_telescope_area", lambda _ztrain: 1 * u.m**2)
+
+    transmission = val.build_transmission_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+    emissivity = val.build_emissivity_sanity_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+    post_diffuse = val.build_post_disperser_diffuse_background_data(
+        train, wave_nm=wave_nm, qe_selector_name=None,
+    )
+
+    table = val.detector_qe_accounting_table(
+        transmission, emissivity, post_diffuse,
+    )
+
+    assert list(table["path"]) == [
+        "transmission_trace_mapped",
+        "emissivity_sanity",
+        "post_disperser_diffuse",
+    ]
+    assert list(table["qe_model"]) == ["FakeDetectorQE"] * 3
+
+
+def test_auto_qe_selection_rejects_ambiguous_enabled_selectors():
+    wave_nm = np.array([350.0, 360.0]) * u.nm
+    train = FakeScienceTrain([
+        FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE()},
+        ),
+        FakeNamedSelector(
+            "tapered_detector_qe_selector",
+            "aperture_id",
+            {0: FakeTaperedQuantumEfficiency()},
+        ),
+    ])
+
+    with np.testing.assert_raises_regex(ValueError, "qe_selector_name"):
+        val.build_transmission_sanity_data(
+            train, wave_nm=wave_nm, qe_selector_name=None,
+        )
+
+
+def test_slit_pair_status_table_marks_across_slit_source_outside():
+    table = Table({
+        "x": [0.0, 0.0],
+        "y": [0.0, 1.0],
+        "label": ["on", "off"],
+    })
+    table["x"].unit = u.arcsec
+    table["y"].unit = u.arcsec
+
+    status = val.slit_pair_status_table(
+        table, slit_width=0.7 * u.arcsec, slit_length=10 * u.arcsec)
+
+    assert list(status["label"]) == ["on", "off"]
+    assert list(status["in_slit"]) == [True, False]
+
+
+def test_slit_adc_psf_status_table_reports_context_without_simulating():
+    class FakeSlitPsfTrain:
+        cmds = {
+            "!INST.vis_curr_slit": 0.7,
+            "!INST.nir_curr_slit": 1.25,
+            "!OBS.seeing": 0.6,
+        }
+
+        def __init__(self):
+            self.optics_manager = type("Manager", (), {
+                "all_effects": [
+                    FakeNamedSelector(
+                        "slitwheel_selector",
+                        "aperture_id",
+                        {
+                            0: FakeSelectedEffect(
+                                current_slit="!INST.vis_curr_slit",
+                                filename_format="slits/slit_{:.2f}_as.dat",
+                            ),
+                            3: FakeSelectedEffect(
+                                current_slit="!INST.nir_curr_slit",
+                                filename_format="slits/slit_{:.2f}_as.dat",
+                            ),
+                        },
+                    ),
+                    FakeNamedSelector(
+                        "channel_optics_selector",
+                        "aperture_id",
+                        {
+                            0: FakeEffectWithMissingTable(),
+                            1: FakeADCSurfaceList(),
+                        },
+                    ),
+                    FakePSFEffect(),
+                ],
+            })()
+
+    table = val.slit_adc_psf_status_table(FakeSlitPsfTrain())
+
+    assert "slit" in set(table["category"])
+    assert "adc optics" in set(table["category"])
+    assert "psf" in set(table["category"])
+    assert "atmospheric dispersion" in set(table["category"])
+    assert any("current_slit=0.7" in value for value in table["setting"])
+    assert any("ADC" in value for value in table["setting"])
+    assert any("fwhm=0.6" in value for value in table["setting"])
+    assert any("No active atmospheric-dispersion" in value for value in table["note"])
+
+
+def _slit_adc_cmds():
+    return {
+        "!OBS.airmass": 1.3,
+        "!OBS.seeing": 0.6,
+        "!ATMO.temperature": 9.0,
+        "!ATMO.pressure": 0.75,
+        "!ATMO.humidity": 0.15,
+        "!ATMO.x_co2": 450.0,
+        "!INST.vis_curr_slit": 0.7,
+        "!INST.nir_curr_slit": 0.7,
+    }
+
+
+def test_build_slit_adc_psf_scene_data_uses_physical_scene_images():
+    source = Table({
+        "x": [0.0, 0.0],
+        "y": [-1.0, 1.0],
+        "weight": [1.0, 0.5],
+        "label": ["a", "b"],
+    }, units=[u.arcsec, u.arcsec, None, None])
+
+    data = val.build_slit_adc_psf_scene_data(
+        _slit_adc_cmds(),
+        {"along": source},
+        slit_width=0.7 * u.arcsec,
+        slit_length=4.0 * u.arcsec,
+        wave_nm=np.linspace(400, 700, 5) * u.nm,
+        grid_step=0.2 * u.arcsec,
+        allow_diagnostic_psf=True,
+    )
+
+    assert list(data["variants"]) == ["ad_only", "adc_residual"]
+    assert "along" in data["scenarios"]
+    images = data["scenarios"]["along"]["images"]
+    assert images["ad_only"].shape == images["adc_residual"].shape
+    assert np.isfinite(images["ad_only"]).all()
+    assert np.nanmax(images["ad_only"]) > 0
+    assert any("before slit clipping" in note for note in data["notes"])
+
+
+def test_build_slit_loss_data_returns_losses_between_zero_and_one():
+    data = val.build_slit_loss_data(
+        _slit_adc_cmds(),
+        arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
+        n_wave=5,
+        slit_length=4.0 * u.arcsec,
+        grid_step=0.25 * u.arcsec,
+        allow_diagnostic_psf=True,
+    )
+
+    curves = data["arms"]["VIS"]["curves"]
+    assert "no_ao_current_adc_residual" in curves
+    assert "no_ao_zenith" in curves
+    assert "no_ao_elevation_60_ad_only" in curves
+    assert np.isclose(data["airmass"], 1.3)
+    for curve in curves.values():
+        assert np.all(curve["loss"] >= 0)
+        assert np.all(curve["loss"] <= 1)
+
+
+def test_build_slit_loss_data_requires_configured_psf_by_default():
+    with np.testing.assert_raises_regex(ValueError, "No active ScopeSim"):
+        val.build_slit_loss_data(
+            _slit_adc_cmds(),
+            arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
+            n_wave=5,
+            slit_length=4.0 * u.arcsec,
+            grid_step=0.25 * u.arcsec,
+        )
+
+
+def test_build_slit_loss_data_includes_ao_mode_when_psf_supports_it():
+    effect = AOEnhanceablePSF()
+    data = val.build_slit_loss_data(
+        FakeAOTrain(effect),
+        arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
+        n_wave=5,
+        slit_length=4.0 * u.arcsec,
+        grid_step=0.25 * u.arcsec,
+    )
+
+    curves = data["arms"]["VIS"]["curves"]
+    assert "no_ao_zenith" in curves
+    assert "ao_zenith" in curves
+    assert curves["ao_zenith"]["linestyle"] == "--"
+    assert np.all(curves["ao_zenith"]["loss"] < curves["no_ao_zenith"]["loss"])
+    assert set(effect.seen_wave_units) == {u.um}
+    assert set(effect.seen_fwhm_units) == {u.um}
+    assert data["active_psf_mode"] == "no_ao"
+    assert data["psf_modes"]["no_ao"]["current"]
+    assert not data["psf_modes"]["ao"]["current"]
+
+
+def test_build_slit_loss_data_marks_configured_ao_mode_current():
+    effect = AOEnhanceablePSF(enable_ao=True)
+    data = val.build_slit_loss_data(
+        FakeAOTrain(effect),
+        arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
+        n_wave=5,
+        slit_length=4.0 * u.arcsec,
+        grid_step=0.25 * u.arcsec,
+    )
+
+    assert data["active_psf_mode"] == "ao"
+    assert not data["psf_modes"]["no_ao"]["current"]
+    assert data["psf_modes"]["ao"]["current"]
+    assert data["arms"]["VIS"]["curves"][
+        "ao_current_adc_residual"
+    ]["current_psf"]
+
+
+def test_build_slit_loss_data_handles_relative_dimensionless_ao_scale():
+    effect = AOEnhanceablePSF(scale=0.5, is_absolute=False)
+    data = val.build_slit_loss_data(
+        FakeAOTrain(effect),
+        arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
+        n_wave=5,
+        slit_length=4.0 * u.arcsec,
+        grid_step=0.25 * u.arcsec,
+    )
+
+    curves = data["arms"]["VIS"]["curves"]
+    assert "ao_zenith" in curves
+    assert np.isfinite(curves["ao_zenith"]["loss"]).all()
+    assert np.all(curves["ao_zenith"]["loss"] < curves["no_ao_zenith"]["loss"])
+    assert set(effect.seen_wave_units) == {u.um}
+    assert set(effect.seen_fwhm_units) == {u.um}
+
+
+def test_slit_loss_notebook_call_chain_handles_dimensionless_ao_tables():
+    data = val.build_slit_loss_data(
+        FakeAOTrain(),
+        arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
+        n_wave=5,
+        slit_length=4.0 * u.arcsec,
+        grid_step=0.25 * u.arcsec,
+    )
+    fig, axes = val.plot_slit_loss_by_arm(data)
+
+    assert axes.shape == (1, 1)
+    assert "no_ao_current_adc_residual" in data["arms"]["VIS"]["curves"]
+    assert "ao_current_adc_residual" in data["arms"]["VIS"]["curves"]
+    assert len(axes[0, 0].lines) == 6
+    fig.clf()
+
+    fig, axes = val.plot_slit_loss_by_arm(
+        data,
+        show_airmass_states=True,
+        show_adc_states=True,
+    )
+    assert len(axes[0, 0].lines) == 36
+    fig.clf()
+
+
+def test_slit_adc_scene_uses_configured_scopesim_psf_fwhm():
+    effect = AOEnhanceablePSF()
+    source = Table({
+        "x": [0.0],
+        "y": [0.0],
+        "weight": [1.0],
+        "label": ["center"],
+    }, units=[u.arcsec, u.arcsec, None, None])
+
+    data = val.build_slit_adc_psf_scene_data(
+        FakeAOTrain(effect),
+        {"center": source},
+        slit_width=0.7 * u.arcsec,
+        slit_length=4.0 * u.arcsec,
+        wave_nm=np.linspace(400, 700, 5) * u.nm,
+        grid_step=0.25 * u.arcsec,
+    )
+
+    assert "center" in data["scenarios"]
+    assert set(effect.seen_fwhm_units) == {u.um}
+    assert any("active ScopeSim" in note for note in data["notes"])
+
+
+def test_build_slit_width_loss_data_uses_configured_scopesim_psf_fwhm():
+    effect = AOEnhanceablePSF()
+    slit_widths = np.array([0.3, 0.7, 1.2]) * u.arcsec
+
+    data = val.build_slit_width_loss_data(
+        FakeAOTrain(effect),
+        slit_widths=slit_widths,
+        arms={"VIS": (np.array([500, 750]) * u.nm, "!INST.vis_curr_slit")},
+        slit_length=4.0 * u.arcsec,
+        grid_step=0.25 * u.arcsec,
+    )
+
+    arm = data["arms"]["VIS"]
+    assert data["psf_modes"]["no_ao"]["label"] == '0.6" NS'
+    np.testing.assert_allclose(
+        arm["selector_slit_widths_arcsec"].to_value(u.arcsec),
+        [0.33, 0.5, 0.7, 1.25],
+    )
+    assert set(arm["curves"]) == {
+        "no_ao_500nm",
+        "no_ao_750nm",
+        "ao_500nm",
+        "ao_750nm",
+    }
+    for curve in arm["curves"].values():
+        assert curve["loss"].shape == slit_widths.shape
+        assert np.all(curve["loss"] >= 0)
+        assert np.all(curve["loss"] <= 1)
+    assert np.all(
+        arm["curves"]["no_ao_500nm"]["loss"][1:]
+        <= arm["curves"]["no_ao_500nm"]["loss"][:-1]
+    )
+    assert set(effect.seen_fwhm_units) == {u.um}
+    assert set(effect.seen_wave_units) == {u.um}
+
+
+def test_image_plane_pixel_area_handles_detector_wcs_headers():
+    area = val._image_plane_pixel_area(FakeTrainWithImagePlane(), 0)
+
+    np.testing.assert_allclose(area.to_value(u.arcsec**2), 0.0225)
+
+
+def test_post_disperser_diffuse_effect_consistency_table_compares_rates():
+    helper_data = {
+        "channels": {
+            0: {
+                "label": "B",
+                "image_plane_id": 2,
+                "pixel_area": 0.01 * u.arcsec**2,
+                "total_rate_ph_s_pix": 1.01,
+            },
+        },
+    }
+
+    table = val.post_disperser_diffuse_effect_consistency_table(
+        FakeTrainWithDiffuseEffect(), helper_data, match_effect_grid=False,
+    )
+
+    assert list(table["channel"]) == ["B"]
+    np.testing.assert_allclose(table["effect_rate_ph_s_pix"], [1.0])
+    np.testing.assert_allclose(table["helper_rel_delta"], [0.01])
+
+
+def test_post_disperser_diffuse_effect_consistency_passes_component_metadata(monkeypatch):
+    helper_data = {
+        "channels": {
+            0: {
+                "label": "B",
+                "image_plane_id": 2,
+                "pixel_area": 0.01 * u.arcsec**2,
+                "total_rate_ph_s_pix": 1.0,
+            },
+        },
+    }
+    component_metadata = {
+        "ir_blocking_filter_selector": {"throughput_group": "ir_blocking_filter"},
+    }
+    train = FakeTrainWithDiffuseEffect()
+    diffuse_effect = train.optics_manager.all_effects[0].wheel_effects[2]
+    diffuse_effect._waveset = lambda: np.array([350.0, 360.0]) * u.nm
+    seen_metadata = []
+
+    def fake_build_post_diffuse(
+        _ztrain,
+        *,
+        wave_nm,
+        component_metadata,
+        qe_selector_name,
+        active_only,
+    ):
+        seen_metadata.append(component_metadata)
+        np.testing.assert_allclose(wave_nm.to_value(u.nm), [350.0, 360.0])
+        assert qe_selector_name == "detector_qe_selector"
+        assert active_only is True
+        return helper_data
+
+    monkeypatch.setattr(
+        val,
+        "build_post_disperser_diffuse_background_data",
+        fake_build_post_diffuse,
+    )
+
+    table = val.post_disperser_diffuse_effect_consistency_table(
+        train,
+        helper_data,
+        component_metadata=component_metadata,
+    )
+
+    assert seen_metadata == [component_metadata]
+    np.testing.assert_allclose(table["matched_rel_delta"], [0.0])
+
+
+def test_validate_post_disperser_diffuse_effect_consistency_rejects_mismatch():
+    table = Table({
+        "matched_rel_delta": [0.0, 1e-3],
+    })
+
+    with np.testing.assert_raises_regex(ValueError, "mismatch"):
+        val.validate_post_disperser_diffuse_effect_consistency(table, rtol=1e-6)
+
+
+def test_dichroic_path_throughput_uses_tree_actions():
+    wave = np.linspace(1, 2, 4) * u.um
+
+    total, components = val.dichroic_path_throughput(
+        FakeDichroicTree(), aperture_id=0, wave=wave,
+    )
+
+    np.testing.assert_allclose(total, np.full(wave.size, 0.4))
+    assert list(components) == ["d1:T", "d2:R"]
+
+
+def test_trace_catalog_table_uses_in_memory_traces():
+    table = val.trace_catalog_table(FakeTraceList())
+
+    assert list(table["trace_id"]) == ["B_1", "R_2"]
+    assert list(table["aperture_id"]) == [0, 1]
+    assert list(table["image_plane_id"]) == [2, 3]
+    np.testing.assert_allclose(table["wave_min_um"], [0.3, 0.5])
+
+
+def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
+    train = make_fake_trace_resolution_train()
+    monkeypatch.setattr(
+        val,
+        "_image_plane_pixel_area",
+        lambda _ztrain, _image_plane_id: 0.01 * u.arcsec**2,
+    )
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            None,
+        ),
+    )
+
+    table = val.trace_resolution_diagnostic_table(train)
+
+    assert len(table) == 7
+    assert len(table) > 3  # the primary FSR contains only three geometry nodes
+    assert np.array_equal(table["sample_index"], np.arange(len(table)))
+    assert np.array_equal(table["detector_x1_pix"][:-1], table["detector_x0_pix"][1:])
+    assert np.array_equal(
+        np.concatenate([np.arange(row["detector_x0_pix"], row["detector_x1_pix"]) for row in table]),
+        np.arange(table["detector_x0_pix"][0], table["detector_x1_pix"][-1]),
+    )
+    assert set(table["spectral_width_pix"]) == {4, 5}
+    assert np.all(table["detector_x0_pix"] >= 0)
+    assert np.all(table["detector_x1_pix"] <= table["detector_naxis1"])
+    assert np.all(table["detector_x_pix"] >= table["detector_x0_pix"] - 0.5)
+    assert np.all(table["detector_x_pix"] <= table["detector_x1_pix"] - 0.5)
+    np.testing.assert_allclose(np.median(np.diff(table["detector_x_pix"])), 4.5)
+    np.testing.assert_allclose(
+        table["dispersion_nm_pix"],
+        (table["wave_high_nm"] - table["wave_low_nm"]) / table["spectral_width_pix"],
+    )
+    np.testing.assert_allclose(
+        table["resolving_power_R"],
+        table["wave_nm"] / (table["spectral_fwhm_pix"] * table["dispersion_nm_pix"]),
+    )
+    remapped = fake_trace_detector_coordinates(wavelengths={"B_1": table["wave_nm"] * u.nm})
+    np.testing.assert_allclose(table["detector_x_pix"], remapped["detector_x"].to_value(u.pixel))
+    np.testing.assert_allclose(table["detector_y_pix"], remapped["detector_y"].to_value(u.pixel))
+    np.testing.assert_allclose(table["spectral_fwhm_pix"], [4.5] * len(table))
+    np.testing.assert_allclose(table["spatial_fwhm_pix"], [5.0] * len(table))
+    np.testing.assert_allclose(table["resel_footprint_pix"], [22.5] * len(table))
+    np.testing.assert_allclose(table["detector_naxis1"], [200] * len(table))
+    np.testing.assert_allclose(table["detector_naxis2"], [50] * len(table))
+    primary_fsr = FakeSpectrograph([1]).order_mask(table["wave_nm"] * u.nm, fsr_edge=True)[0]
+    assert np.all(primary_fsr)
+    assert not {
+        "detector_x_mm",
+        "detector_y_mm",
+        "detector_pixel_size_mm",
+        "spectrograph_x_pix",
+        "spectrograph_y_pix",
+    } & set(table.colnames)
+
+    summary = val.trace_resolution_summary_table(table)
+    assert list(summary["channel"]) == ["B"]
+    np.testing.assert_allclose(summary["trace_R_median"], [np.median(table["resolving_power_R"])])
+    np.testing.assert_allclose(summary["spectral_fwhm_pix"], [4.5])
+    np.testing.assert_allclose(summary["resel_footprint_min_pix"], [22.5])
+    np.testing.assert_allclose(summary["resel_footprint_max_pix"], [22.5])
+
+    display_table = val.trace_resolution_summary_display_table(summary)
+    assert list(display_table.columns) == [
+        "ch", "id", "orders", "wave nm", "slit", "spec FWHM pix",
+        "disp nm/pix", "R k", "resel pix", "seeing",
+    ]
+    assert display_table.loc[0, "R k"] == "0.1"
+    assert display_table.loc[0, "spec FWHM pix"] == "4.50"
+    assert display_table.loc[0, "resel pix"] == "22.5"
+
+
+def test_trace_resolution_diagnostic_table_scales_native_count_with_slit(monkeypatch):
+    monkeypatch.setattr(
+        val,
+        "_image_plane_pixel_area",
+        lambda _ztrain, _image_plane_id: 0.01 * u.arcsec**2,
+    )
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            None,
+        ),
+    )
+
+    wide = val.trace_resolution_diagnostic_table(make_fake_trace_resolution_train(slit_width=0.70))
+    narrow = val.trace_resolution_diagnostic_table(make_fake_trace_resolution_train(slit_width=0.33))
+
+    assert abs(len(narrow) - len(wide) * 0.70 / 0.33) <= 2
+    np.testing.assert_allclose(
+        np.median(np.diff(narrow["detector_x_pix"])),
+        narrow["spectral_fwhm_pix"][0],
+        rtol=0.1,
+    )
+    np.testing.assert_allclose(wide["spectral_fwhm_pix"], 4.5)
+    np.testing.assert_allclose(narrow["spectral_fwhm_pix"], 4.5 * 0.33 / 0.70)
+    assert set(wide["spectral_width_pix"]) == {4, 5}
+    assert set(narrow["spectral_width_pix"]) == {2, 3}
+
+
+@pytest.mark.parametrize("fsr_edges", [(1.02, 1.08), (1.015, 1.085)])
+def test_trace_resolution_diagnostic_table_rasterizes_boundary_phases(monkeypatch, fsr_edges):
+    monkeypatch.setattr(
+        val,
+        "_image_plane_pixel_area",
+        lambda _ztrain, _image_plane_id: 0.01 * u.arcsec**2,
+    )
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            None,
+        ),
+    )
+
+    train = make_fake_trace_resolution_train(fsr_edges=fsr_edges)
+    table = val.trace_resolution_diagnostic_table(train)
+
+    assert np.array_equal(table["sample_index"], np.arange(len(table)))
+    assert np.array_equal(table["detector_x1_pix"][:-1], table["detector_x0_pix"][1:])
+    assert np.sum(table["spectral_width_pix"]) == table["detector_x1_pix"][-1] - table["detector_x0_pix"][0]
+    assert set(table["spectral_width_pix"]) == {4, 5}
+    spectrograph = FakeSpectrograph([1], fsr_edges=fsr_edges)
+    assert np.all(spectrograph.order_mask(table["wave_nm"] * u.nm, fsr_edge=True)[0])
+
+
+def test_trace_resolution_diagnostic_table_uses_configured_detector_edges(monkeypatch):
+    monkeypatch.setattr(
+        val,
+        "_image_plane_pixel_area",
+        lambda _ztrain, _image_plane_id: 0.01 * u.arcsec**2,
+    )
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            None,
+        ),
+    )
+
+    train = make_fake_trace_resolution_train(fsr_edges=(1.0, 1.1))
+    train.image_planes[0].header["NAXIS1"] = 200
+    train.detector_managers[0][0].header["NAXIS1"] = 48
+    table = val.trace_resolution_diagnostic_table(train)
+
+    assert np.all(table["detector_x0_pix"] >= 0)
+    assert np.all(table["detector_x1_pix"] <= 48)
+    assert np.all(table["detector_naxis1"] == 48)
+
+    train.detector_managers[0].append(FakeDetector(train.detector_managers[0][0].header))
+    with pytest.raises(NotImplementedError, match="one configured detector per image plane"):
+        val.trace_resolution_diagnostic_table(train)
+
+
+def test_trace_resolution_diagnostic_table_requires_configured_fwhm(
+    monkeypatch,
+):
+    trace_list = FakeGeometryTraceList()
+    del trace_list.spectral_traces["B_1"].meta["nominal_fwhm_pix"]
+    spectrograph = FakeSpectrograph([1])
+
+    header = fits.Header({
+        "NAXIS": 2,
+        "NAXIS1": 20,
+        "NAXIS2": 50,
+        "CTYPE1D": "LINEAR",
+        "CTYPE2D": "LINEAR",
+        "CUNIT1D": "mm",
+        "CUNIT2D": "mm",
+        "CRVAL1D": 0.0,
+        "CRVAL2D": 0.0,
+        "CRPIX1D": 1.0,
+        "CRPIX2D": 1.0,
+        "CDELT1D": 0.01,
+        "CDELT2D": 0.01,
+    })
+    train = type("FakeTraceResolutionTrain", (), {})()
+    train.cmds = {
+        "!OBS.airmass": 1.0,
+        "!OBS.seeing": 0.5,
+        "!INST.vis_curr_slit": 0.7,
+        "!INST.nir_curr_slit": 0.7,
+    }
+    train.image_planes = [FakeImagePlane(header)]
+    train.fov_manager = type(
+        "FakeFOVManager",
+        (),
+        {"fovs": [FakeTraceFOV()]},
+    )()
+    train.trace_detector_coordinates = (
+        lambda **_kwargs: fake_trace_detector_coordinates()
+    )
+    train.optics_manager = type("FakeOptics", (), {
+        "all_effects": [
+            named_effect(trace_list, "trace_list_analytical"),
+            FakeTraceEfficiency({"B": spectrograph}),
+            FakeNamedSelector(
+                "slitwheel_selector",
+                "aperture_id",
+                {0: FakeSlitWheel()},
+            ),
+        ],
+    })()
+    monkeypatch.setattr(
+        val,
+        "_image_plane_pixel_area",
+        lambda _ztrain, _image_plane_id: 0.01 * u.arcsec**2,
+    )
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            None,
+        ),
+    )
+
+    with pytest.raises(KeyError, match="nominal_fwhm_pix"):
+        val.trace_resolution_diagnostic_table(train)
+
+
+def test_trace_resolution_diagnostic_table_requires_one_ordered_mapped_run(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            None,
+        ),
+    )
+
+    multiple_fovs = make_fake_trace_resolution_train(
+        fovs=[FakeTraceFOV(), FakeTraceFOV()],
+    )
+    with pytest.raises(NotImplementedError, match="one continuous configured FOV"):
+        val.trace_resolution_diagnostic_table(multiple_fovs)
+
+    unordered = fake_trace_detector_coordinates()
+    unordered["wavelength"] = [1.0, 1.05, 1.02, 1.08, 1.1] * u.um
+    unordered_run = make_fake_trace_resolution_train(mapped=unordered)
+    with pytest.raises(NotImplementedError, match="wavelength-ordered detector-x run"):
+        val.trace_resolution_diagnostic_table(unordered_run)
+
+
+def test_trace_resolution_diagnostic_table_requires_order_domain_authority(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            None,
+        ),
+    )
+    train = make_fake_trace_resolution_train(include_order_authority=False)
+
+    with pytest.raises(ValueError, match="trace_eff_analytical"):
+        val.trace_resolution_diagnostic_table(train)
+
+
+def test_detector_background_budget_table_combines_detector_terms():
+    diffuse_data = {
+        "channels": {
+            0: {
+                "image_plane_id": 0,
+                "total_rate_ph_s_pix": 2.0,
+            },
+        },
+    }
+
+    ztrain = FakeBudgetTrain()
+    ztrain.cmds = {"!DET.full_well": 100.0}
+
+    table = val.detector_background_budget_table(ztrain, post_diffuse_data=diffuse_data)
+
+    assert list(table["channel"]) == ["B"]
+    np.testing.assert_allclose(table["exposure_time_s"], [30.0])
+    np.testing.assert_allclose(table["post_diffuse_e_pix"], [60.0])
+    np.testing.assert_allclose(table["dark_current_e_pix"], [3.0])
+    np.testing.assert_allclose(table["additive_signal_e_pix"], [63.0])
+    np.testing.assert_allclose(table["full_well_e"], [100.0])
+    np.testing.assert_allclose(table["signal_fraction_of_full_well"], [0.63])
+    assert list(table["saturation_status"]) == ["ok"]
+    np.testing.assert_allclose(table["read_noise_e_rms"], [5.0 * np.sqrt(3)])
+    expected_total_noise = np.sqrt(60.0 + 3.0 + 75.0)
+    np.testing.assert_allclose(table["total_noise_e_rms"], [expected_total_noise])
+
+
+def test_detector_background_budget_table_flags_saturation():
+    diffuse_data = {
+        "channels": {
+            0: {
+                "image_plane_id": 0,
+                "total_rate_ph_s_pix": 2.0,
+            },
+        },
+    }
+    ztrain = FakeBudgetTrain()
+    ztrain.cmds = {"!DET.full_well": 50.0}
+
+    table = val.detector_background_budget_table(ztrain, post_diffuse_data=diffuse_data)
+
+    np.testing.assert_allclose(table["signal_fraction_of_full_well"], [1.26])
+    assert list(table["saturation_status"]) == ["saturated"]
+
+
+def test_detector_background_budget_table_requires_full_well_command():
+    ztrain = FakeBudgetTrain()
+
+    with np.testing.assert_raises_regex(ValueError, "!DET.full_well"):
+        val.detector_background_budget_table(
+            ztrain,
+            post_diffuse_data={
+                "channels": {
+                    0: {
+                        "image_plane_id": 0,
+                        "total_rate_ph_s_pix": 2.0,
+                    },
+                },
+            },
+        )
+
+
+def test_science_truth_crosscheck_table_reports_physical_anchors():
+    diffuse_data = {
+        "channels": {
+            0: {
+                "image_plane_id": 0,
+                "total_rate_ph_s_pix": 2.0,
+                "pixel_area": 0.25 * u.arcsec**2,
+                "trace_wave_min_nm": 300.0,
+                "trace_wave_max_nm": 500.0,
+            },
+        },
+    }
+    ztrain = FakeBudgetTrain()
+    ztrain.cmds = {
+        "!DET.full_well": 100.0,
+        "!SIM.spectral.spectral_resolution": 40000.0,
+        "!INST.vis_curr_slit": 0.7,
+    }
+    budget = val.detector_background_budget_table(
+        ztrain, post_diffuse_data=diffuse_data,
+    )
+
+    table = val.science_truth_crosscheck_table(
+        ztrain,
+        post_diffuse_data=diffuse_data,
+        detector_budget=budget,
+        extraction_pixels=4.0,
+    )
+
+    assert list(table["channel"]) == ["B"]
+    np.testing.assert_allclose(table["current_slit_arcsec"], [0.7])
+    np.testing.assert_allclose(table["wavelength_mid_nm"], [400.0])
+    np.testing.assert_allclose(table["resolution_element_nm"], [0.01])
+    np.testing.assert_allclose(table["post_diffuse_ph_s_arcsec2"], [8.0])
+    np.testing.assert_allclose(table["post_diffuse_ph_s_extraction"], [8.0])
+    np.testing.assert_allclose(table["post_diffuse_e_extraction"], [240.0])
+    assert "integrated image-plane background" in table["note"][0]
+
+
+def test_readout_delta_summary_table_reports_source_minus_reference():
+    class FakeHDU:
+        def __init__(self, data):
+            self.data = np.asarray(data, dtype=float)
+
+    table = val.readout_delta_summary_table(
+        [FakeHDU([[2.0, 3.0], [4.0, 5.0]])],
+        [FakeHDU([[1.0, 1.0], [1.0, 1.0]])],
+        titles=["B"],
+    )
+
+    assert list(table["channel"]) == ["B"]
+    assert list(table["shape"]) == ["2x2"]
+    np.testing.assert_allclose(table["sum_delta_e"], [10.0])
+    np.testing.assert_allclose(table["max_abs_delta_e"], [4.0])
+    assert list(table["nonzero_pixels"]) == [4]
+
+
+def test_resolution_element_footprint_table_derives_channel_scales(monkeypatch):
+    train = FakeScienceTrain([
+        FakeNamedSelector(
+            "detector_qe_selector",
+            "aperture_id",
+            {0: FakeDetectorQE(), 1: FakeDetectorQE()},
+        ),
+    ])
+    train.cmds.update({
+        "!OBS.airmass": 1.3,
+        "!OBS.seeing": 0.6,
+        "!INST.vis_curr_slit": 0.7,
+        "!INST.nir_curr_slit": 0.7,
+        "!SIM.spectral.spectral_resolution": 10000.0,
+    })
+    train.image_planes.append(train.image_planes[-1])
+
+    monkeypatch.setattr(
+        val,
+        "_trace_dispersion_nm_per_pixel",
+        lambda _trace, _image_plane, _wave_mid_nm: 0.01,
+    )
+    monkeypatch.setattr(
+        val,
+        "_image_plane_pixel_area",
+        lambda _ztrain, _image_plane_id: 0.04 * u.arcsec**2,
+    )
+    monkeypatch.setattr(
+        val,
+        "_configured_psf_fwhm_func",
+        lambda _ztrain, allow_diagnostic_fallback=False: (
+            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.6) * u.arcsec,
+            None,
+        ),
+    )
+
+    table = val.resolution_element_footprint_table(train)
+
+    by_channel = {str(row["channel"]): row for row in table}
+    assert set(by_channel) == {"B", "R"}
+    np.testing.assert_allclose(by_channel["B"]["wavelength_median_nm"], 350.0)
+    np.testing.assert_allclose(by_channel["B"]["spectral_fwhm_pix"], 3.5)
+    np.testing.assert_allclose(by_channel["B"]["spatial_fwhm_pix"], 3.0)
+    np.testing.assert_allclose(by_channel["B"]["resel_pixels_fwhm"], 10.5)
+    np.testing.assert_allclose(by_channel["B"]["snr_resel_scale"], np.sqrt(10.5))
+
+
+def test_resolution_element_snr_summary_table_scales_positive_median():
+    footprint = Table(rows=[{
+        "channel": "B",
+        "resel_pixels_fwhm": 9.0,
+        "snr_resel_scale": 3.0,
+        "spectral_fwhm_pix": 2.0,
+        "spatial_fwhm_pix": 4.5,
+    }])
+
+    table = val.resolution_element_snr_summary_table(
+        [np.array([[0.0, 1.0], [2.0, 4.0]])],
+        footprint,
+        titles=["B"],
+    )
+
+    np.testing.assert_allclose(table["median_positive_pixel_snr"], [2.0])
+    np.testing.assert_allclose(table["median_resel_snr"], [6.0])
+    assert list(table["positive_snr_pixels"]) == [3]
+
+
+def _limiting_magnitude(input_abmag, signal, source_variance, non_source_variance):
+    target_snr = 5.0
+    q2 = target_snr**2
+    discriminant = (
+        (q2 * source_variance) ** 2
+        + 4 * signal**2 * q2 * non_source_variance
+    )
+    scale = (
+        q2 * source_variance + np.sqrt(discriminant)
+    ) / (2 * signal**2)
+    return input_abmag - 2.5 * np.log10(scale)
+
+
+def make_paired_selection_samples():
+    native_specs = [
+        ("B", "b_1", 0, 400.00, 0, 1, 10.0, 2.0, 3.0),
+        ("B", "b_1", 1, 400.10, 1, 2, 8.0, 2.0, 3.0),
+        ("B", "b_1", 2, 400.20, 2, 3, 6.0, 2.0, 40.0),
+        ("B", "b_1", 4, 401.00, 10, 11, 4.0, 2.0, 20.0),
+        ("B", "b_1", 5, 401.10, 11, 12, 2.0, 2.0, 2.0),
+        ("H", "h_2", 0, 1600.00, 0, 1, 9.0, 3.0, 3.0),
+        ("H", "h_2", 1, 1600.10, 1, 2, 7.0, 3.0, 30.0),
+        ("H", "h_2", 2, 1600.20, 2, 3, 5.0, 3.0, 3.0),
+    ]
+    rows = []
+    for channel, trace_id, sample_index, wave_nm, x0, x1, signal, fixed, simulation_fixed in native_specs:
+        wave_low_nm = wave_nm - 0.05
+        wave_high_nm = wave_nm + 0.05
+        row = {
+            "case": '0.70" slit',
+            "channel": channel,
+            "trace_id": trace_id,
+            "sample_index": sample_index,
+            "bin_index": sample_index,
+            "native_start_index": sample_index,
+            "native_stop_index": sample_index + 1,
+            "native_count": 1,
+            "bin_factor": 1,
+            "wave_nm": wave_nm,
+            "wave_low_nm": wave_low_nm,
+            "wave_high_nm": wave_high_nm,
+            "x0": x0,
+            "x1": x1,
+            "resolution_width_nm": 0.1,
+            "extraction_R": wave_nm / 0.1,
+            "input_abmag": 20.0,
+            "target_snr": 5.0,
+            "signal_e": signal,
+            "source_var_e": signal,
+            "background_e": 0.5 * (fixed - 1.0),
+            "background_var_e": fixed - 1.0,
+            "detector_var_e": 1.0,
+            "fixed_variance_e": fixed,
+            "snr_at_input": signal / np.sqrt(signal + fixed),
+            "m5_ab": _limiting_magnitude(20.0, signal, signal, fixed),
+            "simulation_signal_e": signal,
+            "simulation_source_var_e": signal,
+            "simulation_background_e": 0.5 * (simulation_fixed - 1.0),
+            "simulation_background_var_e": simulation_fixed - 1.0,
+            "simulation_detector_var_e": 1.0,
+            "simulation_fixed_variance_e": simulation_fixed,
+            "simulation_m5_ab": _limiting_magnitude(
+                20.0, signal, signal, simulation_fixed
+            ),
+        }
+        rows.append(row)
+
+    native = Table(rows=rows)
+    for channel, trace_id, groups in (
+        ("B", "b_1", ((0, 2), (2, 3), (4, 6))),
+        ("H", "h_2", ((0, 2), (2, 3))),
+    ):
+        trace_native = native[
+            (native["channel"] == channel)
+            & (native["trace_id"] == trace_id)
+        ]
+        for bin_index, (start, stop) in enumerate(groups):
+            group = trace_native[
+                (trace_native["sample_index"] >= start)
+                & (trace_native["sample_index"] < stop)
+            ]
+            signal = np.sum(group["signal_e"])
+            source_variance = np.sum(group["source_var_e"])
+            non_source_variance = np.sum(group["fixed_variance_e"])
+            rows.append({
+                **{name: group[name][0] for name in native.colnames},
+                "sample_index": start,
+                "bin_index": bin_index,
+                "native_start_index": start,
+                "native_stop_index": stop,
+                "native_count": len(group),
+                "bin_factor": 2,
+                "wave_nm": 0.5 * (
+                    group["wave_low_nm"][0] + group["wave_high_nm"][-1]
+                ),
+                "wave_low_nm": group["wave_low_nm"][0],
+                "wave_high_nm": group["wave_high_nm"][-1],
+                "resolution_width_nm": np.sum(group["resolution_width_nm"]),
+                "extraction_R": (
+                    0.5 * (
+                        group["wave_low_nm"][0]
+                        + group["wave_high_nm"][-1]
+                    )
+                    / np.sum(group["resolution_width_nm"])
+                ),
+                "signal_e": signal,
+                "source_var_e": source_variance,
+                "background_e": np.sum(group["background_e"]),
+                "background_var_e": np.sum(group["background_var_e"]),
+                "detector_var_e": np.sum(group["detector_var_e"]),
+                "fixed_variance_e": non_source_variance,
+                "snr_at_input": signal / np.sqrt(
+                    source_variance + non_source_variance
+                ),
+                "m5_ab": _limiting_magnitude(
+                    20.0, signal, source_variance, non_source_variance
+                ),
+            })
+    return Table(rows=rows)
+
+
+def test_snr_selected_spectral_bins_returns_four_curves_without_crossing_gaps():
+    curves, native_selection = val.snr_selected_spectral_bins(
+        make_paired_selection_samples(),
+        bin_factors=(2,),
+        integration="1 hour",
+        slit_arcsec=0.70,
+        ao_enabled=False,
+    )
+
+    curve_keys = set(zip(
+        curves["sky_model"],
+        curves["native_element_selection"],
+        strict=True,
+    ))
+    assert curve_keys == {
+        ("simulation", "all elements"),
+        ("simulation", "S/N-selected"),
+        ("no OH", "all elements"),
+        ("no OH", "S/N-selected"),
+    }
+    b_rows = curves[
+        (curves["channel"] == "B")
+        & (curves["sky_model"] == "simulation")
+        & (curves["native_element_selection"] == "all elements")
+    ]
+    assert list(b_rows["contiguous_order_run"]) == [1, 1, 2]
+    assert list(b_rows["bin_index_within_run"]) == [0, 1, 0]
+    assert list(b_rows["complete_native_bin"]) == [True, False, True]
+    assert np.all(np.isfinite(curves["limiting_magnitude_ab"]))
+
+    selected = curves[curves["native_element_selection"] == "S/N-selected"]
+    all_elements = curves[curves["native_element_selection"] == "all elements"]
+    assert np.all(
+        selected["snr_at_input"]
+        >= all_elements["snr_at_input"]
+        - 1e-12 * np.maximum(1.0, np.abs(all_elements["snr_at_input"]))
+    )
+    assert np.all(
+        selected["retained_native_elements"]
+        <= selected["available_native_elements"]
+    )
+    assert set(native_selection["sky_model"]) == {"simulation", "no OH"}
+
+
+def test_snr_selected_spectral_bins_uses_independent_sky_model_masks():
+    _, native_selection = val.snr_selected_spectral_bins(
+        make_paired_selection_samples(),
+        bin_factors=(2,),
+        integration="1 hour",
+        slit_arcsec=0.33,
+        ao_enabled=True,
+    )
+    simulation = native_selection[
+        native_selection["sky_model"] == "simulation"
+    ]
+    no_oh = native_selection[native_selection["sky_model"] == "no OH"]
+
+    assert list(simulation["native_sample_index"]) == list(
+        no_oh["native_sample_index"]
+    )
+    assert np.any(
+        simulation["retained_by_snr_selection"]
+        != no_oh["retained_by_snr_selection"]
+    )
+    assert np.all(simulation["ao_enabled"])
+    np.testing.assert_allclose(simulation["slit_arcsec"], 0.33)
+
+
+def test_fixed_bin_no_oh_curves_copy_authoritative_limiting_magnitudes():
+    samples = make_paired_selection_samples()
+    reconstructed, _ = val.snr_selected_spectral_bins(
+        samples,
+        bin_factors=(2,),
+        integration="1 hour",
+        slit_arcsec=0.70,
+        ao_enabled=False,
+    )
+    fixed = val.fixed_bin_no_oh_limiting_magnitude_curves(
+        samples,
+        bin_factors=(2,),
+        integration="1 hour",
+        slit_arcsec=0.70,
+        ao_enabled=False,
+    )
+    no_oh_all = reconstructed[
+        (reconstructed["sky_model"] == "no OH")
+        & (
+            reconstructed["native_element_selection"]
+            == "all elements"
+        )
+    ]
+
+    fixed_keys = [
+        (
+            str(row["channel"]),
+            str(row["trace_id"]),
+            int(row["contiguous_order_run"]),
+            int(row["bin_index_within_run"]),
+        )
+        for row in fixed
+    ]
+    reconstructed_by_key = {
+        (
+            str(row["channel"]),
+            str(row["trace_id"]),
+            int(row["contiguous_order_run"]),
+            int(row["bin_index_within_run"]),
+        ): row
+        for row in no_oh_all
+    }
+    np.testing.assert_allclose(
+        fixed["limiting_magnitude_ab"],
+        [
+            reconstructed_by_key[key]["limiting_magnitude_ab"]
+            for key in fixed_keys
+        ],
+    )
+    np.testing.assert_allclose(
+        fixed["limiting_magnitude_ab"],
+        samples[samples["bin_factor"] == 2]["m5_ab"],
+    )

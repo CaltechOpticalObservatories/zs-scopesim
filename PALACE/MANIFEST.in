@@ -1,0 +1,8 @@
+include README.txt
+include pyproject.toml
+recursive-include palace/config *.par
+recursive-include palace/data *.fits
+prune build
+prune *.egg-info
+global-exclude .DS_Store
+global-exclude *.py[cod]
