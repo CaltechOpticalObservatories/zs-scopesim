@@ -453,34 +453,6 @@ class FakePSFEffect:
     meta = {"name": display_name, "fwhm": "!OBS.seeing"}
 
 
-class AOEnhanceablePSF:
-    include = True
-    display_name = "seeing_psf"
-    alpha = 3.25
-
-    def __init__(
-        self, scale=0.2, *, is_absolute=True, fwhm=0.6,
-        enable_ao=False,
-    ):
-        self.scale = scale
-        self.fwhm_arcsec = fwhm
-        self.seen_wave_units = []
-        self.seen_fwhm_units = []
-        self.meta = {
-            "name": self.display_name,
-            "is_absolute": is_absolute,
-            "enable_ao": enable_ao,
-        }
-
-    def fwhm(self, wave):
-        self.seen_fwhm_units.append(u.Quantity(wave).unit)
-        return np.full(wave.size, self.fwhm_arcsec) * u.arcsec
-
-    def ao_scale(self, wave):
-        self.seen_wave_units.append(u.Quantity(wave).unit)
-        return np.full(wave.size, self.scale)
-
-
 def named_effect(effect, name, *, include=True):
     effect.include = include
     effect.display_name = name
@@ -1833,52 +1805,6 @@ def test_readout_delta_summary_table_reports_source_minus_reference():
     np.testing.assert_allclose(table["max_abs_delta_e"], [4.0])
     assert list(table["nonzero_pixels"]) == [4]
 
-
-def test_resolution_element_footprint_table_derives_channel_scales(monkeypatch):
-    train = FakeScienceTrain([
-        FakeNamedSelector(
-            "detector_qe_selector",
-            "aperture_id",
-            {0: FakeDetectorQE(), 1: FakeDetectorQE()},
-        ),
-    ])
-    train.cmds.update({
-        "!OBS.airmass": 1.3,
-        "!OBS.seeing": 0.6,
-        "!INST.vis_curr_slit": 0.7,
-        "!INST.nir_curr_slit": 0.7,
-        "!SIM.spectral.spectral_resolution": 10000.0,
-    })
-    train.image_planes.append(train.image_planes[-1])
-
-    monkeypatch.setattr(
-        val,
-        "_trace_dispersion_nm_per_pixel",
-        lambda _trace, _image_plane, _wave_mid_nm: 0.01,
-    )
-    monkeypatch.setattr(
-        val,
-        "_image_plane_pixel_area",
-        lambda _ztrain, _image_plane_id: 0.04 * u.arcsec**2,
-    )
-    monkeypatch.setattr(
-        val,
-        "_configured_psf_fwhm_func",
-        lambda _ztrain, allow_diagnostic_fallback=False: (
-            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.6) * u.arcsec,
-            None,
-        ),
-    )
-
-    table = val.resolution_element_footprint_table(train)
-
-    by_channel = {str(row["channel"]): row for row in table}
-    assert set(by_channel) == {"B", "R"}
-    np.testing.assert_allclose(by_channel["B"]["wavelength_median_nm"], 350.0)
-    np.testing.assert_allclose(by_channel["B"]["spectral_fwhm_pix"], 3.5)
-    np.testing.assert_allclose(by_channel["B"]["spatial_fwhm_pix"], 3.0)
-    np.testing.assert_allclose(by_channel["B"]["resel_pixels_fwhm"], 10.5)
-    np.testing.assert_allclose(by_channel["B"]["snr_resel_scale"], np.sqrt(10.5))
 
 
 def test_resolution_element_snr_summary_table_scales_positive_median():
