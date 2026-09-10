@@ -9,7 +9,7 @@ src_dir = "~/src"
 url = "https://github.com/CaltechOpticalObservatories/ScopeSim.git"
 path = "ScopeSim"
 relative_to = "src_dir"
-ref = "jeb/spie2026"
+ref = "main"
 editable = true
 managed = true
 
@@ -17,14 +17,14 @@ managed = true
 url = "https://github.com/CaltechOpticalObservatories/irdb.git"
 path = "irdb"
 relative_to = "src_dir"
-ref = "jeb/spie2026"
+ref = "dev_master"
 editable = true
 managed = true
 
 [repos.zsdrp]
 url = "https://github.com/CaltechOpticalObservatories/zshooter-drp.git"
 path = "zshooter-drp"
-relative_to = "src_dir"
+relative_to = "main"
 ref = "main"
 editable = true
 managed = true
@@ -32,7 +32,7 @@ managed = true
 [repos.zs_scopesim]
 path = "."
 relative_to = "repo"
-ref = "jeb/spie2026"
+ref = "main"
 editable = true
 managed = false
 
