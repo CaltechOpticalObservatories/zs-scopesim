@@ -11,6 +11,7 @@ from typing import Any
 import pandas as pd
 from astropy.io import fits
 from astropy.table import Table
+from astropy.time import Time
 from IPython.display import display
 
 import scopesim as sim
@@ -301,7 +302,7 @@ def save_readout_to_fits(hdul: fits.HDUList, filename: str):
         raise TypeError(f"Expected hdul to be an instance of astropy.io.fits.HDUList, got {type(hdul)} instead.")
 
 def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Path,
-                          *, filename_prefix: str = 'sim', imagetype: str = 'OBJECT',
+                          *, filename_prefix: str = 'sim', imagetype: str = '',
                           cmds: sim.UserCommands | None = None, train: sim.OpticalTrain | None = None):
     """
     Save a list of readout HDULists to FITS files from ZShooter spectral channels.
@@ -321,10 +322,15 @@ def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Pa
 
     for i, hdul in enumerate(list_of_hdul):
         if cmds is not None and train is not None:
+            hdul[0].header['OBJECT'] = filename_prefix.upper()
+            hdul[0].header['HIERARCH IMAGETYPE'] = imagetype.upper()
+            hdul[0].header['CHANNEL'] = channels[i].upper()
+            if 'continuum_emission' in train:
+                hdul[0].header['MJD-OBS'] = train['continuum_emission'].time.mjd
+            else:
+                hdul[0].header['MJD-OBS'] = Time.now().mjd
             hdul = add_cmds_to_readout_header(hdul, cmds, train)
             hdul[1].header['EXPTIME'] = hdul[0].header[f"HIERARCH SIM CONFIG OBS dit_{channels[i]}"]
-            hdul[1].header['OBJECT'] = filename_prefix.upper()
-            hdul[1].header['HIERARCH IMAGETYPE'] = imagetype.upper()
 
         filename = output_dir / f"{filename_prefix}_{channels[i].upper()}.fits"
         save_readout_to_fits(hdul, str(filename))
