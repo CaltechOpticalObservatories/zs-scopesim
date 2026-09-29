@@ -7,6 +7,7 @@ from collections import OrderedDict
 from collections.abc import Sequence
 from typing import Any
 from functools import lru_cache
+import wget
 
 import numpy as np
 from astropy import units as u
@@ -20,9 +21,10 @@ import h5py
 import scopesim.source.source_templates as source_templates
 from spextra import Spextrum
 from zs_scopesim_tools.helpers import instrument_package_dir
+from zs_scopesim_tools.paths import repo_root
 
 
-DEFAULT_LAMP_LINE_FILENAMES = ("ThAr_XSHOOTER_UVB_lines.dat", "Ne_IR_MOSFIRE_lines.dat", "Ar_IR_MOSFIRE_lines.dat")
+DEFAULT_LAMP_LINE_FILENAMES = ("ThAr_lines.dat", "Ne_IR_MOSFIRE_lines.dat", "Ar_IR_MOSFIRE_lines.dat")
 
 def bin_edges_from_centers(centers: Any) -> np.ndarray:
     """Return wavelength bin edges from monotonically increasing centers."""
@@ -79,12 +81,24 @@ def gaussian_line_flux_density(wave_centers: Any, line_centers: Any, line_fluxes
 @lru_cache(maxsize=None)
 def _read_lamp_lines(line_dir: Path, filenames: Sequence[str] = DEFAULT_LAMP_LINE_FILENAMES) -> Table:
     """Read and combine ZShooter lamp-line tables."""
-    tables = [Table.read(line_dir / filename, delimiter="|", format="ascii", header_start=0) for filename in filenames]
+    tables = []
+    for filename in filenames:
+        fpath = line_dir / filename
+        if not fpath.exists():
+            raise FileNotFoundError(f"Lamp-line file {filename} not found in {line_dir}")
+        table = Table.read(fpath, delimiter="|", format="ascii", header_start=0)
+        # verify that the table has the expected columns
+        req_cols = {"wave", "amplitude"}
+        assert set(table.colnames) >= req_cols, \
+            f"Table {filename} is missing required columns: {req_cols - set(table.colnames)}"
+        # normalize amplitudes to 1.0 for each file, since the absolute flux scale is arbitrary
+        table["wave"] = np.asarray(table['wave'], dtype=float)
+        table["amplitude"] = np.asarray(table['amplitude'], dtype=float) / np.nanmax(table["amplitude"])
+        tables.append(table)
     return vstack(tables, metadata_conflicts="silent")
 
 def lamp_flat(*, line_dir: str | Path | None = None, filenames: Sequence[str] = DEFAULT_LAMP_LINE_FILENAMES,
-              wave_step: u.Quantity = 0.05 * u.AA, resolving_power: float = 8e4, extent: float = 60,
-              scale_amplitude: float = 1.0):
+              wave_step: u.Quantity = 0.05 * u.AA, resolving_power: float = 8e4, extent: float = 60):
     """Build a calibration-line flat source with flux-preserving line sampling."""
     if line_dir is None:
         line_dir = instrument_package_dir("ZShooter_v2") / "lamp_lines"
@@ -93,7 +107,7 @@ def lamp_flat(*, line_dir: str | Path | None = None, filenames: Sequence[str] = 
 
     lines = _read_lamp_lines(line_dir, filenames=tuple(filenames))
     centers = np.asarray(lines["wave"], dtype=float)  # Angstrom
-    amplitudes = np.asarray(lines["amplitude"], dtype=float) * scale_amplitude
+    amplitudes = np.asarray(lines["amplitude"], dtype=float)
     fwhm = centers / resolving_power # Angstrom
 
     wave_min = max(100.0, np.nanmin(centers) - 20 * np.nanmax(fwhm))
@@ -243,9 +257,30 @@ def transient(*, x: float = 0.0, y: float = 0.0,
     # create transient source
     return source_templates.Source(x=[x], y=[y], ref=[0.], weight=[1.0], spectra=spectra, name=name)
 
-def kilonova_spectra(model_files: Sequence[str | Path], phases: Sequence[float] = (1.5, 7.5), *,
+def kilonova_spectra(model_files: Sequence[str], phases: Sequence[float] = (1.5, 7.5), *,
                       redshift: float, combine_models: bool = True):
-    """Read Kasen-model spectra and interpolate them to requested rest-frame phases in days."""
+    """
+    Download and read Kasen-model spectra and interpolate them to requested rest-frame phases in days.
+    """
+    model_dir = repo_root() / "notebooks" / "source_data" / "Kasen2017"
+    Path(model_dir).mkdir(parents=True, exist_ok=True)
+
+    kasen_url = "https://github.com/dnkasen/Kasen_Kilonova_Models_2017/tree/master/kilonova_models"
+    model_files = list(model_files)
+    for i,model_file in enumerate(model_files):
+        if not Path(model_dir / model_file).exists():
+            # If the model file doesn't exist, download it
+            url = f"{kasen_url}/{model_file}"
+            try:
+                wget.download(url, out=str(model_dir / model_file))
+            except Exception as e:
+                print(f"Error downloading {model_file}: {e}")
+        # check if the model file exists after download attempt
+        if not Path(model_dir / model_file).exists():
+            raise FileNotFoundError(f"Model file {model_file} not found in {model_dir} and could not be downloaded from {kasen_url}")
+        else:
+            model_files[i] = str(model_dir / model_file)
+
     if redshift <= 0:
         raise ValueError("redshift must be positive so the model luminosity has a finite flux scale")
 
