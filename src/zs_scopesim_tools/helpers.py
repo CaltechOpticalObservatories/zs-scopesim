@@ -329,6 +329,7 @@ def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Pa
                 hdul[0].header['MJD-OBS'] = train['continuum_emission'].time.mjd
             else:
                 hdul[0].header['MJD-OBS'] = Time.now().mjd
+            hdul[0].header['DATE-OBS'] = "2026-09-01T00:00:00.000"
             hdul = add_cmds_to_readout_header(hdul, cmds, train)
             hdul[1].header['EXPTIME'] = hdul[0].header[f"HIERARCH SIM CONFIG OBS dit_{channels[i]}"]
 
