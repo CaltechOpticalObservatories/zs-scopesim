@@ -13,6 +13,8 @@ from astropy.io import fits
 from astropy.table import Table
 from astropy.time import Time
 from IPython.display import display
+from copy import deepcopy
+import numpy as np
 
 import scopesim as sim
 import scopesim.optics.optical_train as optical_train
@@ -321,15 +323,15 @@ def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Pa
     outfiles = []
 
     for i, hdul in enumerate(list_of_hdul):
+        hdul[0].header['OBJECT'] = filename_prefix.upper()
+        hdul[0].header['HIERARCH IMAGETYPE'] = imagetype.upper()
+        hdul[0].header['CHANNEL'] = channels[i].upper()
+        hdul[0].header['DATE-OBS'] = "2026-09-01T00:00:00.000"
+        if train is not None and 'continuum_emission' in train:
+            hdul[0].header['MJD-OBS'] = train['continuum_emission'].time.mjd
+        else:
+            hdul[0].header['MJD-OBS'] = Time.now().mjd
         if cmds is not None and train is not None:
-            hdul[0].header['OBJECT'] = filename_prefix.upper()
-            hdul[0].header['HIERARCH IMAGETYPE'] = imagetype.upper()
-            hdul[0].header['CHANNEL'] = channels[i].upper()
-            if 'continuum_emission' in train:
-                hdul[0].header['MJD-OBS'] = train['continuum_emission'].time.mjd
-            else:
-                hdul[0].header['MJD-OBS'] = Time.now().mjd
-            hdul[0].header['DATE-OBS'] = "2026-09-01T00:00:00.000"
             hdul = add_cmds_to_readout_header(hdul, cmds, train)
             hdul[1].header['EXPTIME'] = hdul[0].header[f"HIERARCH SIM CONFIG OBS dit_{channels[i]}"]
 
@@ -337,3 +339,20 @@ def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Pa
         save_readout_to_fits(hdul, str(filename))
         outfiles.append(filename)
     return outfiles
+
+def subtract_hduls(hdul0, hdul1):
+    """
+    Subtract two HDULists (hdul0 - hdul1) element-wise, returning a new HDUList with the same structure, and header of hdul0.
+    Assumes that both HDULists have the same number of HDUs and compatible data shapes.
+    """
+    if len(hdul0) != len(hdul1):
+        raise ValueError("HDULists must have the same number of HDUs to subtract.")
+
+    sub_hdul = []
+    for i in range(len(hdul0)):
+        hdu = deepcopy(hdul0[i])
+        hdu[1].data -= hdul1[i][1].data
+        err = np.nanstd([hdul0[i][1].data, hdul1[i][1].data], axis=0)/np.sqrt(2)
+        hdu.append(fits.ImageHDU(data=err))
+        sub_hdul.append(hdu)
+    return sub_hdul
