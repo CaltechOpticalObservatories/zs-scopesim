@@ -15,6 +15,8 @@ from astropy.time import Time
 from IPython.display import display
 from copy import deepcopy
 import numpy as np
+import time
+from functools import wraps
 
 import scopesim as sim
 import scopesim.optics.optical_train as optical_train
@@ -189,6 +191,17 @@ def display_frame(data, *, columns=None, rename=None, formats=None):
         styler = styler.format(active_formats, na_rep="--")
     display(styler)
 
+
+def timed(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        t0 = time.perf_counter()
+        result = func(*args, **kwargs)
+        print(f"{func.__name__}({kwargs.get('object_name', '')}): {time.perf_counter() - t0:.1f} s")
+        return result
+    return wrapper
+
+
 ###################### Observing helpers ######################
 def list_effects(cmds):
     """Return a list of effect names in the optical train for the given commands without initialising the train."""
@@ -304,37 +317,53 @@ def save_readout_to_fits(hdul: fits.HDUList, filename: str):
         raise TypeError(f"Expected hdul to be an instance of astropy.io.fits.HDUList, got {type(hdul)} instead.")
 
 def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Path,
-                          *, filename_prefix: str = 'sim', imagetype: str = '',
-                          cmds: sim.UserCommands | None = None, train: sim.OpticalTrain | None = None):
+                          *, object_name: str = 'sim', imagetype: str = '', ndit: int = 0,
+                          cmds: sim.UserCommands | None = None, train: sim.OpticalTrain | None = None,
+                          extra_headers: dict | None = None):
     """
     Save a list of readout HDULists to FITS files from ZShooter spectral channels.
     :param list_of_hdul: List of HDULists corresponding to the ZShooter channels (blue, green, red, yj, h, k).
     :param output_dir: Directory to save the FITS files.
-    :param filename_prefix: Prefix for the output filenames (default: 'sim').
+    :param object_name: Name of the object being observed (default: 'sim').
     :param imagetype: Value for the HIERARCH IMAGETYPE header keyword (default: 'OBJECT').
+    :param ndit: Number of image in the sequence (default: 1).
     :param cmds: Optional UserCommands object to add to the FITS headers.
     :param train: Optional OpticalTrain object to use for header information.
+    :param extra_headers: Optional dictionary of additional header keywords to add to the primary HDU.
     """
     output_dir = Path(output_dir).resolve()
     if not output_dir.exists():
         output_dir.mkdir(parents=True, exist_ok=True)
 
     channels = ["blue", "green", "red", "yj", "h", "k"]
+    readnoise = [0.1, 0.1, 0.1, 0.5, 0.5, 0.5]
+    darkcurr = [0.000166, 0.000166, 0.000166, 0.0001, 0.0001, 0.0001]
     outfiles = []
 
     for i, hdul in enumerate(list_of_hdul):
-        hdul[0].header['OBJECT'] = filename_prefix.upper()
+        hdul[0].header['OBJECT'] = object_name.upper()
         hdul[0].header['HIERARCH IMAGETYPE'] = imagetype.upper()
+        hdul[0].header['HIERARCH IMAGENUM'] = ndit
         hdul[0].header['CHANNEL'] = channels[i].upper()
         hdul[0].header['DATE-OBS'] = "2026-09-01T00:00:00.000"
+        hdul[0].header['RON'] = readnoise[i]
+        hdul[0].header['DARK'] = darkcurr[i]
+        hdul[0].header['GAIN'] = 1.0
+
         if train is not None and 'continuum_emission' in train:
             hdul[0].header['MJD-OBS'] = train['continuum_emission'].time.mjd
         else:
             hdul[0].header['MJD-OBS'] = Time.now().mjd
+
         if cmds is not None and train is not None:
             hdul = add_cmds_to_readout_header(hdul, cmds, train)
             hdul[1].header['EXPTIME'] = hdul[0].header[f"HIERARCH SIM CONFIG OBS dit_{channels[i]}"]
 
+        if extra_headers is not None:
+            for key, value in extra_headers.items():
+                hdul[0].header[key] = value
+
+        filename_prefix = f"{object_name}_{ndit}"
         filename = output_dir / f"{filename_prefix}_{channels[i].upper()}.fits"
         save_readout_to_fits(hdul, str(filename))
         outfiles.append(filename)
@@ -351,8 +380,10 @@ def subtract_hduls(hdul0, hdul1):
     sub_hdul = []
     for i in range(len(hdul0)):
         hdu = deepcopy(hdul0[i])
-        hdu[1].data -= hdul1[i][1].data
-        err = np.nanstd([hdul0[i][1].data, hdul1[i][1].data], axis=0)/np.sqrt(2)
+        dat0 = hdul0[i][1].data
+        dat1 = hdul1[i][1].data
+        hdu[1].data = dat0 - dat1
+        err = np.nanstd([dat0, dat1], axis=0)/np.sqrt(2)
         hdu.append(fits.ImageHDU(data=err))
         sub_hdul.append(hdu)
     return sub_hdul
