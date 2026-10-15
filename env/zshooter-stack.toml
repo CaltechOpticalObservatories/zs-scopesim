@@ -58,6 +58,7 @@ packages = [
   "ipywidgets",
   "IProgress",
   "jupyter",
-  "h5py"
+  "h5py",
+  "wget"
 
 ]
