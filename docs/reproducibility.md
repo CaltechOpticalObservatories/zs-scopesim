@@ -4,10 +4,11 @@ The file `env/zshooter-stack.toml` records expected refs for managed editable
 repositories. This allows science users and developers to report and reproduce
 the same simulator state.
 
-On the `xshooter` branch, ScopeSim and IRDB are pinned to the reviewed feature
-commits. The separate `fidelity-candidates` branches are not selected by a sync.
-See [the X-shooter assessment](xshooter-validation.md) for the candidate revisions,
-validation results, and remaining scientific limitations. The commits are local
+On the `xshooter` branch, ScopeSim and IRDB are pinned to the adopted upstream
+merges and shared numerical fixes. The historical `fidelity-candidates` branches
+remain as review records; their selected corrections are now in the feature stack.
+See [the X-shooter assessment](xshooter-validation.md) for revisions,
+validation results and remaining scientific approximations. The commits are local
 until published; another machine needs those commits before it can sync them.
 
 Sync managed checkouts:
