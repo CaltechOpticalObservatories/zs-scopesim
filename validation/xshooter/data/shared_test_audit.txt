@@ -1,0 +1,54 @@
+Adopted stack: 2026-10-17
+Slow tests included; 27 web tests excluded from the shared core run.
+The final METIS LMS inheritance correction additionally passed 39 targeted METIS/trace tests.
+These tests overlap shared-core; do not add the counts as independent coverage.
+
+shared-core
+xfailed: scopesim.tests.tests_optics.test_FieldOfView.TestMakeCube::test_makes_cube_from_table -- cube flux is broken
+xfailed: scopesim.tests.tests_optics.test_FieldOfView.TestMakeCube::test_makes_cube_from_imagehdu -- cube flux is broken
+xfailed: scopesim.tests.tests_optics.test_FieldOfView.TestMakeCube::test_makes_cube_from_other_cube_imagehdu -- cube flux is broken
+xfailed: scopesim.tests.tests_optics.test_FieldOfView.TestMakeCube::test_makes_cube_from_two_similar_cube_imagehdus -- cube flux is broken
+xfailed: scopesim.tests.tests_optics.test_FieldOfView.TestMakeCube::test_makes_cube_from_all_types_of_source_object -- cube flux is broken
+xfailed: scopesim.tests.tests_optics.test_FieldOfView.TestMakeImage::test_makes_image_from_cube -- revisit fov.waveset e.g. use make_cube waveset
+xfailed: scopesim.tests.tests_optics.test_FieldOfView.TestMakeImage::test_makes_image_from_all_types_of_source_object -- revisit fov.waveset e.g. use make_cube waveset
+skipped: scopesim.tests.tests_optics.test_FieldOfView.TestMakeSpectrumImageCubeAllPlayNicely::test_make_cube_and_make_spectrum_return_the_same_fluxes -- needs split FOVs after subclass refactor
+skipped: scopesim.tests.tests_optics.test_FieldOfView.TestMakeSpectrumImageCubeAllPlayNicely::test_make_cube_and_make_image_return_the_same_fluxes -- needs split FOVs after subclass refactor
+xfailed: scopesim.tests.tests_optics.test_fov_utls.TestExtractRangeFromSpectrum::test_logs_msg_for_waverang_overlap_mismatch[1.5-Waverange does not overlap] -- Check was disabled in function, dunno why.
+xfailed: scopesim.tests.tests_effects.test_AutoExposure.TestAutoExposure::test_exptime_specified_by_dit_ndit -- This now fails because a user-specified DIT and NDIT will now just go through unmodified. Decide what to do with this test later...
+xfailed: scopesim.tests.tests_effects.test_ConstPSF.TestGetKernel::test_kernel_is_scaled_properly_if_cdelts_differ[0.3333333333333333] -- PSF center off
+xfailed: scopesim.tests.tests_effects.test_DetectorModePropertiesSetter.TestApplyTo::test_currsys_updated_with_mode_specific_values -- This currently fails if run after a test using OpticalTrain, because of the rc.__currsys__ type change happening there.
+xfailed: scopesim.tests.tests_effects.test_DetectorModePropertiesSetter.TestApplyTo::test_understands_detector_mode_auto -- This currently fails if run after a test using OpticalTrain, because of the rc.__currsys__ type change happening there.
+xfailed: scopesim.tests.tests_effects.test_DetectorModePropertiesSetter.TestApplyTo::test_throws_error_for_unknown_detector_mode -- This currently fails if run after a test using OpticalTrain, because of the rc.__currsys__ type change happening there.
+xfailed: scopesim.tests.tests_effects.test_DetectorModePropertiesSetter.TestApplyTo::test_returns_object -- This currently fails if run after a test using OpticalTrain, because of the rc.__currsys__ type change happening there.
+skipped: scopesim.tests.tests_effects.test_SurfaceList.TestPlot::test_plotting[2] -- don't plot if no plots
+skipped: scopesim.tests.tests_source.test_source_Source.TestSourceAddition::test_meta_data_is_passed_on_when_added -- _meta_dicts was removed, find a better way to perform the same check...
+skipped: scopesim.tests.tests_source.test_source_Source.TestSourceAddition::test_empty_source_is_the_additive_identity -- _meta_dicts was removed, find a better way to perform the same check...
+xfailed: scopesim.tests.tests_source.test_source_Source.TestSourceShift::test_that_it_does_what_it_should --
+xfailed: scopesim.tests.tests_source.test_source_Source.TestSourceRotate::test_that_it_does_what_it_should --
+
+upstream-instruments
+skipped: MICADO.test_micado.test_micado_spec.TestInit::test_loads_optical_train[modes0] -- Takes too much memory
+skipped: MICADO.test_micado.test_micado_spec.TestInit::test_loads_optical_train[modes1] -- Takes too much memory
+skipped: MICADO.test_micado.test_micado_spec.TestInit::test_loads_optical_train[modes2] -- Takes too much memory
+skipped: MICADO.test_micado.test_micado_spec.TestInit::test_runs_spec_hk_15000x20 -- This test runs out of memory and hangs.
+xfailed: HAWKI.test_hawki.test_full_package_hawki.TestObserveOpticalTrain::test_background_is_similar_to_online_etc[J-400] -- Apparently this is waaaaay off now.
+xfailed: HAWKI.test_hawki.test_full_package_hawki.TestObserveOpticalTrain::test_background_is_similar_to_online_etc[H-2400] -- Apparently this is waaaaay off now.
+xfailed: HAWKI.test_hawki.test_full_package_hawki.TestObserveOpticalTrain::test_background_is_similar_to_online_etc[Ks-1000] -- Apparently this is waaaaay off now.
+
+workspace
+failed: tests.test_sources::test_read_lamp_lines_combines_pipe_delimited_tables -- AssertionError:
+failed: tests.test_sources::test_kilonova_spectra_rejects_zero_redshift -- FileNotFoundError: Model file /private/var/folders/gn/nqgb0s9n3pj4lxzk_lbbc_1c0000gp/T/pytest-of-jibailey/pytest-36/test_kilonova_spectra_rejects_0/missing.h5 not found in /Users/jibailey/src/zs-scopesim/notebooks/source_data/Kasen2017 and could not be downloaded from https://raw.githubusercontent.com/dnkasen/Kasen_Kilonova_Models_2017/master/kilonova_models
+failed: tests.test_validation::test_build_slit_adc_psf_scene_data_uses_physical_scene_images -- AssertionError
+failed: tests.test_validation::test_build_slit_loss_data_returns_losses_between_zero_and_one -- TypeError: build_slit_loss_data() got an unexpected keyword argument 'allow_diagnostic_psf'
+failed: tests.test_validation::test_build_slit_loss_data_requires_configured_psf_by_default -- AssertionError
+failed: tests.test_validation::test_build_slit_loss_data_includes_ao_mode_when_psf_supports_it -- NameError: name 'AOEnhanceablePSF' is not defined
+failed: tests.test_validation::test_build_slit_loss_data_marks_configured_ao_mode_current -- NameError: name 'AOEnhanceablePSF' is not defined
+failed: tests.test_validation::test_build_slit_loss_data_handles_relative_dimensionless_ao_scale -- NameError: name 'AOEnhanceablePSF' is not defined
+failed: tests.test_validation::test_slit_loss_notebook_call_chain_handles_dimensionless_ao_tables -- NameError: name 'AOEnhanceablePSF' is not defined
+failed: tests.test_validation::test_slit_adc_scene_uses_configured_scopesim_psf_fwhm -- NameError: name 'AOEnhanceablePSF' is not defined
+failed: tests.test_validation::test_build_slit_width_loss_data_uses_configured_scopesim_psf_fwhm -- NameError: name 'AOEnhanceablePSF' is not defined
+failed: tests.test_validation::test_trace_resolution_diagnostic_table_samples_trace_geometry -- TypeError: test_trace_resolution_diagnostic_table_samples_trace_geometry.<locals>.<lambda>.<locals>.<lambda>() missing 2 required positional arguments: '_zenith_angle' and '_seeing'
+failed: tests.test_validation::test_trace_resolution_diagnostic_table_scales_native_count_with_slit -- TypeError: test_trace_resolution_diagnostic_table_scales_native_count_with_slit.<locals>.<lambda>.<locals>.<lambda>() missing 2 required positional arguments: '_zenith_angle' and '_seeing'
+failed: tests.test_validation::test_trace_resolution_diagnostic_table_rasterizes_boundary_phases[fsr_edges0] -- TypeError: test_trace_resolution_diagnostic_table_rasterizes_boundary_phases.<locals>.<lambda>.<locals>.<lambda>() missing 2 required positional arguments: '_zenith_angle' and '_seeing'
+failed: tests.test_validation::test_trace_resolution_diagnostic_table_rasterizes_boundary_phases[fsr_edges1] -- TypeError: test_trace_resolution_diagnostic_table_rasterizes_boundary_phases.<locals>.<lambda>.<locals>.<lambda>() missing 2 required positional arguments: '_zenith_angle' and '_seeing'
+failed: tests.test_validation::test_trace_resolution_diagnostic_table_uses_configured_detector_edges -- TypeError: test_trace_resolution_diagnostic_table_uses_configured_detector_edges.<locals>.<lambda>.<locals>.<lambda>() missing 2 required positional arguments: '_zenith_angle' and '_seeing'
