@@ -9,6 +9,7 @@ science notebooks, reproducibility tools, and common troubleshooting.
 
 install
 notebooks
+xshooter
 xshooter-validation
 reproducibility
 troubleshooting
