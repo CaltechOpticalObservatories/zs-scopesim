@@ -213,3 +213,6 @@ cmake-build-*/
 /zshooter-exptime/
 /sims/
 /ZShooter_v2_*.fits
+validation/xshooter/cache/
+validation/xshooter/data/comparison/*.fits
+validation/xshooter/data/comparison/*.npz
