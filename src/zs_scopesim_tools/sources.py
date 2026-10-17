@@ -265,7 +265,7 @@ def kilonova_spectra(model_files: Sequence[str], phases: Sequence[float] = (1.5,
     model_dir = repo_root() / "notebooks" / "source_data" / "Kasen2017"
     Path(model_dir).mkdir(parents=True, exist_ok=True)
 
-    kasen_url = "https://github.com/dnkasen/Kasen_Kilonova_Models_2017/tree/master/kilonova_models"
+    kasen_url = "https://raw.githubusercontent.com/dnkasen/Kasen_Kilonova_Models_2017/master/kilonova_models"
     model_files = list(model_files)
     for i,model_file in enumerate(model_files):
         if not Path(model_dir / model_file).exists():
