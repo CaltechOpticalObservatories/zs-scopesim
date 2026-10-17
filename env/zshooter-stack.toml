@@ -9,7 +9,7 @@ src_dir = "~/src"
 url = "https://github.com/CaltechOpticalObservatories/ScopeSim.git"
 path = "ScopeSim"
 relative_to = "src_dir"
-ref = "ce5c8cd5f5926b6e3d02ef677e68d2870f0cdbb5"
+ref = "06f64b092eab01ebe4da789149d1a3be514c17b4"
 editable = true
 managed = true
 
