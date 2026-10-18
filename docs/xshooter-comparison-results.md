@@ -1,67 +1,90 @@
 # Flat-AB instrument comparison
 
-Executed 17 October 2026 with the adopted `xshooter` stack. Open [02_Flat_AB_Comparison.ipynb](../notebooks/02_Flat_AB_Comparison.ipynb) for the calculation and rendered outputs, or [the validation assessment](xshooter-validation.md) for shared-engine findings, tests, upstream integration and limitations.
+The executed [comparison notebook](../notebooks/02_Flat_AB_Comparison.ipynb) starts with a flat AB continuum and runs both X-shooter configurations, alongside ZShooter natural seeing with .70 and .33 arcsec slits and AO with .33 arcsec. This report supersedes the earlier single-mode comparison. The [performance reconciliation](performance-reconciliation.md) separately explains changes relative to main and your preserved performance-notebook rerun.
 
-The comparison now runs from full detector frames through native boxcar extraction to a common spectral width. The independent noisy-frame extraction agrees with the forecast variance. These are simulator forecasts under stated inputs, not an independent demonstration of either instrument's absolute on-sky sensitivity.
+All configurations share the same evaluated atmospheric curves: dark sky, airmass 1.1, seeing .65 arcsec and MJD 60310.25. AB 20 sets the simulation normalization; the limiting-magnitude calculation solves for the source amplitude giving S/N=5, including source shot noise.
 
-## Conditions and measurement
+## Observing settings and estimator
 
-The source is a centered AB 20 flat continuum in frequency. Both instruments use the same evaluated atmospheric transmission, sky continuum and airglow spectrum, seeing 0.70 arcsec, airmass 1.3 and fixed epoch. The on-source integration is 300 s x 12 = one hour. An independent, equal-time sky measurement supplies the subtraction variance: source shot noise is counted once, background/dark/read variance twice. This corresponds to one hour on source plus an equal-time sky measurement; it is not a one-hour total observing-time budget. Observing overheads and sky-subtraction systematics are omitted.
+X-shooter faint-continuum mode uses 1.0/.9/.9 arcsec UVB/VIS/NIR slits, spectral CCD charge binning by two and unbinned NIR. Its higher-resolution mode uses .8/.9/.6 arcsec slits and unbinned detectors. Both modes are executed.
 
-ZShooter uses its configured six-channel design, 0.70 arcsec slits and current qCCD/APD specifications. X-shooter uses 1.0/0.9/0.9 arcsec slits, slow CCD readout, 1x2 spectral CCD charge binning and unbinned NIR. The higher-resolution preset and G5V/kilonova context recipes are provided but were not executed for this report. These manual-based settings are not claimed to reproduce the exact Pian et al. observing setup.
+| Configuration | Five minutes on source | One hour on source |
+|---|---|---|
+| ZShooter, all detector alternatives | 300 s x 1 | 1800 s x 2 |
+| X-shooter UVB/VIS, both modes | 300 s x 1 | 1800 s x 2 |
+| X-shooter faint NIR | 300 s x 1 | 300 s x 12 |
+| X-shooter high-resolution NIR | 300 s x 1 | 450 s x 8 |
 
-Spatial apertures are integer-pixel boxcars, chosen from expected signal and variance at nine points per order. The smallest width within 0.01 mag of the best expected limit is retained. Extraction uses the configured trace-to-detector coordinates and binning. It does not fit a spatial profile or require external calibration files. The notebook extracts 127 ZShooter and 43 X-shooter orders; partial detector-edge apertures are excluded.
+The high-resolution NIR starting choice of 600 s reached approximately 89,871 electrons at the brightest source-plus-background pixel, just above the configured 89,000-electron linearity limit. The executed 450-second choice reaches approximately 67,404 electrons; faint-mode NIR reaches approximately 46,026 electrons at 300 seconds. These checks use the simulated line and thermal peaks, not a universal cadence rule. [Exposure/noise inputs](../validation/xshooter/data/comparison/exposures.csv) and [peak counts](../validation/xshooter/data/comparison/saturation.csv) are saved. The effective-noise table follows the [ESO NIR readout note](https://www.eso.org/sci/facilities/paranal/instruments/xshooter/doc/reportNDreadoutpublic.pdf).
 
-Native isolated-line probes measure both FWHM and second moment. Gaussian degradation includes output-bin integration, and the calculation carries the full covariance of the smoothed samples. Four output samples make one nominal resolution element. Overlapping orders contribute the single best order at each element; no overlap-coaddition gain is assumed.
+ZShooter's 1800-second cases remain controlled engineering forecasts. Its H-band sky peaks reach roughly 0.4–0.6 million electrons per integration, above the disabled 64,000-electron linearity placeholder. A usable-well/reset specification is needed before adopting that NIR cadence operationally. This is a dynamic-range question, separate from effective read noise.
 
-## Resolution, throughput and sensitivity
+The estimator subtracts an independent equal-time sky exposure. Its variance is source shot noise plus twice the sky, dark and read variance. One hour on source therefore needs an additional hour of sky integration before overheads. NDIT is one within these independently combined exposures. X-shooter NIR internally averaged outputs are converted back to accumulated electrons for the variance check.
 
-![Measured resolving power, extracted throughput and limiting magnitude](../validation/xshooter/data/comparison/flat_ab_comparison.png)
+## Resolution and extraction
 
-| Instrument | Native measured FWHM resolving power | Degraded measured FWHM resolving power |
-|---|---:|---:|
-| ZShooter | 13,888-23,985 | 959-964 |
-| X-shooter | 5,313-9,392 | 959-963 |
+![Native point-source and geometric slit resolution](../validation/xshooter/data/comparison/native_resolution.png)
 
-The common second-moment width corresponds to R=1000 by construction. Sampling at four bins per nominal FWHM gives an interpolated FWHM measurement near R=960 for both instruments; the notebook reports this achieved value instead of relabeling it as exactly 1000. Each native probe samples one location per order. These measurements do not establish continuous wavelength-dependent optical fidelity. See [native measurements](../validation/xshooter/data/comparison/line_widths.csv) and [degraded measurements](../validation/xshooter/data/comparison/common_line_widths.csv).
+Isolated lines sample 20%, 50% and 80% of each primary FSR for both instruments. The figure separates measured point-source FWHM from geometric full-slit resolution. The latter is approximately 17,800/.70 arcsec and 37,800/.33 arcsec for the ZShooter analytic prescription. Its varying slit image and dispersion share the same anamorphic factor; [the independent grating check](performance-reconciliation.md#slit-configuration-and-resolving-power) explains why their ratio varies less than the old constant-pixel-width diagnostic.
 
-The following are individual, matched wavelength elements, not filter averages. Blaze position, airglow and telluric structure produce substantial variation between adjacent elements. The nearest mutually covered element to 2.20 um is at 2.2090 um because of ZShooter's order coverage.
+![Extracted native continua](../validation/xshooter/data/comparison/native_spectra.png)
 
-| Wavelength [um] | ZShooter 5-sigma AB limit | X-shooter 5-sigma AB limit | ZShooter extracted throughput | X-shooter extracted throughput |
-|---:|---:|---:|---:|---:|
-| 0.4500 | 24.62 | 22.93 | 0.216 | 0.077 |
-| 0.5502 | 24.49 | 22.53 | 0.238 | 0.049 |
-| 0.6502 | 23.74 | 22.80 | 0.132 | 0.120 |
-| 0.8500 | 23.49 | 22.62 | 0.243 | 0.124 |
-| 1.2505 | 22.25 | 21.40 | 0.214 | 0.102 |
-| 1.6496 | 21.07 | 20.40 | 0.336 | 0.143 |
-| 2.2090 | 22.50 | 21.83 | 0.223 | 0.136 |
+Extraction uses integer-pixel boxcars selected from expected source and background variance. It chooses the smallest width within .01 mag of the best limit at nine positions per order. No profile fitting or optimal-extraction gain is assumed. The three ZShooter configurations each cover 125 traces; each X-shooter configuration covers 43.
 
-Extracted throughput is detected source electrons divided by incident photons over the configured collecting area, time and wavelength interval. It includes the common atmosphere, instrument response, slit loss and finite boxcar aperture. The [full comparison table](../validation/xshooter/data/comparison/common_resolution.csv) retains signal and both variance components, so the reported magnitude can be inspected directly. Source Poisson noise scales with source amplitude when solving for the 5-sigma limit. Neighboring resolution elements remain correlated.
+The notebook shows native spectra, all configurations at approximately R=1000, and ZShooter degraded to the **measured** native width of high-resolution X-shooter. Gaussian redistribution is integrated over output bins, with eight samples per FWHM. Resolution-element variance uses the full smoothing/rebinning covariance. Overlapping orders contribute the best individual order; overlap-coaddition gain is not assumed.
 
-The forecast favors the present ZShooter design at these sample wavelengths. That result depends on its design throughput, detector specifications and thermal-background assumptions. In particular, its diffuse-emissivity option remains disabled as in the performance notebook, while X-shooter's empirical NIR background is enabled. The difference is visible in the configuration and has not been compensated by tuning the shared engine.
+![Measured resolution after matching](../validation/xshooter/data/comparison/matched_resolution_check.png)
 
-## Extraction from noisy frames
+The [matched-line measurements](../validation/xshooter/data/comparison/matched_line_widths.csv) verify achieved resolution against the target with a 2% acceptance limit. [Native measurements](../validation/xshooter/data/comparison/line_widths.csv) retain fractional FSR positions and distinguish point-source measurements from slit geometry. Pixel-phase effects remain visible for undersampled native profiles.
 
-Source and sky frames use independent random streams. The extraction converts each native ADU convention back to accumulated electrons before subtraction: CCD sums and the X-shooter NIR average are handled separately. The same boxcar apertures are then applied to the noisy frames.
+The executed point-source FWHM ranges are 19,855–24,205 for ZShooter natural/.70, 35,417–41,734 for natural/.33, 36,144–47,891 for AO/.33, 5,659–10,346 for X-shooter faint, and 6,612–10,633 for X-shooter high. These are ranges over all channels and the three FSR positions, not a single resolution assigned to an instrument. The maximum matched-resolution error is 1.33%.
 
-| Instrument | Native samples | Mean standardized residual | Standard deviation |
-|---|---:|---:|---:|
-| ZShooter | 259,284 | -0.0015 | 0.9981 |
-| X-shooter | 79,269 | 0.0021 | 1.0011 |
+## Throughput and sensitivity
 
-![Native noisy extraction residuals](../validation/xshooter/data/comparison/noisy_extraction.png)
+![Instrumental throughput and extracted fraction](../validation/xshooter/data/comparison/instrumental_throughput.png)
 
-Residuals are `(observed - expected) / predicted_sigma`. Their widths are consistent with the simulated shot/read/dark variance ledger. This checks extraction and counting conventions against independent noise realizations; it does not test detector systematics absent from the model. The [summary table](../validation/xshooter/data/comparison/noisy_extraction.csv), [aperture table](../validation/xshooter/data/comparison/apertures.csv), native FITS frames and in-kernel extracted spectra make the calculation inspectable. FITS frames and per-order sparse covariance matrices are generated locally and excluded from Git because they are reproducible, larger products.
+Throughput excludes atmospheric absorption. Slit-to-detector efficiency and telescope-inclusive efficiency are evaluated from configured response curves at each order's peak. The extracted source fraction is a separate covered-FSR integral including slit and boxcar losses. Integrating that fraction avoids artificial telluric spikes from dividing a dispersed spectrum by an undisplaced transmission curve. [Order-peak values](../validation/xshooter/data/comparison/throughput_peaks.csv) are saved.
 
-The [native frame illustration](../validation/xshooter/data/comparison/native_frames.png) shows expected source electrons, with an independent arcsinh display scale for each detector. It illustrates geometry and coverage, not relative brightness across panels.
+![Native, common-resolution and high-resolution-matched sensitivity](../validation/xshooter/data/comparison/flat_ab_comparison.png)
 
-## OH selection and next uses
+Sensitivity includes the common atmosphere and retains sky structure. Display-only median smoothing spans nine resolution elements; it does not change counts, covariance or measured resolution. The comparison uses independent-sky variance and measured point-source widths, so its curves should not be substituted directly for the performance notebook's fixed-native-bin plots. The reconciliation provides that bridge.
 
-![Separate OH wavelength-selection diagnostic](../validation/xshooter/data/comparison/oh_selection.png)
+![OH selection and retained signal](../validation/xshooter/data/comparison/oh_selection.png)
 
-The OH diagnostic uses native samples within nominal R=1000-width intervals and selects wavelengths by expected source/background variance. It reports both the sensitivity gain and retained source fraction in [its own table](../validation/xshooter/data/comparison/oh_selection.csv). This creates an irregular spectral response and is deliberately separate from the common Gaussian-width curves. A large gain at a bright airglow line is not a universal gain for a structured astrophysical spectrum.
+OH selection uses the same expected-signal/variance procedure for both instruments and reports retained source fraction. Its irregular wavelength weighting is shown separately from all-sample Gaussian-resolution sensitivity. These are different measurements for a structured source spectrum.
 
-The fresh comparison took 44.4 s for the ZShooter source-plus-sky observation and 102.2 s for X-shooter, plus 1.5/0.5 s for their readouts. Separate sky observations took 41.7/98.8 s; their readout time was not separately recorded (the saved timing rows use zero for that untimed field). The line probes took 8.5/10.7 s. The notebook therefore takes several minutes in total because it executes four full observations and both calibrations. Each individual simulation stays below two minutes on this workstation. The separate profiled native-sky benchmarks are 60.9/74.4 s; sky-model complexity differs between those benchmarks and this common-sky comparison. [Comparison timings](../validation/xshooter/data/comparison/timings.csv) and [profiled timings](../validation/xshooter/data/full_frame_timings.csv) retain that distinction.
+## Detector alternatives and noise checks
 
-The next empirical test should use a held-out X-shooter observation with known seeing, slit, binning, exposure and extraction convention. Compare source counts, background, line width and uncertainty separately, without refitting to that observation. A published reduction or ESO/PyReduce extraction can provide a later cross-check. G5V and kilonova runs can then add science context while retaining this flat-AB technical baseline.
+![Detector sensitivity differences](../validation/xshooter/data/comparison/detector_trade.png)
+
+![Noise contributions at the limiting magnitude](../validation/xshooter/data/comparison/detector_noise_budget.png)
+
+The detector trade covers five minutes and one hour, native and R approximately 1000, for natural/.70, AO/.33 and natural/.33. Conventional alternatives use 2.5-electron CCD and 6-electron effective H2RG read noise; current configurations use .1-electron qCCD and .5-electron APD values. These are engineering specifications. Optical rates are reused across detector/exposure forecasts.
+
+![QE input diagnostic](../validation/xshooter/data/comparison/detector_qe_ratio.png)
+
+The QE ratio is an input diagnostic. Magnitude differences and noise budgets show how read noise, sky and thermal backgrounds change its consequence with exposure, slit and final resolution. A QE advantage need not outweigh a read-noise penalty at native resolution; a sky-dominated bin can show little benefit from lower read noise.
+
+An independent noisy extraction checks each arm separately. Source and sky have distinct realization IDs; the earlier accidental reuse of the same read-noise realization is corrected. [Standardized residuals](../validation/xshooter/data/comparison/noisy_extraction.csv) are checked against unit variance. Separate instrument tests cover CCD charge versus software binning and NIR summed/averaged conventions.
+
+Across the 24 configuration/arm checks, standardized residual means range from -.0140 to +.0128, and standard deviations from .9942 to 1.0118. All pass the notebook's variance check.
+
+## Slit-illumination lamp experiment
+
+The executed [lamp notebook](../notebooks/03_Slit_Illumination_Lamps.ipynb) compares a centered source with a +.0825 arcsec across-slit displacement through a .33 arcsec slit. Both natural and AO effective PSFs are exercised. Full-frame pairs and identical feature cutouts show centered/displaced images, raw differences and differences normalized to equal integrated feature flux.
+
+![Lamp centroid shifts and illumination prediction](../validation/xshooter/data/lamps/centroid_shifts.png)
+
+![K-channel line images and differences](../validation/xshooter/data/lamps/lamp_differences_K.png)
+
+There are 1,089 usable calibration-lamp lines and 372 isolated synthetic probes per PSF. Lamp centroid shifts span -.095 to -.039 native pixel in natural seeing and -.215 to -.111 pixel with AO. The prediction integrates the transmitted illumination centroid through the same effective FOV PSF and configured across-slit dispersion. It does not assume that the source displacement equals the transmitted centroid displacement.
+
+The largest measured-minus-predicted residuals are .0057 pixel for natural seeing and .0115 for AO; the isolated synthetic maxima are .0051 and .0110 pixel. These compare pixel-sampled measurements with a continuous-illumination prediction and include native pixel phase. They are distinct from the fixed-phase refinement errors, whose maximum centroid difference is .00203 pixel. The figure shows both residuals and physical shifts; blends are assessed against the synthetic probes. [Measurements](../validation/xshooter/data/lamps/centroid_shifts.csv) retain pixels and velocity units.
+
+The [natural-seeing full-frame pair](../validation/xshooter/data/lamps/lamp_frames_natural.png) and [AO pair](../validation/xshooter/data/lamps/lamp_frames_AO.png) use a common intensity scale within each channel. These overviews display 8-by-8 pixel area means at native detector coordinates; the feature cutouts and centroid calculations use the original pixels. Individual lamp observations took 32–61 seconds; the slower AO background took 71 seconds.
+
+## Interpretation and reproducibility
+
+ZShooter retains the performance notebook's disabled diffuse post-disperser emissivity; X-shooter retains its empirical NIR background. Their thermal assumptions therefore contribute to the NIR comparison. They have not been tuned to make the instruments agree. The next independent fidelity test is a held-out X-shooter observation with known settings, comparing source counts, background, line width and uncertainty separately.
+
+The [native-frame illustration](../validation/xshooter/data/comparison/native_frames.png), [apertures](../validation/xshooter/data/comparison/apertures.csv) and [timings](../validation/xshooter/data/comparison/timings.csv) accompany the notebook. Full frames and dense per-sample tables are regenerated locally and excluded from Git. The [validation assessment](xshooter-validation.md) gives convergence, precision, upstream checks and runtime. The [lamp notebook](../notebooks/03_Slit_Illumination_Lamps.ipynb) adds the centered/displaced engineering test. G5V and kilonova recipes remain secondary context; the executed technical baseline is flat AB.

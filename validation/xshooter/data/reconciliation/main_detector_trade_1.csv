@@ -1,0 +1,7 @@
+arm,detector pair,1 hour OH-disabled median delta m5 [mag],5 minute OH-disabled median delta m5 [mag]
+B,qCCD -> CCD,-1.091,-1.896
+G,qCCD -> CCD,-0.468,-1.164
+R,qCCD -> CCD,-0.377,-1.012
+YJ,LMAPD -> H2RG,-0.594,-1.241
+H,LMAPD -> H2RG,-0.272,-0.818
+K,LMAPD -> H2RG,0.059,-0.069
