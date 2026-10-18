@@ -9,6 +9,7 @@ science notebooks, reproducibility tools, and common troubleshooting.
 
 install
 notebooks
+zshooter-xdisp-geometry
 reproducibility
 troubleshooting
 ```
