@@ -88,7 +88,7 @@ def boxcar_sum(image, axis, pixels, centers, widths):
     # The unused tail of a shorter aperture must not index beyond the image.
     spatial = np.minimum(spatial, size - 1)
     values = image[spatial, pixels] if axis == 'x' else image[pixels, spatial]
-    return (values * included).sum(axis=0)
+    return (values * included).sum(axis=0, dtype=np.float64)
 
 
 def limiting_abmag(signal, source_variance, background_variance, reference_mag=20., snr=5.):
@@ -154,9 +154,12 @@ def overlap_bin_matrix(input_edges, output_edges):
 
 def line_width(wavelength, counts):
     """Centroid, RMS, and interpolated FWHM of a nonnegative isolated line."""
-    center = (counts * wavelength).sum() / counts.sum()
-    sigma = np.sqrt((counts * (wavelength - center)**2).sum() / counts.sum())
     peak = np.argmax(counts)
+    photons = counts.sum(dtype=np.float64)
+    # Work about the line rather than its absolute wavelength: float32 image
+    # sums otherwise turn tiny flux roundoff into measurable centroid shifts.
+    center = wavelength[peak] + (counts * (wavelength-wavelength[peak])).sum(dtype=np.float64) / photons
+    sigma = np.sqrt((counts * (wavelength-center)**2).sum(dtype=np.float64) / photons)
     left = np.flatnonzero(counts[:peak] < counts[peak] / 2)[-1]
     right = peak + np.flatnonzero(counts[peak:] < counts[peak] / 2)[0]
     half = counts[peak] / 2
@@ -203,7 +206,7 @@ def trace_line_profiles(train, extracted, centers, eta=0.):
         probe.image_plane_id = original.image_plane_id
         trace = traces.spectral_traces[original.trace_id]
         probe.meta['spectral_padding'] = trace.spectral_padding(probe)
-        probe.extract_from(source, spatial_header=psf.padded_header(probe))
+        probe.extract_from(source, spatial_header=psf.padded_header(probe, point_sources=True))
         psf.apply_to(probe)
         probe.cube = probe.hdu
         image = trace.map_spectra_to_focal_plane(probe)

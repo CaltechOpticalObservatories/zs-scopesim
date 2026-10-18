@@ -841,6 +841,7 @@ def trace_resolution_summary_table(table: Table) -> Table:
             "trace_R_median": np.median(resolving_power),
             "trace_R_max": np.max(resolving_power),
             "spectral_fwhm_min_pix": np.min(spectral_fwhm_pix),
+            "spectral_fwhm_median_pix": np.median(spectral_fwhm_pix),
             "spectral_fwhm_max_pix": np.max(spectral_fwhm_pix),
             "resel_footprint_min_pix": np.min(resel_footprint_pix),
             "resel_footprint_median_pix": np.median(resel_footprint_pix),

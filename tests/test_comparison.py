@@ -15,6 +15,12 @@ def test_boxcar_extracts_disjoint_native_pixels_on_either_axis():
     np.testing.assert_equal(boxcar_sum(image.T, 'y', pixels, centers, widths), expected)
 
 
+def test_boxcar_preserves_faint_counts_beside_a_bright_single_precision_pixel():
+    image = np.array([[1e8], [1.], [1.]], dtype=np.float32)
+    result = boxcar_sum(image, 'x', np.array([0]), np.array([1.]), 3)
+    assert result[0] == 100000002.
+
+
 def test_smoothing_conserves_counts_and_propagates_covariance():
     wave = np.exp(np.linspace(-.01, .01, 101)) * u.um
     edges = np.exp(np.linspace(-.03, .03, 61)) * u.um
@@ -70,6 +76,15 @@ def test_measured_gaussian_width_and_units():
     assert center.to_value(u.um) == pytest.approx(1.)
     assert measured_sigma.to_value(u.um) == pytest.approx(sigma.value)
     assert fwhm.to_value(u.um) == pytest.approx(2*np.sqrt(2*np.log(2))*sigma.value, rel=1.e-4)
+
+
+def test_float32_line_centroid_retains_subpixel_precision():
+    pixel = 2e-5*u.um
+    wavelength = 2*u.um+np.linspace(-8, 8, 1601)*pixel
+    expected = 2*u.um+.37*pixel
+    counts = (1e8*np.exp(-.5*((wavelength-expected)/pixel).value**2)).astype(np.float32)
+    center, _, _ = line_width(wavelength, counts)
+    assert abs(((center-expected)/pixel).value) < 1e-5
 
 
 def test_cannot_smooth_to_a_sharper_resolution():
