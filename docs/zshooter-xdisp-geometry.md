@@ -104,3 +104,24 @@ The selected six-panel figure was visually inspected. Trace construction took **
 The test run emits ScopeSim's existing `fov_grid` deprecation warnings and Astropy polynomial-fit conditioning warnings. The figure uses the direct analytical mapping rather than the fitted polynomials.
 
 Changes remain on `fix/zshooter-xdisp-geometry` in all three repositories. Nothing has been merged into `xshooter`.
+
+## Performance notebook: PSF cache repair
+
+The subsequent performance-notebook rerun exposed a failure in `MoffatPSF.fwhm()`. With the notebook's `brightness="dark"` setting, observation times advance between calls at night. The cache compared `SkyCoord` objects with different AltAz frame timestamps, which raises `TypeError`. This code was also present on main; the geometry checks above did not exercise this repeated PSF-width request.
+
+ScopeSim commit **`ee4e4e67`** keys the cache by the seeing parameters and numeric zenith angle. The seeing law and public interfaces are unchanged. All **11 tests in `test_MoffatPSF.py` pass**, including the exact two timestamps from the traceback, cache reuse at fixed altitude, changes to seeing/pivot/altitude and RA/Dec observation time, relative AO scaling, constant widths and table interpolation.
+
+The complete [performance notebook](../notebooks/zshooter_performance.ipynb) was rerun from a fresh kernel on 2026-10-18: **all 59 nonempty code cells completed in order, with no traceback**, through the AO/exposure comparisons, detector comparisons and final Galaxy/SN scene. The rerun outputs are saved in the notebook and under `notebooks/zshooter_performance_xdisp/`. Every cell's source, type and ID matches the pre-rerun snapshot, preserving the existing user edits. The notebook remains uncommitted; this report and the two diagnostic images below are committed separately from the ScopeSim fix.
+
+Both slit-width diagnostics now complete in a fresh kernel using the notebook's existing configuration. Their resolving-power ranges are:
+
+| Channel | 0.33-arcsecond slit R | 0.70-arcsecond slit R |
+|---|---:|---:|
+| B | 36.3-41.0k | 17.1-19.3k |
+| G | 35.0-42.4k | 16.5-20.0k |
+| R | 33.6-44.4k | 15.8-20.9k |
+| YJ | 34.9-42.0k | 16.4-19.8k |
+| H | 34.0-43.9k | 16.0-20.7k |
+| K | 33.2-44.7k | 15.7-21.1k |
+
+The actual rerun figures were visually inspected: [0.33-arcsecond echellogram](../validation/zshooter_xdisp/data/performance_033_psf_fix.png) and [0.70-arcsecond echellogram](../validation/zshooter_xdisp/data/performance_070_psf_fix.png). The first full source observation plus detector readout completed in approximately **50 seconds**, including notebook-tool overhead.
