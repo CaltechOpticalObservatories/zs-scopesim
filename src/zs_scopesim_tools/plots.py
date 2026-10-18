@@ -1804,7 +1804,9 @@ def plot_resolving_power_echellogram(table: Table, *, cmap: str = "viridis", vmi
             trace_values = trace_values[order]
             points = np.column_stack((x, y))
             segments = np.stack((points[:-1], points[1:]), axis=1)
-            collection = LineCollection(segments, cmap=colormap, norm=norm, linewidths=base_width, capstyle='round', zorder=2)
+            # Auto-snapping nearly horizontal segments creates one-pixel steps
+            # in otherwise smooth traces when the figure is rasterized.
+            collection = LineCollection(segments, cmap=colormap, norm=norm, linewidths=base_width, capstyle='round', snap=False, zorder=2)
             collection.set_array((trace_values[:-1]+trace_values[1:])/2)
             ax.add_collection(collection)
             artist = collection
