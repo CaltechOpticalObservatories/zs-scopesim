@@ -1,62 +1,38 @@
-"""Detector coverage from physical intersections, independent of trace sampling."""
+"""FSR plots retain the actual model's complete wavelength and slit domain."""
 
 import numpy as np
 import pytest
+import matplotlib.pyplot as plt
 from astropy import units as u
-from astropy.io import fits
-from astropy.table import Table
 
-from validation.zshooter_xdisp.geometry import band_coverage, minimum_vertical_slit_gap, trace_intervals
-
-
-def linear_trace(samples=2, x_offset=0, tilted=False):
-    wave = np.linspace(100, 110, samples)
-    x = np.linspace(-2, 2, samples) + x_offset
-    center_y = np.linspace(-1.5, 1.5, samples) if tilted else np.zeros(samples)
-    y = center_y[None, :] + np.array([-.5, 0, .5])[:, None]
-    table = Table({'wavelength': np.tile(wave, 3) * u.nm, 'x': np.tile(x, 3) * u.mm, 'y': y.ravel() * u.mm})
-    hdu = fits.BinTableHDU(table)
-    hdu.header['EXTNAME'] = 'b_1'
-    return hdu
+from scopesim.optics.echelle import spectrograph_factory
+from validation.zshooter_xdisp.geometry import fsr_footprints, plot_footprints
 
 
-RECTANGLE = {'prefix': 'b', 'n_disp': 2, 'n_xdisp': 2, 'pixel_size': 1, 'min_wave': 100, 'max_wave': 110}
+def test_full_fsr_is_not_truncated_to_the_detector():
+    model = spectrograph_factory(1990, 2450, 225, 18000, 65.6, 31, 38, 1/24, 4.46,
+                                2048, 2048, .015, xdisp_groove_length=1/270, dispersion_focal_len=270)
+    model._slit_offset_pix = np.array([-32., 0., 32.])
+    model._detector_cos, model._detector_sin = 1., 0.
+    model._detector_center = (1024., 1024.)
+    footprints = fsr_footprints(model)
+    assert [order for order, wave, x, y in footprints] == list(range(31, 39))
+    for order, wave, x, y in footprints:
+        assert wave.unit.is_equivalent(u.nm)
+        np.testing.assert_allclose((wave[-1] - wave[0]).to_value(u.nm), model.fsr(order).to_value(u.nm), rtol=1e-12)
+        np.testing.assert_allclose(y[2] - y[0], 64., atol=1e-10)
+    assert footprints[0][2].min() < 0
+    assert footprints[0][2].max() > model.detector.n_pix_x
+    fig, axis = plt.subplots()
+    plot_footprints(axis, footprints, {'n_disp': 2048, 'n_xdisp': 2048}, (1900, 2500))
+    # The continuous centerline includes every FSR segment, not a sparse display sample.
+    assert len(axis.collections[0].get_segments()) == footprints[0][1].size - 1
+    assert len(axis.lines) == 2*len(model.orders)
+    plt.close(fig)
 
 
-@pytest.mark.parametrize('samples', [2, 101])
-def test_center_and_full_slit_intersections(samples):
-    hdu = linear_trace(samples, tilted=True)
-    hdul = fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU(), hdu])
-    center, _ = band_coverage(hdul, RECTANGLE, full_slit=False)
-    full, _ = band_coverage(hdul, RECTANGLE)
-    assert center == pytest.approx(.5)
-    assert full == pytest.approx(1/3)
-
-
-def test_overlapping_orders_count_wavelength_once():
-    hdul = fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU(), linear_trace(), linear_trace(x_offset=-1)])
-    fraction, gaps = band_coverage(hdul, RECTANGLE)
-    assert fraction == pytest.approx(.75)
-    assert gaps == [(100, 102.5)]
-
-
-def test_parallel_slit_edge_outside_detector():
-    hdu = linear_trace()
-    hdu.data['y'] += 1
-    assert trace_intervals(hdu, RECTANGLE, full_slit=True) == []
-    assert trace_intervals(hdu, RECTANGLE, full_slit=False) == [(102.5, 107.5)]
-
-
-def test_missing_pixel_size_fails():
-    rectangle = RECTANGLE.copy()
-    del rectangle['pixel_size']
-    with pytest.raises(KeyError, match='pixel_size'):
-        trace_intervals(linear_trace(), rectangle, full_slit=True)
-
-
-def test_signed_slit_edge_separation():
-    rectangle = dict(RECTANGLE, n_xdisp=8)
-    first, second = linear_trace(), linear_trace()
-    assert minimum_vertical_slit_gap([first, second], rectangle) == pytest.approx(-1)
-    second.data['y'] += 2
-    assert minimum_vertical_slit_gap([first, second], rectangle) == pytest.approx(1)
+def test_footprint_requires_the_trace_generators_placement():
+    model = spectrograph_factory(1990, 2450, 225, 18000, 65.6, 31, 38, 1/24, 4.46,
+                                2048, 2048, .015, xdisp_groove_length=1/270, dispersion_focal_len=270)
+    with pytest.raises(AttributeError):
+        fsr_footprints(model)
