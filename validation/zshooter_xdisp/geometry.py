@@ -1,9 +1,12 @@
 """Inspect complete FSRs through the configured analytical trace mapping."""
 
 import argparse
-import importlib.util
 from pathlib import Path
+import subprocess
+import sys
+from tempfile import TemporaryDirectory
 from time import perf_counter
+from types import ModuleType
 from unittest.mock import patch
 
 import numpy as np
@@ -12,11 +15,71 @@ from matplotlib.collections import LineCollection
 from astropy import units as u
 from astropy.table import Table
 
-import scopesim
 from scopesim.commands import UserCommands
 from scopesim.effects.data_container import DataContainer
-from scopesim.effects.spectral_trace_list import EchelleSpectralTraceList
-from scopesim.effects.spectral_efficiency import EchelleSpectralEfficiency
+
+
+SCOPESIM_MAIN = '4830d68ace8a600885bfd2e06c1f341a6766c534'
+IRDB_MAIN = 'd1415c4a6bdad7d3ce0fdee58e17cd9d2424cc8d'
+INSPECTION_REVISION = 'aefbe60de1e3af42529bec1ea71eb89db7eb9d9a'
+LABELS = ['1. Corrected CX estimation', '2. Explicit Zemax CX angles', '3. Main']
+
+
+def _git_module(repo, revision, path, name):
+    """Load a committed calculation without changing any repository checkout."""
+    source = subprocess.check_output(['git', '-C', str(repo), 'show', f'{revision}:{path}'], text=True)
+    module = ModuleType(name)
+    module.__package__ = name.rpartition('.')[0]
+    sys.modules[name] = module
+    exec(compile(source, f'{revision}:{path}', 'exec'), module.__dict__)
+    return module
+
+
+def comparison_parameters(main, archive):
+    references = [archive[archive['channel'] == prefix][0] for prefix in main['prefix']]
+    estimated = main.copy()
+    estimated['disp_freq'] = [row['echelle_grooves_per_mm'] for row in references]
+    estimated['xdisp_freq'] = [row['cx_grooves_per_mm'] for row in references]
+    estimated['m0'] = [row['max_order'] for row in references]
+    estimated['n'] = [row['max_order'] - row['min_order'] + 1 for row in references]
+    # Zemax rotates detector axes; the analytical model rotates points.
+    estimated['detector_angle'] = [-row['detector_coordinate_rotation_z_deg'] for row in references]
+    estimated['xbeta_center'] = np.zeros(len(estimated))
+    explicit = estimated.copy()
+    # Unfold the CX tilt using the archive's signed local propagation direction.
+    explicit['xbeta_center'] = [-np.sign(row['camera_space_mm'])*row['cx_coordinate_tilt_x_deg'] for row in references]
+    return estimated, explicit, main.copy()
+
+
+def build_comparison(scopesim_repo, irdb_repo, archive):
+    main_optics = _git_module(scopesim_repo, SCOPESIM_MAIN, 'scopesim/optics/echelle.py', 'scopesim.optics._comparison_main')
+    inspected_optics = _git_module(scopesim_repo, INSPECTION_REVISION, 'scopesim/optics/echelle.py', 'scopesim.optics._comparison_inspection')
+    main_traces = _git_module(scopesim_repo, SCOPESIM_MAIN, 'scopesim/effects/spectral_trace_list.py', 'scopesim.effects._comparison_main')
+    inspected_traces = _git_module(scopesim_repo, INSPECTION_REVISION, 'scopesim/effects/spectral_trace_list.py', 'scopesim.effects._comparison_inspection')
+    main_traces.echelle = main_optics
+    inspected_traces.echelle = main_optics
+    source = subprocess.check_output(['git', '-C', str(irdb_repo), 'show', f'{IRDB_MAIN}:ZShooter_v2/traces/echelle_trace_parameters.dat'], text=True)
+    with TemporaryDirectory(prefix='zshooter-geometry-') as directory:
+        main_path = Path(directory) / 'main.dat'
+        main_path.write_text(source)
+        main = DataContainer(filename=str(main_path))
+        reference = main_traces.EchelleSpectralTraceList(cmds=UserCommands(), filename=str(main_path), wave_colname='wavelength', s_colname='s')
+
+        # Retain main's equations, FSR convention and placement. These two
+        # inspection methods only expose the mapping used by its trace generator.
+        main_optics.SpectrographSetup._rotated_detector_pixels = inspected_optics.SpectrographSetup._rotated_detector_pixels
+        main_optics.SpectrographSetup._detector_pixels = inspected_optics.SpectrographSetup._detector_pixels
+        original_equation = main_optics.GratingSetup.estimate_xdisp_angle_with_groove_len
+        corrected_equation = inspected_optics.GratingSetup.estimate_xdisp_angle_with_groove_len
+        variants = []
+        for option, table in enumerate(comparison_parameters(main.table, archive), start=1):
+            path = Path(directory) / f'option_{option}.dat'
+            table.write(path, format='ascii.basic')
+            equation = original_equation if option == 3 else corrected_equation
+            with patch.object(main_optics.GratingSetup, 'estimate_xdisp_angle_with_groove_len', staticmethod(equation)):
+                effect = inspected_traces.EchelleSpectralTraceList(cmds=UserCommands(), filename=str(path), wave_colname='wavelength', s_colname='s')
+            variants.append((option, DataContainer(filename=str(path)), effect))
+    return variants, reference
 
 
 def fsr_footprints(spectrograph, samples=513):
@@ -43,64 +106,34 @@ def plot_footprints(axis, footprints, row, wave_limits):
     axis.set_aspect('equal')
 
 
-def compare_geometry(parameters, baseline_parameters, baseline_traces, zemax_parameters, output):
+def compare_geometry(scopesim_repo, irdb_repo, zemax_parameters, output):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     start = perf_counter()
-    current = DataContainer(filename=str(parameters))
-    baseline = DataContainer(filename=str(baseline_parameters))
     archive = Table.read(zemax_parameters)
-    spec = importlib.util.spec_from_file_location('scopesim.effects._baseline_traces', baseline_traces)
-    old_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(old_module)
-    with patch.object(EchelleSpectralTraceList, '_generate_trace_hdulist', old_module.EchelleSpectralTraceList._generate_trace_hdulist):
-        old_effect = EchelleSpectralTraceList(cmds=UserCommands(), filename=str(baseline_parameters), wave_colname='wavelength', s_colname='s')
-    current_effect = EchelleSpectralTraceList(cmds=UserCommands(), filename=str(parameters), wave_colname='wavelength', s_colname='s')
-    old_efficiency = EchelleSpectralEfficiency(cmds=UserCommands(), filename=str(baseline_parameters))
-    current_efficiency = EchelleSpectralEfficiency(cmds=UserCommands(), filename=str(parameters))
-    resized_params = current.table.copy()
-    resized_params['n_xdisp'] *= 2
-    resized_params['detector_pad'] += 30
-    resized_efficiency = EchelleSpectralEfficiency(cmds=UserCommands(), table=resized_params)
-    variants = [('previous', baseline, old_effect), ('adopted', current, current_effect)]
-    fig, axes = plt.subplots(2, 6, figsize=(18, 9.5), sharex=True, sharey='col', layout='constrained')
-    orders, summary, efficiencies = [], [], []
-    center_error = 0.
-    x_low, x_high = 0, current.table['n_disp'].max()
-    y_limits = [[0, row['n_xdisp']] for row in current.table]
-    for variant_index, (name, params, effect) in enumerate(variants):
+    variants, reference = build_comparison(scopesim_repo, irdb_repo, archive)
+    for actual, expected in zip(variants[2][2].data_container._file[1:], reference.data_container._file[1:], strict=True):
+        assert actual.name == expected.name
+        np.testing.assert_array_equal(actual.data, expected.data)
+    print(f'Option 3 matches all {len(reference.spectral_traces)} unmodified-main trace tables exactly.', flush=True)
+
+    all_footprints = []
+    for option, params, effect in variants:
+        all_footprints.append([fsr_footprints(effect._spectrographs[row['prefix']], samples=row['n_disp'] + 1) for row in params.table])
+    wave_limits = []
+    for channel_index in range(6):
+        endpoints = [wave[[0, -1]].to_value(u.nm) for footprints in all_footprints for order, wave, x, y in footprints[channel_index]]
+        wave_limits.append((min(wave[0] for wave in endpoints), max(wave[1] for wave in endpoints)))
+
+    fig, axes = plt.subplots(3, 6, figsize=(18, 14), sharex=True, sharey='col', layout='constrained')
+    orders, summary, settings = [], [], []
+    x_low, x_high = 0, variants[2][1].table['n_disp'].max()
+    y_limits = [[0, row['n_xdisp']] for row in variants[2][1].table]
+    for variant_index, (option, params, effect) in enumerate(variants):
         for channel_index, row in enumerate(params.table):
             spectrograph = effect._spectrographs[row['prefix']]
-            footprints = fsr_footprints(spectrograph, samples=row['n_disp'] + 1)
-            reference = archive[archive['channel'] == row['prefix']][0]
-            if variant_index == 1:
-                # These checks compare one prescription after coordinate/unit conversion, allowing roundoff.
-                alpha = -np.sign(reference['camera_space_mm'])*reference['cx_coordinate_tilt_x_deg']
-                np.testing.assert_allclose(spectrograph.cross_disperser.alpha.to_value(u.deg), alpha, atol=1e-10, rtol=0)
-                np.testing.assert_allclose(spectrograph.cross_disperser.beta_center.to_value(u.deg), alpha, atol=1e-10, rtol=0)
-                np.testing.assert_allclose(row['detector_angle'], -reference['detector_coordinate_rotation_z_deg'], atol=1e-10, rtol=0)
-                np.testing.assert_array_equal(spectrograph.orders, np.arange(reference['min_order'], reference['max_order'] + 1))
-                np.testing.assert_allclose([row['disp_freq'], row['xdisp_freq']], [reference['echelle_grooves_per_mm'], reference['cx_grooves_per_mm']], atol=1e-10, rtol=0)
-                efficiency_model = current_efficiency._spectrographs[row['prefix']]
-                resized_model = resized_efficiency._spectrographs[row['prefix']]
-                assert resized_model.cross_disperser.alpha == spectrograph.cross_disperser.alpha
-                assert resized_model.cross_disperser.beta_center == spectrograph.cross_disperser.beta_center
-                wave = spectrograph.edge_wave(fsr=True).ravel()
-                np.testing.assert_array_equal(resized_model.xdisp_efficiency(wave), spectrograph.xdisp_efficiency(wave))
-                np.testing.assert_array_equal(efficiency_model.orders, spectrograph.orders)
-                for trace_grating, efficiency_grating in [(spectrograph.grating, efficiency_model.grating), (spectrograph.cross_disperser, efficiency_model.cross_disperser)]:
-                    assert trace_grating.d == efficiency_grating.d
-                    assert trace_grating.alpha == efficiency_grating.alpha
-                    assert trace_grating.beta_center == efficiency_grating.beta_center
-                assert len([name for name in effect.spectral_traces if name.startswith(row['prefix'] + '_')]) == len(spectrograph.orders)
-                fine = fsr_footprints(spectrograph, samples=4*row['n_disp'] + 1)
-                fine_bounds = np.array([[x.min(), x.max(), y.min(), y.max()] for order, wave, x, y in fine])
-                bounds = np.array([[x.min(), x.max(), y.min(), y.max()] for order, wave, x, y in footprints])
-                np.testing.assert_allclose(bounds, fine_bounds, atol=.01, rtol=0)
-                center = np.array([(fine_bounds[:, 0].min() + fine_bounds[:, 1].max())/2, (fine_bounds[:, 2].min() + fine_bounds[:, 3].max())/2])
-                expected_center = np.array([row['n_disp']/2, row['n_xdisp']/2])
-                np.testing.assert_allclose(center, expected_center, atol=.01, rtol=0)
-                center_error = max(center_error, np.abs(center - expected_center).max())
+            footprints = all_footprints[variant_index][channel_index]
+            settings.append((option, row['prefix'], spectrograph.orders[0], spectrograph.orders[-1], row['disp_freq'], row['xdisp_freq'], spectrograph.cross_disperser.alpha.to_value(u.deg), spectrograph.cross_disperser.beta_center.to_value(u.deg), row['detector_angle']))
             tilts, raw_widths = [], []
             channel_x, channel_y = [], []
             for order, wave, x, y in footprints:
@@ -108,62 +141,44 @@ def compare_geometry(parameters, baseline_parameters, baseline_traces, zemax_par
                 # This is the echelle's unrotated x span, not detector x or arc length.
                 raw_x = spectrograph.wavelength_to_x_pixel(wave[[0, -1]], order)
                 raw_width = (raw_x[1] - raw_x[0]).to_value(u.dimensionless_unscaled)
-                orders.append((name, row['prefix'], order, wave[0].to_value(u.nm), wave[-1].to_value(u.nm), raw_width, tilt, x.min(), x.max(), y.min(), y.max()))
+                orders.append((option, row['prefix'], order, wave[0].to_value(u.nm), wave[-1].to_value(u.nm), raw_width, tilt, x.min(), x.max(), y.min(), y.max()))
                 tilts.append(tilt)
                 raw_widths.append(raw_width)
                 channel_x.extend([x.min(), x.max()])
                 channel_y.extend([y.min(), y.max()])
-                if variant_index == 1:
-                    trace_id = f"{row['prefix']}_{order}"
-                    sample_wave = wave[[0, wave.size//2, -1]]
-                    previous_eff = old_efficiency.efficiency_generator(trace_id, sample_wave)
-                    adopted_eff = current_efficiency.efficiency_generator(trace_id, sample_wave)
-                    previous_vph = old_efficiency._spectrographs[row['prefix']].xdisp_efficiency(sample_wave)
-                    adopted_vph = spectrograph.xdisp_efficiency(sample_wave)
-                    for wavelength, before, after, vph_before, vph_after in zip(sample_wave, previous_eff, adopted_eff, previous_vph, adopted_vph):
-                        efficiencies.append((row['prefix'], order, wavelength.to_value(u.nm), before, after, vph_before, vph_after))
             x_low, x_high = min(x_low, min(channel_x)), max(x_high, max(channel_x))
             y_limits[channel_index][0] = min(y_limits[channel_index][0], min(channel_y))
             y_limits[channel_index][1] = max(y_limits[channel_index][1], max(channel_y))
             mean_tilt = np.mean(tilts)  # Each configured order has equal weight.
             pixel_mm = (row['pixel_size'] * u.Unit(params.meta['pixel_size_unit'])).to_value(u.mm)
             margins = np.array([min(channel_x), row['n_disp'] - max(channel_x), min(channel_y), row['n_xdisp'] - max(channel_y)]) * pixel_mm
-            summary.append((name, row['prefix'], row['detector_angle'], len(footprints), mean_tilt, min(tilts), max(tilts), max(raw_widths), min(channel_x), max(channel_x), min(channel_y), max(channel_y), *margins))
+            summary.append((option, row['prefix'], row['detector_angle'], len(footprints), mean_tilt, min(tilts), max(tilts), max(raw_widths), min(channel_x), max(channel_x), min(channel_y), max(channel_y), *margins))
             axis = axes[variant_index, channel_index]
-            edges = spectrograph.edge_wave(fsr=True).to_value(u.nm)
-            plot_footprints(axis, footprints, row, (edges.min(), edges.max()))
-            if row['prefix'] in ['yj', 'h', 'k']:
-                width, height = reference['image_aperture_x_mm']/pixel_mm, reference['image_aperture_y_mm']/pixel_mm
-                corner = ((row['n_disp'] - width)/2, (row['n_xdisp'] - height)/2)
-                axis.add_patch(plt.Rectangle(corner, width, height, fill=False, edgecolor='0.35', linestyle='--', linewidth=.7))
-                y_limits[channel_index][0] = min(y_limits[channel_index][0], corner[1])
-                y_limits[channel_index][1] = max(y_limits[channel_index][1], corner[1] + height)
+            plot_footprints(axis, footprints, row, wave_limits[channel_index])
             axis.set_title(f"{row['prefix'].upper()} | orders {spectrograph.orders[0]}-{spectrograph.orders[-1]}\nRotation {row['detector_angle']:+.2f} deg; mean tilt {mean_tilt:+.2f} deg", fontsize=9)
             if channel_index == 0:
-                label = 'Previous prescription and placement' if variant_index == 0 else 'Adopted settings, full-FSR centering'
-                axis.set_ylabel(f'{label}\nDetector y [pixel]')
-            if variant_index == 1:
+                axis.set_ylabel(f'{LABELS[variant_index]}\nDetector y [pixel]')
+            if variant_index == 2:
                 axis.set_xlabel('Detector x [pixel]')
     for channel_index, limits in enumerate(y_limits):
         for axis in axes[:, channel_index]:
             axis.set(xlim=(x_low - 75, x_high + 75), ylim=(limits[0] - 75, limits[1] + 75))
-    fig.suptitle('Complete analytical FSRs and slit ends; solid: 15 um detectors; dashed: archive NIR aperture', fontsize=13)
+    fig.suptitle('Three analytical options: complete FSRs and slit ends; main detector placement and 15 um pixels', fontsize=13)
     fig.savefig(output / 'detector_footprints.png', dpi=160)
     plt.close(fig)
-    Table(rows=orders, names=['variant', 'channel', 'order', 'fsr_low_nm', 'fsr_high_nm', 'unrotated_fsr_width_pix', 'tilt_deg', 'x_min_pix', 'x_max_pix', 'y_min_pix', 'y_max_pix']).write(output / 'orders.csv', overwrite=True)
-    Table(rows=summary, names=['variant', 'channel', 'rotation_deg', 'orders', 'mean_tilt_deg', 'min_tilt_deg', 'max_tilt_deg', 'widest_unrotated_fsr_pix', 'x_min_pix', 'x_max_pix', 'y_min_pix', 'y_max_pix', 'left_margin_mm', 'right_margin_mm', 'bottom_margin_mm', 'top_margin_mm']).write(output / 'footprints.csv', overwrite=True)
-    Table(rows=efficiencies, names=['channel', 'order', 'wavelength_nm', 'previous_grating_efficiency', 'adopted_grating_efficiency', 'previous_vph_efficiency', 'adopted_vph_efficiency']).write(output / 'efficiency.csv', overwrite=True)
-    print(f'ScopeSim import: {scopesim.__file__}\nAssessment time: {perf_counter() - start:.2f} s', flush=True)
-    print(f'Archive prescription, trace/efficiency agreement and all configured orders verified; dense-grid center error {center_error:.6f} pixel.', flush=True)
-    return variants
+    Table(rows=orders, names=['option', 'channel', 'order', 'fsr_low_nm', 'fsr_high_nm', 'unrotated_fsr_width_pix', 'tilt_deg', 'x_min_pix', 'x_max_pix', 'y_min_pix', 'y_max_pix']).write(output / 'orders.csv', overwrite=True)
+    Table(rows=summary, names=['option', 'channel', 'rotation_deg', 'orders', 'mean_tilt_deg', 'min_tilt_deg', 'max_tilt_deg', 'widest_unrotated_fsr_pix', 'x_min_pix', 'x_max_pix', 'y_min_pix', 'y_max_pix', 'left_margin_mm', 'right_margin_mm', 'bottom_margin_mm', 'top_margin_mm']).write(output / 'footprints.csv', overwrite=True)
+    Table(rows=settings, names=['option', 'channel', 'min_order', 'max_order', 'echelle_grooves_per_mm', 'cx_grooves_per_mm', 'cx_incidence_deg', 'cx_camera_angle_deg', 'detector_rotation_deg']).write(output / 'settings.csv', overwrite=True)
+    counts = [sum(len(channel) for channel in footprints) for footprints in all_footprints]
+    print(f'Orders plotted in options 1/2/3: {counts}. Assessment time: {perf_counter() - start:.2f} s.', flush=True)
+    return variants, fig
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--parameters', type=Path, required=True)
-    parser.add_argument('--baseline-parameters', type=Path, required=True)
-    parser.add_argument('--baseline-traces', type=Path, required=True)
-    parser.add_argument('--zemax-parameters', type=Path, required=True)
+    parser.add_argument('--scopesim', type=Path, required=True)
+    parser.add_argument('--irdb', type=Path, required=True)
+    parser.add_argument('--zemax-parameters', type=Path, default=Path(__file__).with_name('data') / 'zemax_channels.csv')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    compare_geometry(args.parameters, args.baseline_parameters, args.baseline_traces, args.zemax_parameters, args.output)
+    compare_geometry(args.scopesim, args.irdb, args.zemax_parameters, args.output)
