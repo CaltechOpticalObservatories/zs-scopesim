@@ -93,7 +93,7 @@ def _read_lamp_lines(line_dir: Path, filenames: Sequence[str] = DEFAULT_LAMP_LIN
             f"Table {filename} is missing required columns: {req_cols - set(table.colnames)}"
         # normalize amplitudes to 1.0 for each file, since the absolute flux scale is arbitrary
         table["wave"] = np.asarray(table['wave'], dtype=float)
-        table["amplitude"] = np.asarray(table['amplitude'], dtype=float) / np.nanmax(table["amplitude"])
+        table["amplitude"] = np.asarray(table['amplitude'], dtype=float) / np.max(table["amplitude"])
         tables.append(table)
     return vstack(tables, metadata_conflicts="silent")
 
@@ -262,6 +262,8 @@ def kilonova_spectra(model_files: Sequence[str], phases: Sequence[float] = (1.5,
     """
     Download and read Kasen-model spectra and interpolate them to requested rest-frame phases in days.
     """
+    if redshift <= 0:
+        raise ValueError("redshift must be positive so the model luminosity has a finite flux scale")
     model_dir = repo_root() / "notebooks" / "source_data" / "Kasen2017"
     Path(model_dir).mkdir(parents=True, exist_ok=True)
 
@@ -280,9 +282,6 @@ def kilonova_spectra(model_files: Sequence[str], phases: Sequence[float] = (1.5,
             raise FileNotFoundError(f"Model file {model_file} not found in {model_dir} and could not be downloaded from {kasen_url}")
         else:
             model_files[i] = str(model_dir / model_file)
-
-    if redshift <= 0:
-        raise ValueError("redshift must be positive so the model luminosity has a finite flux scale")
 
     distance = Planck18.luminosity_distance(redshift).to_value(u.cm)
     speed_of_light = c.to_value(u.cm / u.s)
