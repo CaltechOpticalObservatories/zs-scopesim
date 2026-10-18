@@ -15,6 +15,7 @@ the adopted fixes, tests, runtime measurements and remaining scientific approxim
 
 install
 notebooks
+zshooter-xdisp-geometry
 xshooter
 xshooter-comparison-results
 xshooter-validation
