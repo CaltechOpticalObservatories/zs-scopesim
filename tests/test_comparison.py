@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import astropy.units as u
 
-from zs_scopesim_tools.comparison import boxcar_sum, gaussian_bin_matrix, limiting_abmag, line_width, select_spectral_samples
+from zs_scopesim_tools.comparison import boxcar_sum, gaussian_bin_matrix, overlap_bin_matrix, limiting_abmag, line_width, select_spectral_samples
 
 
 def test_boxcar_extracts_disjoint_native_pixels_on_either_axis():
@@ -37,6 +37,29 @@ def test_limiting_magnitude_includes_source_shot_noise():
     amplitude = 10**((20 - mag)/2.5)
     assert amplitude * signal / np.sqrt(amplitude * signal + background_variance) == pytest.approx(5.)
     assert limiting_abmag(100., 100., 0.) == pytest.approx(20 - 2.5*np.log10(.25))
+
+
+def test_native_bin_overlap_preserves_counts_and_shared_pixel_covariance():
+    operator = overlap_bin_matrix(np.array([1., 2., 3.])*u.um, np.array([1., 1.5, 2.5, 3.])*u.um)
+    counts = np.array([12., 20.])
+    np.testing.assert_allclose(operator @ counts, [6., 16., 10.])
+    covariance = (operator.multiply(counts) @ operator.T).toarray()
+    assert covariance.sum() == pytest.approx(counts.sum())
+    assert covariance[0, 1] == pytest.approx(3.)
+    assert covariance[1, 2] == pytest.approx(5.)
+
+
+def test_independent_equal_time_sky_and_gaussian_rebin_variance():
+    rng = np.random.default_rng(74319)
+    source, sky, dark, ron, exposures = 3., 17., .4, 2.5, 2
+    draws = 50000
+    on = rng.poisson(exposures*(source+sky+dark), (draws, 4)) + rng.normal(0, np.sqrt(exposures)*ron, (draws, 4))
+    off = rng.poisson(exposures*(sky+dark), (draws, 4)) + rng.normal(0, np.sqrt(exposures)*ron, (draws, 4))
+    weights = np.array([.1, .5, 1., .4])
+    measured = (on-off) @ weights
+    expected_variance = np.sum(weights**2)*exposures*(source+2*(sky+dark+ron**2))
+    assert measured.mean() == pytest.approx(exposures*source*weights.sum(), abs=.15)
+    assert measured.var() == pytest.approx(expected_variance, rel=.02)
 
 
 def test_measured_gaussian_width_and_units():

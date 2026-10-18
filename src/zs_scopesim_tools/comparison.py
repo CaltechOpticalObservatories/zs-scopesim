@@ -136,6 +136,22 @@ def gaussian_bin_matrix(input_centers, output_edges, sigma):
     return sparse.csr_matrix((weights, (rows, columns)), shape=(len(edges) - 1, len(x)))
 
 
+def overlap_bin_matrix(input_edges, output_edges):
+    """Redistribute native integrated counts by finite wavelength-bin overlap."""
+    edges = input_edges.to_value(u.um)
+    target = output_edges.to_value(u.um)
+    rows, columns, weights = [], [], []
+    for column, (low, high) in enumerate(zip(edges[:-1], edges[1:])):
+        first = max(0, np.searchsorted(target, low, side='right')-1)
+        last = min(len(target)-1, np.searchsorted(target, high))
+        bins = np.arange(first, last)
+        overlap = np.maximum(0, np.minimum(high, target[bins+1])-np.maximum(low, target[bins])) / (high-low)
+        rows.extend(bins)
+        columns.extend([column]*len(bins))
+        weights.extend(overlap)
+    return sparse.csr_matrix((weights, (rows, columns)), shape=(len(target)-1, len(edges)-1))
+
+
 def line_width(wavelength, counts):
     """Centroid, RMS, and interpolated FWHM of a nonnegative isolated line."""
     center = (counts * wavelength).sum() / counts.sum()
@@ -147,6 +163,56 @@ def line_width(wavelength, counts):
     lo = wavelength[left] + (wavelength[left + 1] - wavelength[left]) * (half - counts[left]) / (counts[left + 1] - counts[left])
     hi = wavelength[right - 1] + (wavelength[right] - wavelength[right - 1]) * (half - counts[right - 1]) / (counts[right] - counts[right - 1])
     return center, sigma, hi - lo
+
+
+def trace_line_profiles(train, extracted, centers, eta=0.):
+    """Controlled isolated-line frames through the configured PSF, slit and trace.
+
+    Each order is illuminated separately, allowing identical fractional FSR
+    positions without accidental doublets from another arm's probe grid.
+    Transmission and additive backgrounds are excluded from this line-shape
+    measurement. The native detector geometry and charge binning are retained.
+    """
+    from synphot import SourceSpectrum, Empirical1D
+    from synphot.units import PHOTLAM
+    from scopesim import Source
+    from scopesim.optics.fov import FieldOfView3D
+
+    traces, = train.optics_manager.get_all(SpectralTraceList)
+    psf = train['seeing_psf']
+    for plane in train.image_planes:
+        plane.data.fill(0)
+    for original in train.fov_manager.fovs:
+        wavelengths = centers[original.trace_id]
+        if len(wavelengths) == 0:
+            continue
+        points, density = [], []
+        for center in wavelengths:
+            sigma = center / (200000 * np.sqrt(8*np.log(2)))
+            wave = center + np.linspace(-8, 8, 161) * sigma
+            points.extend(wave)
+            density.extend(np.exp(-.5*((wave-center)/sigma)**2))
+        order = np.argsort(points)
+        spectrum = SourceSpectrum(Empirical1D, points=np.array(points)[order]*u.um, lookup_table=np.array(density)[order]*PHOTLAM, fill_value=0)
+        source = Source(x=[0.], y=[eta], ref=[0], weight=[1.], spectra=[spectrum])
+        low, high = min(wavelengths)*.998, max(wavelengths)*1.002
+        low = max(low*u.um, original.meta['wave_min'])
+        high = min(high*u.um, original.meta['wave_max'])
+        metadata = original.meta | {'wave_min': low, 'wave_max': high}
+        probe = FieldOfView3D(original.header.copy(), (low, high), detector_header=original.detector_header, cmds=train.cmds, **metadata)
+        probe.image_plane_id = original.image_plane_id
+        trace = traces.spectral_traces[original.trace_id]
+        probe.meta['spectral_padding'] = trace.spectral_padding(probe)
+        probe.extract_from(source, spatial_header=psf.padded_header(probe))
+        psf.apply_to(probe)
+        probe.cube = probe.hdu
+        image = trace.map_spectra_to_focal_plane(probe)
+        train.image_planes[probe.image_plane_id].add(image, wcs_suffix='D')
+    rates = detector_rates(train)
+    profiles = {}
+    for trace_id, data in extracted.items():
+        profiles[trace_id] = boxcar_sum(rates[data['index']], data['axis'], data['pixels'], data['centers'], data['widths'])
+    return profiles
 
 
 def select_spectral_samples(signal, variance_background, reference_mag=20.):
