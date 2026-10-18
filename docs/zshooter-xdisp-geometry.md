@@ -1,105 +1,127 @@
-# ZShooter cross-disperser geometry assessment
+# ZShooter: selected analytical geometry
 
-The automatic rotation tuning has been withdrawn and the original detector rotations restored. Its objective rewarded in-band coverage while allowing tilted and missing orders. That was the wrong objective: the intended adjustment reduces average order tilt, with the complete FSRs and slit ends included in the footprint assessment.
+The geometry branch now uses **row 2's Zemax rulings, order prescription, CX angles and detector rotations**, with the fixed placement below. R moves left 150 pixels, H left 130 pixels, and YJ moves up 50 pixels with reddest order 57 removed. B, G and K keep row 2's positions.
 
-The updated figure below shows that domain using the simulator's actual coordinate mapping. The corrected six-channel Zemax archive also provides concrete prescription differences to investigate. **The analytical model's overhanging R/K traces are a model discrepancy to resolve, not evidence that the optical design fails to fit.** No replacement rotations have been selected.
+![Selected geometry from the configured ScopeSim trace generator](../validation/zshooter_xdisp/data/selected_footprints.png)
 
-## What the corrected archive establishes
+Colored curves show complete FSRs at slit center; gray curves show both ends of the 10-arcsecond slit. Black rectangles are the detectors. Each panel has equal X/Y pixel scales; all panels share the X range. Off-detector portions remain visible.
 
-Source: `20260610B_ZS_6CH_Complete_Spectrograph.zar`, supplied on 2026-10-18. Its title is “ZShooter 6Ch. Spectrograph”; it contains 18 configurations, selecting minimum, middle and maximum orders for each channel. The notes identify June 2026 revision B, October 2026 pre-optics updates, and an H-band FSR update to the 65.6-degree blaze prescription.
+| Channel | Retained orders | Shift from row 2 (pixels) | Complete FSRs including both slit ends on detector |
+|---|---|---|---:|
+| B | 85-118 | None | 34/34 |
+| G | 56-85 | None | 30/30 |
+| R | 37-56 | 150 left | 17/20 |
+| YJ | 58-80 | 50 up | 23/23 |
+| H | 42-51 | 130 left | 10/10 |
+| K | 31-38 | None | 0/8 |
 
-The [extraction script](../validation/zshooter_xdisp/zemax_prescription.py) reads the archive with [zmxtools](https://github.com/tttom/zmxtools). It records the following values directly from the multi-configuration operands. Angles in this table retain their **Zemax coordinate-system meanings**.
+**YJ's shift brings the bluest order onto the detector.** Order 80's full FSR/slit envelope clears the bottom by **17.40 pixels**. Removing order 57 makes room at the red end: order 58 clears the top by **25.64 pixels**. The retained orders span Y = 17.40-2022.36 on the 2048-pixel detector. Removing order 57 does not trigger recentering.
 
-| Channel | Orders | Echelle grooves/mm | CX grooves/mm | CX coordinate tilt X (deg) | Detector coordinate rotation Z (deg) | Image aperture X × Y (mm) |
-|---|---:|---:|---:|---:|---:|---:|
-| B | 85–118 | 50.15 | 2000 | +21.20 | +9.50 | 30.720 × 61.440 |
-| G | 56–85 | 50.15 | 1100 | +16.75 | +7.00 | 30.720 × 61.440 |
-| R | 37–56 | 50.15 | 625 | −14.10 | +6.00 | 30.720 × 61.440 |
-| YJ | 57–80 | 24 | 350 | +10.90 | +5.00 | 36.864 × 36.864 |
-| H | 42–51 | 24 | 300 | +13.70 | +6.10 | 36.864 × 36.864 |
-| K | 31–38 | 24 | 270 | −16.80 | +6.50 | 36.864 × 36.864 |
+H spans X = 63.83-1990.15 pixels. R retains partially clipped orders 37-39; orders 40-56 fit completely. K's clipping is unchanged from row 2, as accepted pending discussion with the optical engineer. Its eight orders still intersect the detector, although none has its entire FSR and slit envelope inside it.
 
-These are surface 61's echelle parameters, surface 88's CX ruling, surface 85's coordinate tilt, surface 166's detector coordinate rotation, and surface 167's rectangular aperture. For a rectangular aperture, `APMN` and `APMX` are its X and Y **half-widths**, respectively; the table doubles them. See the [OpticStudio definitions](https://ansyshelp.ansys.com/public/Views/Secured/Zemax/v251/en/OpticStudio_User_Guide/OpticStudio_Help/topics/Numeric_Functions.html). All values, including the camera centering tilts, are in [zemax_channels.csv](../validation/zshooter_xdisp/data/zemax_channels.csv).
+The actual model bounds are in [selected_orders.csv](../validation/zshooter_xdisp/data/selected_orders.csv) and [selected_footprints.csv](../validation/zshooter_xdisp/data/selected_footprints.csv).
 
-The comparison with the current simulator is specific:
+## Fixed placement in the parameter file
 
-- **R and K order indices agree.** Their mismatch is not explained by an off-by-one error in the configured minimum or maximum order.
-- **YJ is 350 grooves/mm**, confirming the restored ruling.
-- **H is now 42–51**, whereas IRDB still has 41–51. This removes the reddest order; this archive does not add a higher-numbered blue order. Its maximum-order FSR ends near 1.497 microns and minimum-order FSR near 1.821 microns under the sampling reconstruction below.
-- **The VIS echelle ruling is 50.15/mm**, versus 50.00/mm in IRDB and the paper's rounded prescription.
-- **The NIR image aperture is 20% larger in each dimension** than the current 30.720 mm square model. A 2048-pixel detector spanning 36.864 mm would have 18 microns per pixel. The archive specifies the physical aperture; this pixel-pitch interpretation is conditional on 2048 pixels. The intended APD/H2RG configuration needs reconciling before changing detector dimensions.
-- **The archive supplies optical angles directly.** The simulator instead estimates a CX angle that makes the nominal wavelength band fill the detector height. That artificial filling condition explains why its cross-dispersion footprints need not have the size selected by the optical designer. The Zemax coordinate tilts must be translated through the folded optical coordinate systems before using them as the simulator's incidence angles or detector rotations.
+The new `detector_offset_x` and `detector_offset_y` columns specify the **rotated analytical camera origin relative to detector center**, in mm, positive right/up. They are absolute positions; `(0, 0)` places that origin at detector center. They replace automatic centering and are applied after rotation, before detector clipping.
 
-The mirror curvatures confirm 1500 and 1250 mm collimators. The existing analytical model already uses their 1.2 relay factor with the 225 mm camera, giving 270 mm effective echelle dispersion focal length. A separate paraxial calculation through the archive's actual camera surfaces and glass catalog gives 224.5, 224.3, 225.7, 225.1, 224.6 and 222.3 mm for B/G/R/YJ/H/K at their middle configuration's reference wavelength. These values support the nominal camera focal length; a mistaken 225 mm camera value does not explain the footprint discrepancy. The calculation includes the camera's refracting surfaces and thicknesses, but does not trace the complete folded spectrograph or its off-axis distortion.
+| Channel | `detector_offset_x` (mm) | `detector_offset_y` (mm) |
+|---|---:|---:|
+| B | -0.679871 | -3.156243 |
+| G | -0.569446 | -4.041061 |
+| R | -2.867205 | -5.372810 |
+| YJ | -0.441923 | -3.921145 |
+| H | -2.474361 | -4.610933 |
+| K | -0.621554 | -5.307695 |
 
-## Wavelength sampling in the archive
+These values were derived once from row 2's configured mapping, with the requested translations added at 0.015 mm/pixel. YJ's position was fixed before excluding order 57. The `.dat` file documents that temporary exclusion and retains `m0=80, n=23`. The simulator reads these constants directly; it does no placement search. Both columns require their corresponding `*_unit : mm` declarations. Omitting both preserves main's original automatic placement and wavelength sampling.
 
-The header declares three active fields and **11 active wavelengths**. Each configuration has 11 wavelength operands. They are equally spaced, and their spacing is consistent with **12 samples across an FSR, with the last sample absent**. The listed span is therefore approximately 10/11 of an FSR. This is a reproducible property of the supplied file; whether it was deliberate requires confirmation.
+## Three-option decision reference
 
-For example, extrapolating the existing spacing by one step gives:
+The original comparison below is unchanged. Its three rows show:
 
-| Channel/order | First listed wavelength (nm) | Last listed wavelength (nm) | One additional step would reach (nm) | Reconstructed full FSR (nm) |
-|---|---:|---:|---:|---:|
-| R / 37 | 966.757 | 990.835 | 993.243 | 26.486 |
-| K / 31 | 2410.484 | 2482.331 | 2489.516 | 79.032 |
+| Row | Rulings and order numbers | CX angles | Detector rotations |
+|---|---|---|---|
+| **1. Corrected CX estimation** | Zemax | Corrected angle-estimation equation | Zemax |
+| **2. Explicit Zemax CX angles** | Zemax | Explicit Zemax angles in the existing analytical model | Zemax |
+| **3. Main** | Main | Main's original angle-estimation equation | Main |
 
-The inferred centers are 980 and 2450 nm, respectively, and the reconstructed widths agree with $\lambda_c/m$ to the rounding precision of the input wavelengths. Across all 18 configurations, the listed fraction is 90.89–90.92%. The extra endpoint in the table is **an extrapolation of the sampling pattern**, not a recovered Zemax ray intercept. The [original wavelength samples](../validation/zshooter_xdisp/data/zemax_wavelengths.csv) and [sampling calculation](../validation/zshooter_xdisp/data/zemax_sampling.csv) are retained separately.
+![The three requested analytical geometry options](../validation/zshooter_xdisp/data/detector_footprints.png)
 
-This matters when comparing the analytical full-FSR figure with a Zemax plot using the file's listed wavelengths. Both must use the same wavelength domain and slit positions. It could account for part of the apparent R/K width disagreement, alongside the NIR aperture difference; it does not yet identify the complete optical cause. The active counts follow the `FTYP` fields used by the [Optiland Zemax reader](https://optiland.readthedocs.io/en/latest/_modules/optiland/fileio/zemax/reader/parser.html).
+Colored curves show every order's complete FSR at slit center; gray curves show both ends of the 10-arcsecond slit. Black rectangles are the configured detectors. All three rows use the same wavelength colors and axis limits within each channel, equal X/Y pixel scales, and a common X range. Traces continue through their full FSRs, including portions outside the detector. Mean tilt weights orders equally.
 
-## Complete analytical FSR footprints
+**Main's detector-placement calculation is used in all three rows.** The later full-FSR recentering change is excluded. Camera/effective dispersion focal lengths remain 225/270 mm; pixels remain 15 micrometers; detectors remain 2048 x 4096 in VIS and 2048 x 2048 in NIR. Each case also retains main's FSR endpoint convention.
 
-![Complete analytical FSRs and both slit ends](../validation/zshooter_xdisp/data/detector_footprints.png)
+## Inputs actually used
 
-Each colored curve runs exactly between that configured order's FSR endpoints, with color increasing from blue to yellow in wavelength within each channel. Gray curves show both ends of the 10-arcsecond slit. Black rectangles are the configured detector boundaries. All orders are included, including portions outside the detector. The panels share the same X scale and have equal X/Y pixel scales.
+The archive is `20260610B_ZS_6CH_Complete_Spectrograph.zar`. Options 1 and 2 share the following rulings, orders and rotations:
 
-The first row uses the original angle-estimation formula and original IRDB prescription. The second uses the corrected formula, restored YJ ruling and original rotations. The rotations remain B −6, G −6, R −2, YJ −4, H −3 and K −7 degrees. H still includes order 41 here because this is the **current configured simulation**, not a visualization of the newer Zemax prescription.
+| Channel | Orders, options 1/2 | Echelle grooves/mm, options 1/2 | CX grooves/mm, options 1/2 | Detector rotation, options 1/2 (deg) | Detector rotation, main (deg) |
+|---|---:|---:|---:|---:|---:|
+| B | 85-118 | 50.15 | 2000 | -9.50 | -6.00 |
+| G | 56-85 | 50.15 | 1100 | -7.00 | -6.00 |
+| R | 37-56 | 50.15 | 625 | -6.00 | -2.00 |
+| YJ | 57-80 | 24 | 350 | -5.00 | -4.00 |
+| H | 42-51 | 24 | 300 | -6.10 | -3.00 |
+| K | 31-38 | 24 | 270 | -6.50 | -7.00 |
 
-The plotted coordinates come from the same `SpectrographSetup` objects and mapping used to generate the trace tables, evaluated over their full FSRs. There is no separate plotting geometry or detector-edge extension. The mean tilt is the equal-weight mean of the end-to-end FSR tilt of each order. [footprints.csv](../validation/zshooter_xdisp/data/footprints.csv) gives channel summaries; [orders.csv](../validation/zshooter_xdisp/data/orders.csv) gives individual orders and bounds including both slit ends.
+Main differs in three additional entries: its VIS echelle ruling is **50.00/mm**, its YJ CX ruling is **325/mm**, and its H orders are **41-51**. The other rulings and order limits match the table.
 
-The unrotated echelle FSR widths are unchanged by the CX equation correction. The widest R and K FSRs in this model are 2168.0 and 2600.0 pixels: 32.520 and 39.000 mm at its configured 15-micron pixel size. These are internal model-axis spans, not widths measured along the rotated detector axes. The new plot exposes this existing disagreement instead of truncating the FSR at the detector boundary.
+The actual CX incidence / camera-reference angles, in degrees, are:
 
-The placement calculation also needs attention. It currently centers the bounding box of traces sampled across an extended detector-X range. It does not center the full-FSR/slit envelope. Moreover, filling the nominal wavelength interval to the cross-dispersion boundaries leaves no explicit allowance for the outer orders' complete FSRs and slit ends. Fixing the scalar endpoint equation alone cannot correct those layout assumptions. A further rotation search would obscure these issues; the next geometry comparison must first reconcile the actual prescription and the wavelength/slit domain.
+| Channel | Option 1: corrected estimation | Option 2: explicit Zemax | Option 3: main |
+|---|---:|---:|---:|
+| B | 16.41 / 27.49 | 21.20 / 21.20 | 24.74 / 18.91 |
+| G | 8.68 / 26.56 | 16.75 / 16.75 | 16.51 / 18.20 |
+| R | -7.58 / 40.33 | 14.10 / 14.10 | 1.85 / 28.72 |
+| YJ | 10.78 / 12.48 | 10.90 / 10.90 | 4.15 / 17.58 |
+| H | -6.49 / 37.55 | 13.70 / 13.70 | 2.45 / 26.94 |
+| K | 10.93 / 24.25 | 16.80 / 16.80 | 17.85 / 17.06 |
 
-## Retained equation correction
+Option 2 uses the existing explicit-angle convention: the supplied angle sets both CX incidence and camera-reference angle. Its value is `-sign(camera_space) * CX_tilt` from the archive. Detector point rotations in options 1/2 are the negatives of the archive's detector-coordinate rotations. These are the conversions used for this analytical comparison.
 
-The configured planar camera mapping is $y=f\tan(\beta-\beta_c)$. For wavelength endpoints at $y=\pm L/2$, subtracting the two grating equations gives
+Full-precision values are in [settings.csv](../validation/zshooter_xdisp/data/settings.csv); [orders.csv](../validation/zshooter_xdisp/data/orders.csv) contains the full-FSR/slit bounds, and [footprints.csv](../validation/zshooter_xdisp/data/footprints.csv) contains channel summaries. The [archive extraction](../validation/zshooter_xdisp/data/zemax_channels.csv) retains its original coordinate angles.
 
-$$
-h=\arctan\frac{L}{2f},\qquad
-\cos\beta_c=\frac{\lambda_{\max}-\lambda_{\min}}{2d\sin h},\qquad
-\alpha=\arcsin\left(\frac{\lambda_{\min}}d-\sin(\beta_c-h)\right).
-$$
+## Reproduce and verify
 
-Here $d$ is groove spacing. Negative incidence angles are valid signed solutions. The old formula compressed the requested unrotated span by approximately 6.3%, 5.9%, 13.3%, 4.9%, 11.1% and 4.6% for B/G/R/YJ/H/K with the former prescription. The correction satisfies the stated planar mapping. Using a detector-filling estimate instead of the designer's angles is a separate modeling choice.
+The selected configuration was verified with ScopeSim commit `4c64fe55` and IRDB commit `2e9a0ae`, both on `fix/zshooter-xdisp-geometry`.
 
-The two planar dispersion calculations and empirical rotations remain intentional approximations. No non-coplanar ray model or camera distortion model has been added here. To quantify their effect, the useful next reference is a set of actual image-plane ray intercepts at the same full-FSR endpoints, centers and slit ends, with the intended NIR detector configuration identified. A Zemax prescription extraction alone does not supply those intercepts.
-
-## Verification and reproduction
-
-The geometry inspection refactor was checked against all 127 existing generated trace tables: every numerical column is exactly unchanged. The FSR helper separately fixes a half-pixel offset by using the optical-axis wavelength, consistent with the existing central-wavelength and order-mask calculations. That small correction does not explain the R/K discrepancy.
-
-All **22 targeted tests pass**, covering the endpoint equation, inverse mapping, complete FSR widths, slit extent, generated table coordinates, and missing placement. A known 100 mm thin lens checks the separate paraxial camera calculation in both propagation directions; missing glass data fails directly. The full six-channel baseline/current figure takes about four seconds to regenerate. No search or archive processing is added to normal observations.
-
-All three repositories retain branch `fix/zshooter-xdisp-geometry`, based on ScopeSim `main` (`4830d68a`), IRDB `dev_master` (`d1415c4`), and workspace `main` (`6a616ea`). ScopeSim `acfa5a71` contains the angle-estimator correction and `aefbe60d` exposes the configured placement for full-FSR inspection. IRDB `cf88595` restores YJ's ruling. The rejected rotation trial `aefd527` was reverted by `cf9110a`. The obsolete coverage optimizer and its trial output tables have been removed from this report's active assessment; their history remains in Git.
-
-To reproduce the analytical figure with the feature branches installed:
-
-```sh
-git -C ../ScopeSim show 4830d68a:scopesim/optics/echelle.py > /tmp/zshooter-baseline-echelle.py
-git -C ../irdb show d1415c4:ZShooter_v2/traces/echelle_trace_parameters.dat > /tmp/zshooter-baseline-parameters.dat
-conda run -n zssim python validation/zshooter_xdisp/geometry.py \
-  --parameters ../irdb/ZShooter_v2/traces/echelle_trace_parameters.dat \
-  --baseline-parameters /tmp/zshooter-baseline-parameters.dat \
-  --baseline-echelle /tmp/zshooter-baseline-echelle.py \
-  --output validation/zshooter_xdisp/data
-```
-
-The archive inspection additionally needs `zmxtools` 0.1.5. It was installed in a temporary directory for this investigation; it is not a simulator dependency. With that package available:
+The comparison pins ScopeSim `main` to `4830d68a` and IRDB's corresponding `dev_master` to `d1415c4`. It reads those committed inputs directly from Git, independently of the sibling repositories' current checkouts. The inspection methods from `aefbe60d` expose the existing trace mapping; the original main FSR equation and placement are retained. Only options 1/2 use the corrected angle-estimation source, and option 2 bypasses estimation through its explicit angles.
 
 ```sh
-conda run -n zssim python validation/zshooter_xdisp/zemax_prescription.py \
-  20260610B_ZS_6CH_Complete_Spectrograph.zar --output validation/zshooter_xdisp/data
+# Current selected prescription, using the sibling ScopeSim and IRDB checkouts:
+conda run -n zssim python validation/zshooter_xdisp/geometry.py --selected --scopesim ../ScopeSim --irdb ../irdb --output validation/zshooter_xdisp/data
+# Historical decision reference, using the pinned commits:
+conda run -n zssim python validation/zshooter_xdisp/geometry.py --scopesim ../ScopeSim --irdb ../irdb --output validation/zshooter_xdisp/data
+conda run -n zssim python -m pytest tests/test_xdisp_geometry.py tests/test_zemax_prescription.py -q
+conda run -n zssim python -m pytest ../ScopeSim/scopesim/tests/tests_optics/test_echelle.py ../ScopeSim/scopesim/tests/tests_effects/test_SpectralTraceList.py -q
 ```
 
-The supplied archive remains untracked. Its SHA-256 is `774fbc539fc6e305ea000206a914ba2ea9f50f3e93912e910dd2ffd334e66070`. The exported CSVs are prescription values and explicitly labeled sampling calculations, not results from an OpticStudio execution.
+All **69 targeted tests pass**: 33 workspace tests and 36 ScopeSim tests. Without placement columns, the current generator reproduces the original row-2 and main trace tables exactly (126 and 127 orders respectively). The selected configuration contains 125 orders. Tests verify the requested constant translations at common wavelengths and all three slit positions, unchanged dispersion and slit extent, complete H/YJ coverage, R's 17 complete orders, and preservation of main's FSR convention. Generic placement tests cover zero and nonzero offsets, positive and negative rotations, detector intersections, missing columns/units, blank values and incompatible units.
+
+The selected six-panel figure was visually inspected. Trace construction took **0.94 seconds** in the figure run; the selected figure and CSVs took **2.33 seconds total**, after imports. Three subsequent construction timings were **0.82, 0.83, 0.83 seconds** for the selected configuration, compared with **0.84, 0.84, 0.90 seconds** for row 2 with automatic placement. The historical three-option figure takes about 8 seconds. These timings do not include a full observation.
+
+The test run emits ScopeSim's existing `fov_grid` deprecation warnings and Astropy polynomial-fit conditioning warnings. The figure uses the direct analytical mapping rather than the fitted polynomials.
+
+Changes remain on `fix/zshooter-xdisp-geometry` in all three repositories. Nothing has been merged into `xshooter`.
+
+## Performance notebook: PSF cache repair
+
+The subsequent performance-notebook rerun exposed a failure in `MoffatPSF.fwhm()`. With the notebook's `brightness="dark"` setting, observation times advance between calls at night. The cache compared `SkyCoord` objects with different AltAz frame timestamps, which raises `TypeError`. This code was also present on main; the geometry checks above did not exercise this repeated PSF-width request.
+
+ScopeSim commit **`ee4e4e67`** keys the cache by the seeing parameters and numeric zenith angle. The seeing law and public interfaces are unchanged. All **11 tests in `test_MoffatPSF.py` pass**, including the exact two timestamps from the traceback, cache reuse at fixed altitude, changes to seeing/pivot/altitude and RA/Dec observation time, relative AO scaling, constant widths and table interpolation.
+
+The complete [performance notebook](../notebooks/zshooter_performance.ipynb) was rerun from a fresh kernel on 2026-10-18: **all 59 nonempty code cells completed in order, with no traceback**, through the AO/exposure comparisons, detector comparisons and final Galaxy/SN scene. The rerun outputs are saved in the notebook and under `notebooks/zshooter_performance_xdisp/`. Every cell's source, type and ID matches the pre-rerun snapshot, preserving the existing user edits. The notebook remains uncommitted; this report and the two diagnostic images below are committed separately from the ScopeSim fix.
+
+Both slit-width diagnostics now complete in a fresh kernel using the notebook's existing configuration. Their resolving-power ranges are:
+
+| Channel | 0.33-arcsecond slit R | 0.70-arcsecond slit R |
+|---|---:|---:|
+| B | 36.3-41.0k | 17.1-19.3k |
+| G | 35.0-42.4k | 16.5-20.0k |
+| R | 33.6-44.4k | 15.8-20.9k |
+| YJ | 34.9-42.0k | 16.4-19.8k |
+| H | 34.0-43.9k | 16.0-20.7k |
+| K | 33.2-44.7k | 15.7-21.1k |
+
+The actual rerun figures were visually inspected: [0.33-arcsecond echellogram](../validation/zshooter_xdisp/data/performance_033_psf_fix.png) and [0.70-arcsecond echellogram](../validation/zshooter_xdisp/data/performance_070_psf_fix.png). The first full source observation plus detector readout completed in approximately **50 seconds**, including notebook-tool overhead.
