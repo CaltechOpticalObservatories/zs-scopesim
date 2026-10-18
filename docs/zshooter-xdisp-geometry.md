@@ -1,67 +1,58 @@
-# ZShooter analytical geometry correction
+# ZShooter: three analytical geometry options
 
-**The analytical simulator now uses the archive-derived grating settings and detector rotations, and centers the complete FSR/slit envelope.** The detector-filling angle estimate is no longer used for ZShooter_v2. These changes live on `fix/zshooter-xdisp-geometry` in each repository and have **not** been merged into `xshooter`.
+The figure contains exactly these three options, from top to bottom. No option has been selected for adoption.
 
-## Adopted settings and resulting footprints
+| Row | Rulings and order numbers | CX angles | Detector rotations |
+|---|---|---|---|
+| **1. Corrected CX estimation** | Zemax | Corrected angle-estimation equation | Zemax |
+| **2. Explicit Zemax CX angles** | Zemax | Explicit Zemax angles in the existing analytical model | Zemax |
+| **3. Main** | Main | Main's original angle-estimation equation | Main |
 
-Source: `20260610B_ZS_6CH_Complete_Spectrograph.zar`. The VIS echelle ruling is now 50.15 grooves/mm; NIR remains 24. CX rulings are 2000/1100/625/350/300/270 grooves/mm. The configured camera and effective dispersion focal lengths remain 225/270 mm, with 15 micrometer pixels and a 10 arcsecond slit.
+![The three requested analytical geometry options](../validation/zshooter_xdisp/data/detector_footprints.png)
 
-| Channel | Orders | CX incidence/central angle (deg) | Detector-point rotation (deg) | Full FSR/slit envelope, X by Y (mm) | Mean order tilt (deg) |
+Colored curves show every order's complete FSR at slit center; gray curves show both ends of the 10-arcsecond slit. Black rectangles are the configured detectors. All three rows use the same wavelength colors and axis limits within each channel, equal X/Y pixel scales, and a common X range. Traces continue through their full FSRs, including portions outside the detector. Mean tilt weights orders equally.
+
+**Main's detector-placement calculation is used in all three rows.** The later full-FSR recentering change is excluded. Camera/effective dispersion focal lengths remain 225/270 mm; pixels remain 15 micrometers; detectors remain 2048 x 4096 in VIS and 2048 x 2048 in NIR. Each case also retains main's FSR endpoint convention.
+
+## Inputs actually used
+
+The archive is `20260610B_ZS_6CH_Complete_Spectrograph.zar`. Options 1 and 2 share the following rulings, orders and rotations:
+
+| Channel | Orders, options 1/2 | Echelle grooves/mm, options 1/2 | CX grooves/mm, options 1/2 | Detector rotation, options 1/2 (deg) | Detector rotation, main (deg) |
 |---|---:|---:|---:|---:|---:|
-| B | 85-118 | 21.20 | -9.50 | 22.14 x 59.05 | -1.08 |
-| G | 56-85 | 16.75 | -7.00 | 25.29 x 59.03 | -0.46 |
-| R | 37-56 | 14.10 | -6.00 | 32.95 x 50.16 | -0.46 |
-| YJ | 57-80 | 10.90 | -5.00 | 21.15 x 31.97 | -0.67 |
-| H | 42-51 | 13.70 | -6.10 | 28.89 x 23.44 | -0.64 |
-| K | 31-38 | 16.80 | -6.50 | 39.50 x 30.15 | +0.20 |
+| B | 85-118 | 50.15 | 2000 | -9.50 | -6.00 |
+| G | 56-85 | 50.15 | 1100 | -7.00 | -6.00 |
+| R | 37-56 | 50.15 | 625 | -6.00 | -2.00 |
+| YJ | 57-80 | 24 | 350 | -5.00 | -4.00 |
+| H | 42-51 | 24 | 300 | -6.10 | -3.00 |
+| K | 31-38 | 24 | 270 | -6.50 | -7.00 |
 
-Within the planar unfolding, CX incidence is $\alpha=-s\theta_{85}$, with propagation sign $s$ negative for B/G/YJ/H and positive for R/K. Detector point rotation is $-\theta_{166}$ because [coordinate breaks rotate the axes](https://ansyshelp.ansys.com/public/Views/Secured/Zemax/v26102/en/OpticStudio_User_Guide/OpticStudio_Help/topics/Coordinate_Break.html). The [extracted prescription](../validation/zshooter_xdisp/data/zemax_channels.csv) retains the original signed tilts and camera space. No rotation search is applied.
+Main differs in three additional entries: its VIS echelle ruling is **50.00/mm**, its YJ CX ruling is **325/mm**, and its H orders are **41-51**. The other rulings and order limits match the table.
 
-![Previous and adopted analytical footprints](../validation/zshooter_xdisp/data/detector_footprints.png)
+The actual CX incidence / camera-reference angles, in degrees, are:
 
-Upper row: preceding feature-branch prescription/placement, including the corrected scalar angle equation. Lower row: adopted settings and centering. Colored curves are complete FSR centerlines; gray curves are slit ends, all from the simulator's actual mapping. Mean tilt weights orders equally. CSVs give [per-order values](../validation/zshooter_xdisp/data/orders.csv) and [boundary margins](../validation/zshooter_xdisp/data/footprints.csv); negative margins mean analytical overhang.
+| Channel | Option 1: corrected estimation | Option 2: explicit Zemax | Option 3: main |
+|---|---:|---:|---:|
+| B | 16.41 / 27.49 | 21.20 / 21.20 | 24.74 / 18.91 |
+| G | 8.68 / 26.56 | 16.75 / 16.75 | 16.51 / 18.20 |
+| R | -7.58 / 40.33 | 14.10 / 14.10 | 1.85 / 28.72 |
+| YJ | 10.78 / 12.48 | 10.90 / 10.90 | 4.15 / 17.58 |
+| H | -6.49 / 37.55 | 13.70 / 13.70 | 2.45 / 26.94 |
+| K | 10.93 / 24.25 | 16.80 / 16.80 | 17.85 / 17.06 |
 
-Solid boundaries: configured 30.720 x 61.440 mm VIS and 30.720 mm square NIR detectors. Dashed boundaries: the archive's 36.864 mm square NIR aperture, centered solely to compare sizes. This corresponds to 18 micrometer pixels at 2048 pixels; the simulation remains at 15 micrometers.
+Option 2 uses the existing explicit-angle convention: the supplied angle sets both CX incidence and camera-reference angle. Its value is `-sign(camera_space) * CX_tilt` from the archive. Detector point rotations in options 1/2 are the negatives of the archive's detector-coordinate rotations. These are the conversions used for this analytical comparison.
 
-**Remaining discrepancy:** R is 32.95 mm wide against 30.72 mm; K is 39.50 mm wide, exceeding even the archive aperture. YJ is 31.97 mm high, slightly beyond the configured detector. B/G/H fit. R/K order limits agree with the archive; their excess analytical widths remain a separate investigation. Camera off-axis projection, distortion and non-coplanar coupling remain outside this correction.
+Full-precision values are in [settings.csv](../validation/zshooter_xdisp/data/settings.csv); [orders.csv](../validation/zshooter_xdisp/data/orders.csv) contains the full-FSR/slit bounds, and [footprints.csv](../validation/zshooter_xdisp/data/footprints.csv) contains channel summaries. The [archive extraction](../validation/zshooter_xdisp/data/zemax_channels.csv) retains its original coordinate angles.
 
-## What changed in the calculation
+## Reproduce and verify
 
-ScopeSim centers all configured FSRs and slit endpoints, sampled once at 2049 wavelengths per order, then projects the translated detector rectangle back onto the internal dispersion axis to locate intersections. Translation preserves dispersion and slit extent. Simulation traces can extend beyond an FSR where admitted by the detector; footprint assessment uses full FSRs. No new public API is required.
-
-The existing efficiency effect reads the same prescription. Its VPH approximation uses $\lambda_{\mathrm{peak}}=2d\sin\alpha$ for an explicit angle, shifting the efficiency by -4.1 to +5.6 percentage points across the six nominal bandpasses. The VIS ruling change also shifts order/blaze centers by -0.299%; fixed-wavelength comparisons therefore sample different positions on the blaze. [Efficiency samples](../validation/zshooter_xdisp/data/efficiency.csv) give both prescriptions at the adopted FSR endpoints and centers, separating VPH from combined grating efficiency. No efficiency renormalization was added.
-
-## Validation and runtime
-
-**49 targeted tests pass**, covering angle signs, detector rotation, detector-size independence, centering and translated clipping. The six-channel assessment verifies archive agreement, matching trace/efficiency optics, all 126 orders and convergence against 8193 samples per order: centering changes by less than 0.00001 pixel against a 0.01-pixel tolerance. Detector padding/height changes preserve explicit optics and VPH efficiency. The figure was visually inspected.
-
-| Measurement | Previous | Adopted |
-|---|---:|---:|
-| Trace construction, median of three | 0.90 s | 0.95 s |
-| Full-band `observe()` | 47.96 s | 48.17 s |
-| Initial train setup, including ESO request | 77.61 s | 8.05 s |
-
-The AB=20 flat-continuum observation uses all six full-size image planes and the 0.7 arcsecond slit. All images are finite and nonempty; detector readout is not timed. Setup includes external SkyCalc latency; `observe()` differs by 0.4%. Raw timings: [previous](../validation/zshooter_xdisp/data/timings_previous.csv), [adopted](../validation/zshooter_xdisp/data/timings_adopted.csv). The separate assessment/plot takes about five seconds.
-
-Separate existing issue encountered during setup: the feature-branch base's brightness-only configuration repeatedly resolves `Time.now()`, causing its PSF cache to compare incompatible AltAz frames. Both timing runs use `!OBS.mjdobs = '2025-01-01T10:00:00'`. That PSF behavior is outside this geometry patch.
-
-## Review and reproduce
-
-Commits: ScopeSim `87d6f581` (placement/tests), IRDB `9fa8317` (prescription), with this report/checks committed separately in zs-scopesim. The independent branch bases remain ScopeSim `main` and IRDB `dev_master`.
-
-From the zs-scopesim feature worktree, with the sibling feature checkouts available:
+The comparison pins ScopeSim `main` to `4830d68a` and IRDB's corresponding `dev_master` to `d1415c4`. It reads those committed inputs directly from Git, independently of the sibling repositories' current checkouts. The inspection methods from `aefbe60d` expose the existing trace mapping; the original main FSR equation and placement are retained. Only options 1/2 use the corrected angle-estimation source, and option 2 bypasses estimation through its explicit angles.
 
 ```sh
-git -C ../scopesim show aefbe60d:scopesim/effects/spectral_trace_list.py > /tmp/zshooter-before-traces.py
-git -C ../irdb show cf9110a:ZShooter_v2/traces/echelle_trace_parameters.dat > /tmp/zshooter-before-parameters.dat
-PYTHONPATH=../scopesim conda run -n zssim python validation/zshooter_xdisp/geometry.py \
-  --parameters ../irdb/ZShooter_v2/traces/echelle_trace_parameters.dat \
-  --baseline-parameters /tmp/zshooter-before-parameters.dat --baseline-traces /tmp/zshooter-before-traces.py \
-  --zemax-parameters validation/zshooter_xdisp/data/zemax_channels.csv --output /tmp/zshooter-geometry-review
-PYTHONPATH=../scopesim:. conda run -n zssim python -m pytest tests/test_xdisp_geometry.py tests/test_zemax_prescription.py \
-  ../scopesim/scopesim/tests/tests_effects/test_SpectralTraceList.py ../scopesim/scopesim/tests/tests_optics/test_echelle.py -q
-PYTHONPATH=../scopesim conda run -n zssim python validation/zshooter_xdisp/benchmark.py \
-  --irdb ../irdb --atmosphere-data /Users/jibailey/src/irdb/MaunaKea --output /tmp/zshooter-timings.csv
+conda run -n zssim python validation/zshooter_xdisp/geometry.py --scopesim ../ScopeSim --irdb ../irdb --output validation/zshooter_xdisp/data
+conda run -n zssim python -m pytest tests/test_xdisp_geometry.py tests/test_zemax_prescription.py -q
 ```
 
-The worktrees are under `/private/tmp/zshooter-xdisp/`; the installed environment and active notebooks are unchanged. The benchmark needs the existing TAPAS data and ESO access. Archive re-extraction uses [zemax_prescription.py](../validation/zshooter_xdisp/zemax_prescription.py) with `zmxtools`, the archive path and `--output` directory. `zmxtools` is not a simulator dependency.
+All **29 targeted tests pass**. Option 3 reproduces every column of all **127 unmodified-main trace tables exactly**. Options 1 and 2 each plot all **126 configured orders**. The checks cover corrected-estimator endpoints, explicit-angle bypass, shared inputs, complete FSR/slit curves and common plot scales. The figure was visually inspected and takes about **8 seconds** to generate without running observations.
+
+The test run emits ScopeSim's existing `fov_grid` deprecation warnings and Astropy polynomial-fit conditioning warnings. The figure uses the direct analytical mapping rather than the fitted polynomials.
