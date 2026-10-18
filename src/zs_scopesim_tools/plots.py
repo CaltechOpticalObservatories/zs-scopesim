@@ -1803,12 +1803,9 @@ def plot_resolving_power_echellogram(table: Table, *, cmap: str = "viridis", vmi
             y = trace_rows["detector_y_pix"][order]
             trace_values = trace_values[order]
             points = np.column_stack((x, y))
-            midpoints = (points[:-1] + points[1:]) / 2
-            starts = np.concatenate((points[:1], midpoints))
-            ends = np.concatenate((midpoints, points[-1:]))
-            segments = np.stack((starts, points, ends), axis=1)
-            collection = LineCollection(segments, cmap=colormap, norm=norm, linewidths=base_width, zorder=2)
-            collection.set_array(trace_values)
+            segments = np.stack((points[:-1], points[1:]), axis=1)
+            collection = LineCollection(segments, cmap=colormap, norm=norm, linewidths=base_width, capstyle='round', zorder=2)
+            collection.set_array((trace_values[:-1]+trace_values[1:])/2)
             ax.add_collection(collection)
             artist = collection
             collections.append(collection)
