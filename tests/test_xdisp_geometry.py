@@ -11,6 +11,9 @@ from astropy import units as u
 from astropy.table import Table
 
 from scopesim.optics.echelle import spectrograph_factory
+from scopesim.optics import echelle
+from scopesim.effects.spectral_trace_list import EchelleSpectralTraceList
+from scopesim.commands import UserCommands
 from validation.zshooter_xdisp import geometry
 from validation.zshooter_xdisp.geometry import fsr_footprints, plot_footprints
 
@@ -22,6 +25,72 @@ ARCHIVE = ROOT / 'validation/zshooter_xdisp/data/zemax_channels.csv'
 @pytest.fixture(scope='module')
 def comparison():
     return geometry.build_comparison(ROOT.parent / 'ScopeSim', ROOT.parent / 'irdb', Table.read(ARCHIVE))
+
+
+@pytest.fixture(scope='module')
+def selected():
+    return geometry.build_selected(ROOT.parent / 'irdb')
+
+
+@pytest.mark.parametrize('option', [2, 3])
+def test_absent_placement_columns_reproduce_original_trace_tables(comparison, tmp_path, option):
+    variants, reference = comparison
+    number, params, original = variants[option - 1]
+    path = tmp_path / 'original.dat'
+    params.table.write(path, format='ascii.basic')
+    original_equation = type(original._spectrographs['b'].cross_disperser).estimate_xdisp_angle_with_groove_len
+    with patch.object(echelle.GratingSetup, 'estimate_xdisp_angle_with_groove_len', staticmethod(original_equation)):
+        actual = EchelleSpectralTraceList(cmds=UserCommands(), filename=str(path), wave_colname='wavelength', s_colname='s')
+    for actual_hdu, expected_hdu in zip(actual.data_container._file[1:], original.data_container._file[1:], strict=True):
+        np.testing.assert_array_equal(actual_hdu.data, expected_hdu.data)
+
+
+def test_selected_changes_only_placement_and_yj_order_57(selected, comparison):
+    params, effect = selected
+    option, original_params, original = comparison[0][1]
+    expected_shifts = {'b': (0, 0), 'g': (0, 0), 'r': (-150, 0), 'yj': (0, 50), 'h': (-130, 0), 'k': (0, 0)}
+    for column in original_params.table.colnames:
+        if column != 'n':
+            np.testing.assert_array_equal(params.table[column], original_params.table[column])
+    np.testing.assert_array_equal(params.table['n'], [34, 30, 20, 23, 10, 8])
+    for axis in ['x', 'y']:
+        assert u.Unit(params.meta[f'detector_offset_{axis}_unit']) == u.mm
+    for row in params.table:
+        prefix = row['prefix']
+        model, previous = effect._spectrographs[prefix], original._spectrographs[prefix]
+        dx, dy = expected_shifts[prefix]
+        for order, wave, x, y in fsr_footprints(model, samples=row['n_disp'] + 1):
+            old_x, old_y = previous._detector_pixels(wave, order)
+            # Six decimals in mm are much finer than the 0.001-pixel tolerance.
+            np.testing.assert_allclose(x - old_x, dx, atol=.001, rtol=0)
+            np.testing.assert_allclose(y - old_y, dy, atol=.001, rtol=0)
+            np.testing.assert_allclose(np.diff(x), np.diff(old_x), atol=1e-9, rtol=0)
+            np.testing.assert_allclose(np.diff(y), np.diff(old_y), atol=1e-9, rtol=0)
+            np.testing.assert_allclose(x[2] - x[0], old_x[2] - old_x[0], atol=1e-9, rtol=0)
+            np.testing.assert_allclose(y[2] - y[0], old_y[2] - old_y[0], atol=1e-9, rtol=0)
+            edges = previous.edge_wave(fsr=True)[previous.orders == order][0]
+            np.testing.assert_array_equal(wave[[0, -1]], edges)
+    assert 'yj_57' not in effect.spectral_traces
+    assert all(f'r_{order}' in effect.spectral_traces for order in [37, 38, 39])
+
+
+def test_selected_figure_uses_every_configured_fsr_and_both_slit_ends(selected, monkeypatch, tmp_path):
+    monkeypatch.setattr(geometry, 'build_selected', lambda irdb_repo: selected)
+    params, effect, fig = geometry.selected_geometry(ROOT.parent / 'irdb', tmp_path)
+    assert len(fig.axes) == 6
+    for axis, row in zip(fig.axes, params.table, strict=True):
+        centerlines = [collection for collection in axis.collections if isinstance(collection, LineCollection)]
+        assert len(centerlines) == row['n']
+        assert len(axis.lines) == 2*row['n']
+        assert all(len(trace.get_segments()) == row['n_disp'] for trace in centerlines)
+        assert axis.get_aspect() == 1
+        assert axis.get_xlim() == fig.axes[0].get_xlim()
+    orders = Table.read(tmp_path / 'selected_orders.csv')
+    assert len(orders) == 125
+    for channel, expected in [('r', np.arange(40, 57)), ('h', np.arange(42, 52)), ('yj', np.arange(58, 81))]:
+        complete = orders[(orders['channel'] == channel) & (orders['full_fsr_and_slit_on_detector'] == 'True')]
+        np.testing.assert_array_equal(complete['order'], expected)
+    assert (tmp_path / 'selected_footprints.png').is_file()
 
 
 def test_main_option_reproduces_unmodified_main_trace_tables(comparison):
@@ -115,7 +184,8 @@ def test_full_fsr_is_not_truncated_to_the_detector():
     assert [order for order, wave, x, y in footprints] == list(range(31, 39))
     for order, wave, x, y in footprints:
         assert wave.unit.is_equivalent(u.nm)
-        np.testing.assert_allclose((wave[-1] - wave[0]).to_value(u.nm), model.fsr(order).to_value(u.nm), rtol=1e-12)
+        center = model.x_pixel_to_wavelength(model.detector.n_pix_x//2 + .5, order)
+        np.testing.assert_allclose((wave[-1] - wave[0]).to_value(u.nm), (center/order).to_value(u.nm), rtol=1e-12)
         np.testing.assert_allclose(y[2] - y[0], 64., atol=1e-10)
     assert footprints[0][2].min() < 0
     assert footprints[0][2].max() > model.detector.n_pix_x

@@ -17,6 +17,7 @@ from astropy.table import Table
 
 from scopesim.commands import UserCommands
 from scopesim.effects.data_container import DataContainer
+from scopesim.effects.spectral_trace_list import EchelleSpectralTraceList
 
 
 SCOPESIM_MAIN = '4830d68ace8a600885bfd2e06c1f341a6766c534'
@@ -106,6 +107,56 @@ def plot_footprints(axis, footprints, row, wave_limits):
     axis.set_aspect('equal')
 
 
+def build_selected(irdb_repo):
+    path = irdb_repo / 'ZShooter_v2/traces/echelle_trace_parameters.dat'
+    params = DataContainer(filename=str(path))
+    effect = EchelleSpectralTraceList(cmds=UserCommands(), filename=str(path), wave_colname='wavelength', s_colname='s')
+    return params, effect
+
+
+def selected_geometry(irdb_repo, output):
+    """Plot the selected prescription through the installed trace generator."""
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=True)
+    start = perf_counter()
+    params, effect = build_selected(irdb_repo)
+    construction_seconds = perf_counter() - start
+    fig, axes = plt.subplots(1, 6, figsize=(18, 6), sharex=True, layout='constrained')
+    orders, summary = [], []
+    x_low, x_high = 0, params.table['n_disp'].max()
+    for axis, row in zip(axes, params.table, strict=True):
+        model = effect._spectrographs[row['prefix']]
+        footprints = fsr_footprints(model, samples=row['n_disp'] + 1)
+        wave_limits = (min(wave[0].to_value(u.nm) for order, wave, x, y in footprints), max(wave[-1].to_value(u.nm) for order, wave, x, y in footprints))
+        plot_footprints(axis, footprints, row, wave_limits)
+        bounds, complete_orders = [], []
+        for order, wave, x, y in footprints:
+            inside = (x >= 0) & (x <= row['n_disp']) & (y >= 0) & (y <= row['n_xdisp'])
+            complete = inside.all()
+            if complete:
+                complete_orders.append(order)
+            tilt = np.rad2deg(np.arctan2(y[1, -1] - y[1, 0], x[1, -1] - x[1, 0]))
+            orders.append((row['prefix'], order, wave[0].to_value(u.nm), wave[-1].to_value(u.nm), tilt, x.min(), x.max(), y.min(), y.max(), complete))
+            bounds.append([x.min(), x.max(), y.min(), y.max()])
+        bounds = np.array(bounds)
+        xmin, xmax = bounds[:, 0].min(), bounds[:, 1].max()
+        ymin, ymax = bounds[:, 2].min(), bounds[:, 3].max()
+        summary.append((row['prefix'], len(model.orders), len(complete_orders), xmin, xmax, ymin, ymax))
+        x_low, x_high = min(x_low, xmin), max(x_high, xmax)
+        axis.set_ylim(min(0, ymin) - 75, max(row['n_xdisp'], ymax) + 75)
+        axis.set_title(f"{row['prefix'].upper()} | orders {model.orders[0]}-{model.orders[-1]}\n{len(complete_orders)}/{len(model.orders)} full FSR + slit ends fit", fontsize=10)
+        axis.set_xlabel('Detector x [pixel]')
+    axes[0].set_ylabel('Detector y [pixel]')
+    axes[0].set_xlim(x_low - 75, x_high + 75)
+    fig.suptitle('Selected geometry: Zemax rulings and angles, fixed detector placement, 15 um pixels', fontsize=13)
+    fig.savefig(output / 'selected_footprints.png', dpi=160)
+    plt.close(fig)
+    Table(rows=orders, names=['channel', 'order', 'fsr_low_nm', 'fsr_high_nm', 'tilt_deg', 'x_min_pix', 'x_max_pix', 'y_min_pix', 'y_max_pix', 'full_fsr_and_slit_on_detector']).write(output / 'selected_orders.csv', overwrite=True)
+    Table(rows=summary, names=['channel', 'orders', 'complete_orders', 'x_min_pix', 'x_max_pix', 'y_min_pix', 'y_max_pix']).write(output / 'selected_footprints.csv', overwrite=True)
+    print(f'Selected trace construction: {construction_seconds:.3f} s; {len(effect.spectral_traces)} orders. Figure and tables: {perf_counter() - start:.2f} s total.', flush=True)
+    return params, effect, fig
+
+
 def compare_geometry(scopesim_repo, irdb_repo, zemax_parameters, output):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
@@ -180,5 +231,9 @@ if __name__ == '__main__':
     parser.add_argument('--irdb', type=Path, required=True)
     parser.add_argument('--zemax-parameters', type=Path, default=Path(__file__).with_name('data') / 'zemax_channels.csv')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--selected', action='store_true', help='Plot the current configured prescription instead of the historical three-option comparison')
     args = parser.parse_args()
-    compare_geometry(args.scopesim, args.irdb, args.zemax_parameters, args.output)
+    if args.selected:
+        selected_geometry(args.irdb, args.output)
+    else:
+        compare_geometry(args.scopesim, args.irdb, args.zemax_parameters, args.output)

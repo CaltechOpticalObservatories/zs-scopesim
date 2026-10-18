@@ -1,6 +1,44 @@
-# ZShooter: three analytical geometry options
+# ZShooter: selected analytical geometry
 
-The figure contains exactly these three options, from top to bottom. No option has been selected for adoption.
+The geometry branch now uses **row 2's Zemax rulings, order prescription, CX angles and detector rotations**, with the fixed placement below. R moves left 150 pixels, H left 130 pixels, and YJ moves up 50 pixels with reddest order 57 removed. B, G and K keep row 2's positions.
+
+![Selected geometry from the configured ScopeSim trace generator](../validation/zshooter_xdisp/data/selected_footprints.png)
+
+Colored curves show complete FSRs at slit center; gray curves show both ends of the 10-arcsecond slit. Black rectangles are the detectors. Each panel has equal X/Y pixel scales; all panels share the X range. Off-detector portions remain visible.
+
+| Channel | Retained orders | Shift from row 2 (pixels) | Complete FSRs including both slit ends on detector |
+|---|---|---|---:|
+| B | 85-118 | None | 34/34 |
+| G | 56-85 | None | 30/30 |
+| R | 37-56 | 150 left | 17/20 |
+| YJ | 58-80 | 50 up | 23/23 |
+| H | 42-51 | 130 left | 10/10 |
+| K | 31-38 | None | 0/8 |
+
+**YJ's shift brings the bluest order onto the detector.** Order 80's full FSR/slit envelope clears the bottom by **17.40 pixels**. Removing order 57 makes room at the red end: order 58 clears the top by **25.64 pixels**. The retained orders span Y = 17.40-2022.36 on the 2048-pixel detector. Removing order 57 does not trigger recentering.
+
+H spans X = 63.83-1990.15 pixels. R retains partially clipped orders 37-39; orders 40-56 fit completely. K's clipping is unchanged from row 2, as accepted pending discussion with the optical engineer. Its eight orders still intersect the detector, although none has its entire FSR and slit envelope inside it.
+
+The actual model bounds are in [selected_orders.csv](../validation/zshooter_xdisp/data/selected_orders.csv) and [selected_footprints.csv](../validation/zshooter_xdisp/data/selected_footprints.csv).
+
+## Fixed placement in the parameter file
+
+The new `detector_offset_x` and `detector_offset_y` columns specify the **rotated analytical camera origin relative to detector center**, in mm, positive right/up. They are absolute positions; `(0, 0)` places that origin at detector center. They replace automatic centering and are applied after rotation, before detector clipping.
+
+| Channel | `detector_offset_x` (mm) | `detector_offset_y` (mm) |
+|---|---:|---:|
+| B | -0.679871 | -3.156243 |
+| G | -0.569446 | -4.041061 |
+| R | -2.867205 | -5.372810 |
+| YJ | -0.441923 | -3.921145 |
+| H | -2.474361 | -4.610933 |
+| K | -0.621554 | -5.307695 |
+
+These values were derived once from row 2's configured mapping, with the requested translations added at 0.015 mm/pixel. YJ's position was fixed before excluding order 57. The `.dat` file documents that temporary exclusion and retains `m0=80, n=23`. The simulator reads these constants directly; it does no placement search. Both columns require their corresponding `*_unit : mm` declarations. Omitting both preserves main's original automatic placement and wavelength sampling.
+
+## Three-option decision reference
+
+The original comparison below is unchanged. Its three rows show:
 
 | Row | Rulings and order numbers | CX angles | Detector rotations |
 |---|---|---|---|
@@ -46,13 +84,23 @@ Full-precision values are in [settings.csv](../validation/zshooter_xdisp/data/se
 
 ## Reproduce and verify
 
+The selected configuration was verified with ScopeSim commit `4c64fe55` and IRDB commit `2e9a0ae`, both on `fix/zshooter-xdisp-geometry`.
+
 The comparison pins ScopeSim `main` to `4830d68a` and IRDB's corresponding `dev_master` to `d1415c4`. It reads those committed inputs directly from Git, independently of the sibling repositories' current checkouts. The inspection methods from `aefbe60d` expose the existing trace mapping; the original main FSR equation and placement are retained. Only options 1/2 use the corrected angle-estimation source, and option 2 bypasses estimation through its explicit angles.
 
 ```sh
+# Current selected prescription, using the sibling ScopeSim and IRDB checkouts:
+conda run -n zssim python validation/zshooter_xdisp/geometry.py --selected --scopesim ../ScopeSim --irdb ../irdb --output validation/zshooter_xdisp/data
+# Historical decision reference, using the pinned commits:
 conda run -n zssim python validation/zshooter_xdisp/geometry.py --scopesim ../ScopeSim --irdb ../irdb --output validation/zshooter_xdisp/data
 conda run -n zssim python -m pytest tests/test_xdisp_geometry.py tests/test_zemax_prescription.py -q
+conda run -n zssim python -m pytest ../ScopeSim/scopesim/tests/tests_optics/test_echelle.py ../ScopeSim/scopesim/tests/tests_effects/test_SpectralTraceList.py -q
 ```
 
-All **29 targeted tests pass**. Option 3 reproduces every column of all **127 unmodified-main trace tables exactly**. Options 1 and 2 each plot all **126 configured orders**. The checks cover corrected-estimator endpoints, explicit-angle bypass, shared inputs, complete FSR/slit curves and common plot scales. The figure was visually inspected and takes about **8 seconds** to generate without running observations.
+All **69 targeted tests pass**: 33 workspace tests and 36 ScopeSim tests. Without placement columns, the current generator reproduces the original row-2 and main trace tables exactly (126 and 127 orders respectively). The selected configuration contains 125 orders. Tests verify the requested constant translations at common wavelengths and all three slit positions, unchanged dispersion and slit extent, complete H/YJ coverage, R's 17 complete orders, and preservation of main's FSR convention. Generic placement tests cover zero and nonzero offsets, positive and negative rotations, detector intersections, missing columns/units, blank values and incompatible units.
+
+The selected six-panel figure was visually inspected. Trace construction took **0.94 seconds** in the figure run; the selected figure and CSVs took **2.33 seconds total**, after imports. Three subsequent construction timings were **0.82, 0.83, 0.83 seconds** for the selected configuration, compared with **0.84, 0.84, 0.90 seconds** for row 2 with automatic placement. The historical three-option figure takes about 8 seconds. These timings do not include a full observation.
 
 The test run emits ScopeSim's existing `fov_grid` deprecation warnings and Astropy polynomial-fit conditioning warnings. The figure uses the direct analytical mapping rather than the fitted polynomials.
+
+Changes remain on `fix/zshooter-xdisp-geometry` in all three repositories. Nothing has been merged into `xshooter`.
