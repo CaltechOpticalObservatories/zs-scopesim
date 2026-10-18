@@ -1,4 +1,4 @@
-"""Inspect and retune the configured planar traces; no detector simulation is needed."""
+"""Reproduce the rejected coverage-only rotation trial; not a prescription optimizer."""
 
 import argparse
 import copy
@@ -97,7 +97,7 @@ def minimum_vertical_slit_gap(orders, row):
 
 
 def retune_rotations(effect, parameters):
-    """Search modest detector tilts, then refine the best region to 0.01 degree."""
+    """Rejected coverage-only objective, retained to reproduce and inspect the trial."""
     tuned = copy.copy(parameters)
     tuned.table = parameters.table.copy()
     tuned.table['detector_angle'] = tuned.table['detector_angle'].astype(float)
