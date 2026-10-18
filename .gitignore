@@ -83,6 +83,7 @@ target/
 .ipynb_checkpoints
 notebooks/validation_outputs/
 notebooks/science_validation_outputs/
+notebooks/zshooter_performance_corrected/
 notebooks/**/*.fits
 notebooks/**/*.png
 notebooks/source_data/Kasen2017/*.h5
@@ -216,3 +217,6 @@ cmake-build-*/
 validation/xshooter/cache/
 validation/xshooter/data/comparison/*.fits
 validation/xshooter/data/comparison/*.npz
+validation/xshooter/data/comparison/*.npy
+validation/xshooter/data/lamps/*.npy
+validation/xshooter/data/comparison/*.csv.gz
