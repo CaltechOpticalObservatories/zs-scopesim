@@ -5,6 +5,7 @@ bounds memory; optical effects, PSF sampling and aperture geometry stay enabled.
 The saved arrays are electron rates before stochastic detector effects.
 """
 from pathlib import Path
+import logging
 import numpy as np
 import scopesim as sim
 from synphot import SourceSpectrum
@@ -24,13 +25,30 @@ def observe_case(irdb, output, instrument, modes, lower, upper, properties, chec
     train.observe(source)
     signal = [plane.data - background for plane, background in zip(train.image_planes, sky)]
     if check_readout:
-        for readout in train.readout():
-            data = readout[1].data
-            if data.dtype.names is None:
-                assert np.isfinite(data).all()
-            else:
-                for column in data.dtype.names:
-                    assert np.isfinite(data[column]).all()
+        errors = []
+        handler = logging.Handler(level=logging.ERROR)
+        handler.emit = lambda record: errors.append(record.getMessage())
+        logger = logging.getLogger('astar.scopesim')
+        logger.addHandler(handler)
+        try:
+            readouts = train.readout()
+        finally:
+            logger.removeHandler(handler)
+        assert not errors, errors
+        for readout in readouts:
+            assert readout[0].header['INSTRUME']
+            for hdu in readout[1:]:
+                data = hdu.data
+                if data is None:
+                    continue
+                if data.dtype.names is None:
+                    assert np.isfinite(data).all()
+                else:
+                    for column in data.dtype.names:
+                        assert np.isfinite(data[column]).all()
+                assert hdu.header['DIT'] > 0
+                assert hdu.header['NDIT'] >= 1
+                assert hdu.header['EXPTIME'] == hdu.header['DIT'] * hdu.header['NDIT']
     assert sum(point.sum() for point in signal) > 0, 'The configured detector region must intercept the test source.'
     arrays = {}
     rows = []
