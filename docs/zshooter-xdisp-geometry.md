@@ -103,7 +103,7 @@ The selected six-panel figure was visually inspected. Trace construction took **
 
 The test run emits ScopeSim's existing `fov_grid` deprecation warnings and Astropy polynomial-fit conditioning warnings. The figure uses the direct analytical mapping rather than the fitted polynomials.
 
-Changes remain on `fix/zshooter-xdisp-geometry` in all three repositories. Nothing has been merged into `xshooter`.
+The independent `fix/zshooter-xdisp-geometry` branches remain available in all three repositories. Their integration into `xshooter` is recorded below.
 
 ## Performance notebook: PSF cache repair
 
@@ -125,3 +125,13 @@ Both slit-width diagnostics now complete in a fresh kernel using the notebook's 
 | K | 33.2-44.7k | 15.7-21.1k |
 
 The actual rerun figures were visually inspected: [0.33-arcsecond echellogram](../validation/zshooter_xdisp/data/performance_033_psf_fix.png) and [0.70-arcsecond echellogram](../validation/zshooter_xdisp/data/performance_070_psf_fix.png). The first full source observation plus detector readout completed in approximately **50 seconds**, including notebook-tool overhead.
+
+## Integration into XSHOOTER
+
+Merged on 2026-10-18 with separate merge commits: ScopeSim **`f659fefc`**, IRDB **`30a64ca`**, and this workspace **`67ec5d8`**. The stack manifest pins these ScopeSim and IRDB commits. The feature branches retain their original tips (`ee4e4e67`, `2e9a0ae`, and `b18f79d` respectively) for independent integration into main/dev_master. No main/dev_master branch was changed and nothing was pushed.
+
+All **113 targeted tests pass** on the merged stack: 39 workspace geometry, prescription and extraction/comparison tests; 74 ScopeSim PSF, echelle and spectral-trace tests together with the XSHOOTER instrument tests. These include detector binning/readout, line mapping and end-to-end photon-rate checks. The runs retain the existing `fov_grid` deprecation and polynomial-fit conditioning warnings.
+
+The selected footprint was regenerated and visually inspected. Both generated CSVs match the committed selected geometry exactly: 125 orders, unchanged B/G/K placement, the specified R/H translations, all 23 retained YJ orders and all 10 H orders fitting, and 17 of 20 complete R orders fitting. YJ's full slit/FSR envelope remains at detector y = 17.40 to 2022.36 pixels.
+
+The local performance notebook retains all four user-edited cells and every saved output, together with XSHOOTER's continuous-source coordinate mapping. Those outputs are the completed pre-merge xdisp run; merged-stack verification here consists of the targeted tests and regenerated geometry. The old notebook kernel was cleared so its next execution loads the merged libraries. Broader comparison work awaits the continuation plan.
