@@ -16,7 +16,7 @@ import scopesim
 from scopesim.commands import UserCommands
 from scopesim.effects.data_container import DataContainer
 from scopesim.effects.spectral_trace_list import EchelleSpectralTraceList
-from scopesim.optics.echelle import GratingSetup
+from scopesim.effects.spectral_efficiency import EchelleSpectralEfficiency
 
 
 def fsr_footprints(spectrograph, samples=513):
@@ -43,27 +43,64 @@ def plot_footprints(axis, footprints, row, wave_limits):
     axis.set_aspect('equal')
 
 
-def compare_geometry(parameters, baseline_parameters, baseline_echelle, output):
+def compare_geometry(parameters, baseline_parameters, baseline_traces, zemax_parameters, output):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     start = perf_counter()
     current = DataContainer(filename=str(parameters))
     baseline = DataContainer(filename=str(baseline_parameters))
-    spec = importlib.util.spec_from_file_location('scopesim.optics._baseline_echelle', baseline_echelle)
+    archive = Table.read(zemax_parameters)
+    spec = importlib.util.spec_from_file_location('scopesim.effects._baseline_traces', baseline_traces)
     old_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(old_module)
-    with patch.object(GratingSetup, 'estimate_xdisp_angle_with_groove_len', staticmethod(old_module.GratingSetup.estimate_xdisp_angle_with_groove_len)):
+    with patch.object(EchelleSpectralTraceList, '_generate_trace_hdulist', old_module.EchelleSpectralTraceList._generate_trace_hdulist):
         old_effect = EchelleSpectralTraceList(cmds=UserCommands(), filename=str(baseline_parameters), wave_colname='wavelength', s_colname='s')
     current_effect = EchelleSpectralTraceList(cmds=UserCommands(), filename=str(parameters), wave_colname='wavelength', s_colname='s')
-    variants = [('baseline', baseline, old_effect), ('corrected_equation', current, current_effect)]
+    old_efficiency = EchelleSpectralEfficiency(cmds=UserCommands(), filename=str(baseline_parameters))
+    current_efficiency = EchelleSpectralEfficiency(cmds=UserCommands(), filename=str(parameters))
+    resized_params = current.table.copy()
+    resized_params['n_xdisp'] *= 2
+    resized_params['detector_pad'] += 30
+    resized_efficiency = EchelleSpectralEfficiency(cmds=UserCommands(), table=resized_params)
+    variants = [('previous', baseline, old_effect), ('adopted', current, current_effect)]
     fig, axes = plt.subplots(2, 6, figsize=(18, 9.5), sharex=True, sharey='col', layout='constrained')
-    orders, summary = [], []
+    orders, summary, efficiencies = [], [], []
+    center_error = 0.
     x_low, x_high = 0, current.table['n_disp'].max()
     y_limits = [[0, row['n_xdisp']] for row in current.table]
     for variant_index, (name, params, effect) in enumerate(variants):
         for channel_index, row in enumerate(params.table):
             spectrograph = effect._spectrographs[row['prefix']]
-            footprints = fsr_footprints(spectrograph)
+            footprints = fsr_footprints(spectrograph, samples=row['n_disp'] + 1)
+            reference = archive[archive['channel'] == row['prefix']][0]
+            if variant_index == 1:
+                # These checks compare one prescription after coordinate/unit conversion, allowing roundoff.
+                alpha = -np.sign(reference['camera_space_mm'])*reference['cx_coordinate_tilt_x_deg']
+                np.testing.assert_allclose(spectrograph.cross_disperser.alpha.to_value(u.deg), alpha, atol=1e-10, rtol=0)
+                np.testing.assert_allclose(spectrograph.cross_disperser.beta_center.to_value(u.deg), alpha, atol=1e-10, rtol=0)
+                np.testing.assert_allclose(row['detector_angle'], -reference['detector_coordinate_rotation_z_deg'], atol=1e-10, rtol=0)
+                np.testing.assert_array_equal(spectrograph.orders, np.arange(reference['min_order'], reference['max_order'] + 1))
+                np.testing.assert_allclose([row['disp_freq'], row['xdisp_freq']], [reference['echelle_grooves_per_mm'], reference['cx_grooves_per_mm']], atol=1e-10, rtol=0)
+                efficiency_model = current_efficiency._spectrographs[row['prefix']]
+                resized_model = resized_efficiency._spectrographs[row['prefix']]
+                assert resized_model.cross_disperser.alpha == spectrograph.cross_disperser.alpha
+                assert resized_model.cross_disperser.beta_center == spectrograph.cross_disperser.beta_center
+                wave = spectrograph.edge_wave(fsr=True).ravel()
+                np.testing.assert_array_equal(resized_model.xdisp_efficiency(wave), spectrograph.xdisp_efficiency(wave))
+                np.testing.assert_array_equal(efficiency_model.orders, spectrograph.orders)
+                for trace_grating, efficiency_grating in [(spectrograph.grating, efficiency_model.grating), (spectrograph.cross_disperser, efficiency_model.cross_disperser)]:
+                    assert trace_grating.d == efficiency_grating.d
+                    assert trace_grating.alpha == efficiency_grating.alpha
+                    assert trace_grating.beta_center == efficiency_grating.beta_center
+                assert len([name for name in effect.spectral_traces if name.startswith(row['prefix'] + '_')]) == len(spectrograph.orders)
+                fine = fsr_footprints(spectrograph, samples=4*row['n_disp'] + 1)
+                fine_bounds = np.array([[x.min(), x.max(), y.min(), y.max()] for order, wave, x, y in fine])
+                bounds = np.array([[x.min(), x.max(), y.min(), y.max()] for order, wave, x, y in footprints])
+                np.testing.assert_allclose(bounds, fine_bounds, atol=.01, rtol=0)
+                center = np.array([(fine_bounds[:, 0].min() + fine_bounds[:, 1].max())/2, (fine_bounds[:, 2].min() + fine_bounds[:, 3].max())/2])
+                expected_center = np.array([row['n_disp']/2, row['n_xdisp']/2])
+                np.testing.assert_allclose(center, expected_center, atol=.01, rtol=0)
+                center_error = max(center_error, np.abs(center - expected_center).max())
             tilts, raw_widths = [], []
             channel_x, channel_y = [], []
             for order, wave, x, y in footprints:
@@ -76,29 +113,48 @@ def compare_geometry(parameters, baseline_parameters, baseline_echelle, output):
                 raw_widths.append(raw_width)
                 channel_x.extend([x.min(), x.max()])
                 channel_y.extend([y.min(), y.max()])
+                if variant_index == 1:
+                    trace_id = f"{row['prefix']}_{order}"
+                    sample_wave = wave[[0, wave.size//2, -1]]
+                    previous_eff = old_efficiency.efficiency_generator(trace_id, sample_wave)
+                    adopted_eff = current_efficiency.efficiency_generator(trace_id, sample_wave)
+                    previous_vph = old_efficiency._spectrographs[row['prefix']].xdisp_efficiency(sample_wave)
+                    adopted_vph = spectrograph.xdisp_efficiency(sample_wave)
+                    for wavelength, before, after, vph_before, vph_after in zip(sample_wave, previous_eff, adopted_eff, previous_vph, adopted_vph):
+                        efficiencies.append((row['prefix'], order, wavelength.to_value(u.nm), before, after, vph_before, vph_after))
             x_low, x_high = min(x_low, min(channel_x)), max(x_high, max(channel_x))
             y_limits[channel_index][0] = min(y_limits[channel_index][0], min(channel_y))
             y_limits[channel_index][1] = max(y_limits[channel_index][1], max(channel_y))
             mean_tilt = np.mean(tilts)  # Each configured order has equal weight.
-            summary.append((name, row['prefix'], row['detector_angle'], len(footprints), mean_tilt, min(tilts), max(tilts), max(raw_widths), min(channel_x), max(channel_x), min(channel_y), max(channel_y)))
+            pixel_mm = (row['pixel_size'] * u.Unit(params.meta['pixel_size_unit'])).to_value(u.mm)
+            margins = np.array([min(channel_x), row['n_disp'] - max(channel_x), min(channel_y), row['n_xdisp'] - max(channel_y)]) * pixel_mm
+            summary.append((name, row['prefix'], row['detector_angle'], len(footprints), mean_tilt, min(tilts), max(tilts), max(raw_widths), min(channel_x), max(channel_x), min(channel_y), max(channel_y), *margins))
             axis = axes[variant_index, channel_index]
             edges = spectrograph.edge_wave(fsr=True).to_value(u.nm)
             plot_footprints(axis, footprints, row, (edges.min(), edges.max()))
+            if row['prefix'] in ['yj', 'h', 'k']:
+                width, height = reference['image_aperture_x_mm']/pixel_mm, reference['image_aperture_y_mm']/pixel_mm
+                corner = ((row['n_disp'] - width)/2, (row['n_xdisp'] - height)/2)
+                axis.add_patch(plt.Rectangle(corner, width, height, fill=False, edgecolor='0.35', linestyle='--', linewidth=.7))
+                y_limits[channel_index][0] = min(y_limits[channel_index][0], corner[1])
+                y_limits[channel_index][1] = max(y_limits[channel_index][1], corner[1] + height)
             axis.set_title(f"{row['prefix'].upper()} | orders {spectrograph.orders[0]}-{spectrograph.orders[-1]}\nRotation {row['detector_angle']:+.2f} deg; mean tilt {mean_tilt:+.2f} deg", fontsize=9)
             if channel_index == 0:
-                label = 'Baseline analytical model' if variant_index == 0 else 'Corrected equation, original rotations'
+                label = 'Previous prescription and placement' if variant_index == 0 else 'Adopted settings, full-FSR centering'
                 axis.set_ylabel(f'{label}\nDetector y [pixel]')
             if variant_index == 1:
                 axis.set_xlabel('Detector x [pixel]')
     for channel_index, limits in enumerate(y_limits):
         for axis in axes[:, channel_index]:
             axis.set(xlim=(x_low - 75, x_high + 75), ylim=(limits[0] - 75, limits[1] + 75))
-    fig.suptitle('Complete analytical FSRs and slit ends; model discrepancy under investigation', fontsize=13)
+    fig.suptitle('Complete analytical FSRs and slit ends; solid: 15 um detectors; dashed: archive NIR aperture', fontsize=13)
     fig.savefig(output / 'detector_footprints.png', dpi=160)
     plt.close(fig)
     Table(rows=orders, names=['variant', 'channel', 'order', 'fsr_low_nm', 'fsr_high_nm', 'unrotated_fsr_width_pix', 'tilt_deg', 'x_min_pix', 'x_max_pix', 'y_min_pix', 'y_max_pix']).write(output / 'orders.csv', overwrite=True)
-    Table(rows=summary, names=['variant', 'channel', 'rotation_deg', 'orders', 'mean_tilt_deg', 'min_tilt_deg', 'max_tilt_deg', 'widest_unrotated_fsr_pix', 'x_min_pix', 'x_max_pix', 'y_min_pix', 'y_max_pix']).write(output / 'footprints.csv', overwrite=True)
+    Table(rows=summary, names=['variant', 'channel', 'rotation_deg', 'orders', 'mean_tilt_deg', 'min_tilt_deg', 'max_tilt_deg', 'widest_unrotated_fsr_pix', 'x_min_pix', 'x_max_pix', 'y_min_pix', 'y_max_pix', 'left_margin_mm', 'right_margin_mm', 'bottom_margin_mm', 'top_margin_mm']).write(output / 'footprints.csv', overwrite=True)
+    Table(rows=efficiencies, names=['channel', 'order', 'wavelength_nm', 'previous_grating_efficiency', 'adopted_grating_efficiency', 'previous_vph_efficiency', 'adopted_vph_efficiency']).write(output / 'efficiency.csv', overwrite=True)
     print(f'ScopeSim import: {scopesim.__file__}\nAssessment time: {perf_counter() - start:.2f} s', flush=True)
+    print(f'Archive prescription, trace/efficiency agreement and all configured orders verified; dense-grid center error {center_error:.6f} pixel.', flush=True)
     return variants
 
 
@@ -106,7 +162,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--parameters', type=Path, required=True)
     parser.add_argument('--baseline-parameters', type=Path, required=True)
-    parser.add_argument('--baseline-echelle', type=Path, required=True)
+    parser.add_argument('--baseline-traces', type=Path, required=True)
+    parser.add_argument('--zemax-parameters', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    compare_geometry(args.parameters, args.baseline_parameters, args.baseline_echelle, args.output)
+    compare_geometry(args.parameters, args.baseline_parameters, args.baseline_traces, args.zemax_parameters, args.output)

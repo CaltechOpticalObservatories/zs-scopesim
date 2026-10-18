@@ -39,7 +39,7 @@ def inspect_archive(archive, output):
     archive, output = Path(archive), Path(output)
     files = {Path(entry.file_name.replace('\\', '/')).name: entry.unpacked_contents for entry in zar.read(archive)}
     lines = files[archive.with_suffix('.zmx').name].decode('utf-16').splitlines()
-    surfaces, parameters, waves, apertures, tilts = {}, {}, {}, {}, {}
+    surfaces, parameters, waves, apertures, tilts, thicknesses = {}, {}, {}, {}, {}, {}
     for line in lines:
         parts = line.split()
         if line.startswith('SURF '):
@@ -56,6 +56,8 @@ def inspect_archive(archive, output):
             apertures[parts[0], int(parts[2])] = float(parts[3])
         elif line.startswith('CBTX '):
             tilts[int(parts[1]), int(parts[2])] = float(parts[3])
+        elif line.startswith('THIC '):
+            thicknesses[int(parts[1]), int(parts[2])] = float(parts[3])
         elif line.startswith('FTYP '):
             n_fields, n_waves = int(parts[3]), int(parts[4])
         elif line.startswith('PWAV '):
@@ -84,6 +86,7 @@ def inspect_archive(archive, output):
             'cx_grooves_per_mm': 1000*parameters[88, config, 1],
             'cx_coordinate_tilt_x_deg': parameters[85, config, 3],
             'camera_center_tilt_y_deg': parameters[93, config, 4],
+            'camera_space_mm': thicknesses[93, config],
             'detector_coordinate_rotation_z_deg': parameters[166, config, 5],
             'image_aperture_x_mm': 2*apertures['APMN', config],
             'image_aperture_y_mm': 2*apertures['APMX', config],
