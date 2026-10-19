@@ -6,7 +6,7 @@ from astropy.io import fits
 from scipy import sparse
 from pyreduce.spectra import Spectra, Spectrum
 
-from zs_scopesim_tools.reduction_checks import flat_ab_extraction_bins
+from zs_scopesim_tools.reduction_checks import flat_ab_extraction_bins, flat_ab_band_integrals
 
 
 def write_flat_spectrum(path, wave, factor=1.):
@@ -82,3 +82,47 @@ def test_missing_or_incompatible_flux_units_fail(tmp_path):
     Spectra(header=fits.Header({'BUNIT': 'electron', 'COVUNIT': 'electron2'}), data=[spectrum]).save(path)
     with pytest.raises(u.UnitConversionError):
         flat_ab_extraction_bins({'BLUE': path}, **arguments)
+
+
+def test_band_integral_keeps_cross_gap_covariance_and_real_coverage(tmp_path):
+    path = tmp_path/'band.fits'
+    spectrum = write_flat_spectrum(path, np.r_[np.arange(4000., 4005.), np.arange(4010., 4015.)], factor=1.2)
+    table = flat_ab_band_integrals({'BLUE': path}, intervals={'BLUE': [(4000*u.AA, 4014*u.AA)]}, max_gap={'BLUE': 1.1*u.AA}, magnitude=20)
+    row, = table
+    widths = np.array([.5, 1, 1, 1, 1, 1, 1, 1, 1, .5])
+    weights = widths/widths.sum()
+    expected_variance = weights @ (spectrum.covariance @ weights)
+    without_cross_gap = expected_variance - 2*weights[4]*weights[5]*spectrum.covariance[4, 5]
+    np.testing.assert_allclose(row['covered_width'], 9*u.AA)
+    np.testing.assert_allclose(row['ratio'], 1.2)
+    np.testing.assert_allclose(row['uncertainty'].value**2, expected_variance)
+    assert row['uncertainty'].value**2 > without_cross_gap
+    np.testing.assert_allclose(row['ratio_uncertainty'], row['uncertainty']/row['expected_flux'])
+
+
+def test_band_intervals_are_explicit_and_cannot_overlap(tmp_path):
+    path = tmp_path/'windows.fits'
+    write_flat_spectrum(path, np.arange(4000., 4021.))
+    arguments = dict(max_gap={'BLUE': 1.1*u.AA}, magnitude=20)
+    table = flat_ab_band_integrals({'BLUE': path}, intervals={'BLUE': [(4001*u.AA, 4004*u.AA), (4010*u.AA, 4012*u.AA)]}, **arguments)
+    np.testing.assert_allclose(table['covered_width'][0], 5*u.AA)
+    np.testing.assert_allclose(table['ratio'], 1)
+    with pytest.raises(ValueError, match='without overlap'):
+        flat_ab_band_integrals({'BLUE': path}, intervals={'BLUE': [(4000*u.AA, 4010*u.AA), (4005*u.AA, 4015*u.AA)]}, **arguments)
+    with pytest.raises(ValueError, match='no samples'):
+        flat_ab_band_integrals({'BLUE': path}, intervals={'BLUE': [(5000*u.AA, 5010*u.AA)]}, **arguments)
+
+
+def test_band_flux_and_covariance_units_are_converted(tmp_path):
+    path = tmp_path/'band_units.fits'
+    spectrum = write_flat_spectrum(path, np.arange(4000., 4021.))
+    arguments = dict(intervals={'BLUE': [(4000*u.AA, 4020*u.AA)]}, max_gap={'BLUE': 1.1*u.AA}, magnitude=20)
+    original = flat_ab_band_integrals({'BLUE': path}, **arguments)
+    spectrum.spec *= 10
+    spectrum.sig *= 10
+    spectrum.covariance *= 100
+    header = fits.Header({'BUNIT': 'erg s-1 cm-2 nm-1', 'COVUNIT': 'erg2 s-2 cm-4 nm-2'})
+    Spectra(header=header, data=[spectrum]).save(path)
+    converted = flat_ab_band_integrals({'BLUE': path}, **arguments)
+    np.testing.assert_allclose(converted['flux'], original['flux'])
+    np.testing.assert_allclose(converted['uncertainty'], original['uncertainty'])

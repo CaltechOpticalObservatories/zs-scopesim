@@ -7,6 +7,56 @@ import matplotlib.pyplot as plt
 from pyreduce.spectra import Spectra
 
 
+def flat_ab_band_integrals(files, *, intervals, max_gap, magnitude):
+    """Measure clean-window flux closure with all native-sample covariance.
+
+    Each arm gets one width-weighted flux-density mean over its explicit,
+    non-overlapping wavelength intervals. Missing coverage contributes no
+    width, while covariance between separated retained regions is preserved.
+    Units and native pixel boundaries follow ``flat_ab_extraction_bins``.
+    """
+    flux_unit = u.erg / (u.s * u.cm**2 * u.AA)
+    rows = []
+    for arm, filename in files.items():
+        product = Spectra.read(filename, raw=True)
+        spectrum, = product.data
+        if spectrum.covariance is None:
+            raise ValueError(f'{arm} has no propagated spectral covariance')
+        flux = (spectrum.spec * u.Unit(product.header['BUNIT'])).to(flux_unit)
+        covariance_scale = (1 * u.Unit(product.header['COVUNIT'])).to_value(flux_unit**2)
+        wave = spectrum.wave * u.AA
+        valid = np.isfinite(wave) & np.isfinite(spectrum.spec) & np.isfinite(spectrum.covariance.diagonal())
+        indices = np.flatnonzero(valid)
+        if np.any(np.diff(wave[indices]) <= 0 * u.AA):
+            raise ValueError(f'{arm} wavelength samples must increase strictly')
+        windows = [(lower.to_value(u.AA), upper.to_value(u.AA)) for lower, upper in intervals[arm]]
+        for i, (lower, upper) in enumerate(windows):
+            if upper <= lower or (i > 0 and lower < windows[i-1][1]):
+                raise ValueError('Retained intervals must have positive width and be ordered without overlap')
+        widths = np.zeros(len(wave))
+        gaps = (np.diff(indices) != 1) | (np.diff(wave[indices]) > max_gap[arm])
+        for index in np.split(indices, np.flatnonzero(gaps) + 1):
+            if len(index) < 2:
+                raise ValueError(f'{arm} has isolated samples without defined native pixel widths')
+            centers = wave[index].to_value(u.AA)
+            edges = np.r_[centers[0] - (centers[1]-centers[0])/2, (centers[:-1]+centers[1:])/2, centers[-1] + (centers[-1]-centers[-2])/2]
+            for lower, upper in windows:
+                widths[index] += np.maximum(0, np.minimum(edges[1:], upper) - np.maximum(edges[:-1], lower))
+        selected = np.flatnonzero(widths > 0)
+        if not len(selected):
+            raise ValueError(f'{arm} has no samples in the retained wavelength intervals')
+        covered_width = widths.sum() * u.AA
+        weights = widths[selected] / widths.sum()
+        covariance = spectrum.covariance[selected][:, selected]
+        measured = np.sum(weights * flux[selected])
+        uncertainty = np.sqrt((weights @ (covariance @ weights)) * covariance_scale) * flux_unit
+        expected = (magnitude * u.ABmag).to(flux_unit, equivalencies=u.spectral_density(wave[selected]))
+        input_mean = np.sum(weights * expected)
+        wavelength = np.sum(weights * wave[selected])
+        rows.append((arm, wavelength, covered_width, measured, uncertainty, input_mean, measured/input_mean, uncertainty/input_mean, measured/uncertainty))
+    return QTable(rows=rows, names=('arm', 'wavelength', 'covered_width', 'flux', 'uncertainty', 'expected_flux', 'ratio', 'ratio_uncertainty', 'snr'))
+
+
 def flat_ab_extraction_bins(files, *, intervals, max_gap, magnitude, bin_R):
     """Measure flat-AB recovery and S/N in finite wavelength integration bins.
 
