@@ -2,6 +2,10 @@
 
 The executed [comparison notebook](../notebooks/02_Flat_AB_Comparison.ipynb) starts with a flat AB continuum and runs both X-shooter configurations, alongside ZShooter natural seeing with .70 and .33 arcsec slits and AO with .33 arcsec. This report supersedes the earlier single-mode comparison. The [performance reconciliation](performance-reconciliation.md) separately explains changes relative to main and your preserved performance-notebook rerun.
 
+The subsequent [mirrored kilonova reduction assessment](kilonova-mirrored-reduction.md) covers native PyReduce extraction, propagated covariance and flat-AB controls in both kilonova notebooks. The [resolution teaching note](resolution-and-sampling.md) and [detector operating-point assessment](detector-operating-points.md) address the optical and detector questions raised while reviewing these plots.
+
+The subsequent assessment also records the shared ADC correction: atmospheric displacement now precedes slit clipping in the Moffat/AO path used by these instruments. The plots on this page predate that correction. Their source and background rates need regeneration before being presented as results from the corrected simulator; the controlled ADC experiment is linked in the assessment.
+
 All configurations share the same evaluated atmospheric curves: dark sky, airmass 1.1, seeing .65 arcsec and MJD 60310.25. AB 20 sets the simulation normalization; the limiting-magnitude calculation solves for the source amplitude giving S/N=5, including source shot noise.
 
 ## Observing settings and estimator

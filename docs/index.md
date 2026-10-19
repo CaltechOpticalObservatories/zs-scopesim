@@ -16,6 +16,9 @@ tests centered and quarter-slit-offset sources under natural seeing and AO.
 The [kilonova reduction repair](../../zshooter-drp/docs/source/kilonova-reduction-repair.md)
 records the updated DRP calibrations, executed extraction checks, thermal-background
 correction to the standard, and the host-light explanation of the apparent BLUE flux excess.
+The [mirrored kilonova reductions](kilonova-mirrored-reduction.md) describe the
+shared electron-variance inputs, native optimal extraction and propagated spectral
+covariance in the ZShooter and X-shooter examples.
 
 The [resolution and sampling note](resolution-and-sampling.md) separates slit geometry,
 point-source illumination, diffraction and native-pixel width measurements. The
@@ -36,6 +39,7 @@ xshooter-validation
 performance-reconciliation
 resolution-and-sampling
 detector-operating-points
+kilonova-mirrored-reduction
 reproducibility
 troubleshooting
 ```

@@ -9,7 +9,7 @@ src_dir = "~/src"
 url = "https://github.com/CaltechOpticalObservatories/ScopeSim.git"
 path = "ScopeSim"
 relative_to = "src_dir"
-ref = "a0495f72a52b01a4bc52bc013b0bd43a4f1bc4be"
+ref = "aef3a53debb21d6edd92e20e3702e54f5fb57d05"
 editable = true
 managed = true
 
@@ -24,8 +24,16 @@ managed = true
 [repos.zsdrp]
 url = "https://github.com/CaltechOpticalObservatories/zshooter-drp.git"
 path = "zshooter-drp"
-relative_to = "main"
-ref = "main"
+relative_to = "src_dir"
+ref = "dbf6e3a0b733064d6bd71a6d531feb89c3a8a870"
+editable = true
+managed = true
+
+[repos.pyreduce]
+url = "https://github.com/ivh/PyReduce.git"
+path = "PyReduce-xshooter"
+relative_to = "src_dir"
+ref = "26a8f2b04aa03a5d7224b07cc6888ebc52001133"
 editable = true
 managed = true
 

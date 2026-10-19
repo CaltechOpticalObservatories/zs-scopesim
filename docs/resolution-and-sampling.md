@@ -46,7 +46,7 @@ The configured 1500/1250 mm collimators, 225 mm camera and 0.5306 mm/arcsec entr
 
 \[
 0.70\times0.5306\times\frac{225}{1250}\div0.015
-=4.457\ {m pixels}.
+=4.457\,\mathrm{pixels}.
 \]
 
 That is the reference magnification, not a constant at every wavelength. The effective dispersion focal length is \(225(1500/1250)=270\) mm; inserting the collimator ratio again into \(\Delta\alpha\) would double-count it. Across one primary FSR, approximately \(\lambda/m\), geometric \(R=\lambda/\Delta\lambda_{\rm slit}\) varies by approximately \(1/m\), about 1–3% here. The existing [finite-angle check](../validation/xshooter/slit_anamorphism.py) independently propagates the slit edges and confirms this calculation.
