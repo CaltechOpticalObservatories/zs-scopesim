@@ -1,4 +1,4 @@
-"""Check saved ZShooter products and integrate clean windows with their covariance.
+"""Check saved ZShooter products and integrate selected windows with their covariance.
 
 This checks the one-hour notebook baseline. The reference is its two-component
 Kasen transient. Extracted science
@@ -16,6 +16,7 @@ from astropy.io import fits
 from astropy.table import Table
 from synphot.units import convert_flux
 from pyreduce.spectra import Spectra
+from zsdrp.steps import TraceWrapper
 from zs_scopesim_tools.sources import kilonova_spectra
 
 
@@ -48,9 +49,12 @@ for phase in args.phases:
         asymmetry = cov - cov.T
         assert not asymmetry.nnz or np.max(np.abs(asymmetry.data)) < 1e-12 * np.max(cov.diagonal())
 
+        traces = [trace for trace in TraceWrapper.load(args.reduced_dir / f'trace_{arm}.fits') if not trace.invalid]
         with np.load(args.reduced_dir / f'wavecal_{arm}.npz') as calibration:
-            native_gap = np.max(np.abs(np.diff(calibration['wave_img'], axis=1)))
+            native_steps = np.concatenate([np.diff(cal_wave[trace.column_range[0]:trace.column_range[1]]) for cal_wave, trace in zip(calibration['wave_img'], traces, strict=True)])
+            native_gap = np.max(np.abs(native_steps))
             orders = calibration['orders']
+            np.testing.assert_array_equal(orders, [trace.m for trace in traces])
         widths = np.zeros(len(wave))
         # Native pixel boundaries are adjacent-center midpoints within each
         # supported segment; gaps contribute no width or model flux.
