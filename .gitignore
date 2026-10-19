@@ -84,6 +84,8 @@ target/
 notebooks/validation_outputs/
 notebooks/science_validation_outputs/
 notebooks/zshooter_performance_corrected/
+notebooks/01_Kilonovae/*_optimal_variance/
+notebooks/xshooter_kilonova_reduced/
 notebooks/**/*.fits
 notebooks/**/*.png
 notebooks/source_data/Kasen2017/*.h5
