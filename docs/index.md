@@ -13,6 +13,10 @@ main, the preserved user rerun and the corrected execution. The
 [slit-illumination lamp notebook](../notebooks/03_Slit_Illumination_Lamps.ipynb)
 tests centered and quarter-slit-offset sources under natural seeing and AO.
 
+The [kilonova reduction repair](../../zshooter-drp/docs/source/kilonova-reduction-repair.md)
+records the updated DRP calibrations, executed extraction checks, thermal-background
+correction to the standard, and the host-light explanation of the apparent BLUE flux excess.
+
 ```{toctree}
 :maxdepth: 2
 :caption: Contents
