@@ -1,0 +1,55 @@
+# %ECSV 1.0
+# ---
+# datatype:
+# - {name: arm, datatype: string}
+# - {name: wavelength, unit: Angstrom, datatype: float64}
+# - {name: covered_width, unit: Angstrom, datatype: float64}
+# - {name: flux, unit: erg / (Angstrom s cm2), datatype: float64}
+# - {name: uncertainty, unit: erg / (Angstrom s cm2), datatype: float64}
+# - {name: expected_flux, unit: erg / (Angstrom s cm2), datatype: float64}
+# - {name: ratio, datatype: float64}
+# - {name: ratio_uncertainty, datatype: float64}
+# - {name: snr, datatype: float64}
+# - {name: mode, datatype: string}
+# meta: !!omap
+# - __serialized_columns__:
+#     covered_width:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: &id003 !astropy.units.Unit {unit: Angstrom}
+#       value: !astropy.table.SerializedColumn {name: covered_width}
+#     expected_flux:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: &id001 !astropy.units.Unit {unit: erg / (Angstrom s cm2)}
+#       value: !astropy.table.SerializedColumn {name: expected_flux}
+#     flux:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: *id001
+#       value: !astropy.table.SerializedColumn {name: flux}
+#     ratio:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: &id002 !astropy.units.Unit {unit: ''}
+#       value: !astropy.table.SerializedColumn {name: ratio}
+#     ratio_uncertainty:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: *id002
+#       value: !astropy.table.SerializedColumn {name: ratio_uncertainty}
+#     snr:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: *id002
+#       value: !astropy.table.SerializedColumn {name: snr}
+#     uncertainty:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: *id001
+#       value: !astropy.table.SerializedColumn {name: uncertainty}
+#     wavelength:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: *id003
+#       value: !astropy.table.SerializedColumn {name: wavelength}
+# schema: astropy-2.0
+arm wavelength covered_width flux uncertainty expected_flux ratio ratio_uncertainty snr mode
+UVB 4450.000000394334 2299.9999999999995 5.908555084287142e-17 9.476307542055662e-20 5.890046679523412e-17 1.003142318859386 0.001608867986564485 623.5081605430273 faint
+VIS 7416.666661010643 2999.999999999999 2.1518172492256066e-17 8.786208636331269e-20 2.1364041832315078e-17 1.007214489708958 0.004112615349330257 244.9085081280417 faint
+NIR 16783.333335270105 7200.000000000002 4.424129488576728e-18 1.5726043674120525e-19 4.700175574195346e-18 0.9412689842621729 0.03345841751201554 28.132501602149762 faint
+UVB 4449.999998659074 2299.9999999999995 5.901573831665954e-17 1.2881310290259733e-19 5.890046675719558e-17 1.001957056808041 0.0021869623450286304 458.1501181699239 high
+VIS 7416.666667110604 2999.999999999999 2.150966713029158e-17 9.508942044615518e-20 2.1364041798349486e-17 1.006816375539639 0.004450909680091595 226.204629593589 high
+NIR 16781.512469160338 7197.799683380634 4.60355102696697e-18 1.5916395777320723e-19 4.7009689110674296e-18 0.9792770626772046 0.033857692059713396 28.92332592989784 high
