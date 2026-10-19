@@ -316,6 +316,19 @@ def save_readout_to_fits(hdul: fits.HDUList, filename: str):
     else:
         raise TypeError(f"Expected hdul to be an instance of astropy.io.fits.HDUList, got {type(hdul)} instead.")
 
+
+def _detector_dark_rate(train, index):
+    from scopesim.effects import SelectorWheel
+    from scopesim.effects.electronic import DarkCurrent
+    from scopesim.effects.electronic.pixels import BinnedImageBase
+
+    detector, = train.detector_managers[index]
+    effects = [effect.get_effect(detector.det_id) if isinstance(effect, SelectorWheel) else effect for effect in train.optics_manager.detector_effects]
+    dark, = [effect for effect in effects if isinstance(effect, DarkCurrent)]
+    pixel_area = np.prod([np.prod(effect.bin_factors) for effect in effects if isinstance(effect, BinnedImageBase)])
+    return dark._get_dark_level(detector.det_id) * pixel_area
+
+
 def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Path,
                           *, object_name: str = 'sim', imagetype: str = '', ndit: int = 0,
                           cmds: sim.UserCommands | None = None, train: sim.OpticalTrain | None = None,
@@ -336,8 +349,6 @@ def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Pa
         output_dir.mkdir(parents=True, exist_ok=True)
 
     channels = ["blue", "green", "red", "yj", "h", "k"]
-    readnoise = [0.1, 0.1, 0.1, 0.5, 0.5, 0.5]
-    darkcurr = [0.000166, 0.000166, 0.000166, 0.0001, 0.0001, 0.0001]
     outfiles = []
 
     for i, hdul in enumerate(list_of_hdul):
@@ -345,19 +356,29 @@ def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Pa
         hdul[0].header['HIERARCH IMAGETYPE'] = imagetype.upper()
         hdul[0].header['HIERARCH IMAGENUM'] = ndit
         hdul[0].header['CHANNEL'] = channels[i].upper()
-        hdul[0].header['DATE-OBS'] = "2026-09-01T00:00:00.000"
-        hdul[0].header['RON'] = readnoise[i]
-        hdul[0].header['DARK'] = darkcurr[i]
-        hdul[0].header['GAIN'] = 1.0
+
+        if train is not None and 'VARIANCE' not in hdul:
+            from zs_scopesim_tools.comparison import detector_noise
+            exptime, dark, read_variance = detector_noise(train, i)
+            dark_rate = _detector_dark_rate(train, i)
+            for header in (hdul[0].header, hdul[1].header):
+                header['RON'] = (np.sqrt(read_variance), 'Accumulated read noise [electron RMS]')
+                header['DARK'] = (dark_rate, 'Dark rate per output pixel [electron/s]')
+                header['GAIN'] = (1., 'ZShooter readouts are in electrons')
+                header['BUNIT'] = 'electron'
+                header['EXPTIME'] = exptime
+                header['DIT'] = hdul[1].header['DIT']
+                header['NDIT'] = hdul[1].header['NDIT']
+                header['COMBINE'] = 'sum'
 
         if train is not None and 'continuum_emission' in train:
             hdul[0].header['MJD-OBS'] = train['continuum_emission'].time.mjd
-        else:
+        elif 'MJD-OBS' not in hdul[0].header:
             hdul[0].header['MJD-OBS'] = Time.now().mjd
+        hdul[0].header['DATE-OBS'] = Time(hdul[0].header['MJD-OBS'], format='mjd').isot
 
         if cmds is not None and train is not None:
             hdul = add_cmds_to_readout_header(hdul, cmds, train)
-            hdul[1].header['EXPTIME'] = hdul[0].header[f"HIERARCH SIM CONFIG OBS dit_{channels[i]}"]
 
         if extra_headers is not None:
             for key, value in extra_headers.items():
@@ -383,7 +404,85 @@ def subtract_hduls(hdul0, hdul1):
         dat0 = hdul0[i][1].data
         dat1 = hdul1[i][1].data
         hdu[1].data = dat0 - dat1
-        err = np.nanstd([dat0, dat1], axis=0)/np.sqrt(2)
-        hdu.append(fits.ImageHDU(data=err))
+        if ('VARIANCE' in hdul0[i]) != ('VARIANCE' in hdul1[i]):
+            raise ValueError('Both images need variance to propagate a subtraction.')
+        if 'VARIANCE' in hdul0[i]:
+            hdu['VARIANCE'].data = hdul0[i]['VARIANCE'].data + hdul1[i]['VARIANCE'].data
         sub_hdul.append(hdu)
     return sub_hdul
+
+
+def electron_readouts(train, readouts):
+    """Copy a current readout into accumulated electrons with its expected pixel variance.
+
+    Call before observing another scene: the current image planes supply the
+    Poisson mean, including source, sky and thermal background. Random draws
+    in the science image are retained. Gain and NIR ramp averaging are undone.
+    """
+    from scopesim.effects import SelectorWheel
+    from scopesim.effects.electronic import ADConversion, ExposureOutput
+    from zs_scopesim_tools.comparison import detector_noise, detector_rates
+
+    rates = detector_rates(train)
+    result = []
+    for i, (manager, hdul, rate) in enumerate(zip(train.detector_managers, readouts, rates, strict=True)):
+        detector, = manager
+        scale = 1.
+        for effect in train.optics_manager.detector_effects:
+            selected = effect.get_effect(detector.det_id) if isinstance(effect, SelectorWheel) else effect
+            if isinstance(selected, ADConversion):
+                scale *= selected._get_gain(detector.det_id)
+            if isinstance(selected, ExposureOutput) and selected.current_mode == 'average':
+                scale *= from_currsys(selected.meta['ndit'], train.cmds)
+        exptime, dark, read_variance = detector_noise(train, i)
+        copied = fits.HDUList([hdu.copy() for hdu in hdul])
+        copied[1].data = hdul[1].data * scale
+        variance = rate * exptime + dark + read_variance
+        if np.any(variance < 0):
+            raise ValueError('The configured source/background has a negative expected pixel variance.')
+        copied.append(fits.ImageHDU(variance, name='VARIANCE'))
+        copied['VARIANCE'].header['BUNIT'] = 'electron2'
+        dark_rate = _detector_dark_rate(train, i)
+        for header in (copied[0].header, copied[1].header):
+            header['BUNIT'] = 'electron'
+            header['GAIN'] = 1.
+            header['COMBINE'] = 'sum'
+            header['EXPTIME'] = exptime
+            header['DIT'] = hdul[1].header['DIT']
+            header['NDIT'] = hdul[1].header['NDIT']
+            header['RON'] = (np.sqrt(read_variance), 'Accumulated read noise [electron RMS]')
+            header['DARK'] = (dark_rate, 'Dark rate per output pixel [electron/s]')
+        result.append(copied)
+    return result
+
+
+def combine_readouts(readout_groups, coefficients, *, source_indices):
+    """Combine unique raw exposures before extraction, retaining reused-sky variance.
+
+    For A1 + A2 - 2*B, pass the three unique electron-readout groups with
+    coefficients [1, 1, -2] and source_indices [0, 1]. B then contributes
+    four times its variance. On-source exposure excludes the sky integrations.
+    Source coefficients must be +1 so exposure and counts describe a sum.
+    """
+    if len(readout_groups) != len(coefficients):
+        raise ValueError('Each unique exposure needs one combination coefficient.')
+    if any(coefficients[j] != 1 for j in source_indices):
+        raise ValueError('On-source exposures must enter the accumulated-electron sum with coefficient +1.')
+    result = []
+    for arm, hdul in enumerate(readout_groups[0]):
+        copied = fits.HDUList([hdu.copy() for hdu in hdul])
+        copied[1].data = np.zeros_like(hdul[1].data, dtype=np.float64)
+        copied['VARIANCE'].data = np.zeros_like(hdul['VARIANCE'].data, dtype=np.float64)
+        for group, coefficient in zip(readout_groups, coefficients, strict=True):
+            if group[arm][1].header['BUNIT'] != 'electron':
+                raise ValueError('Combine accumulated electron readouts, not ADU or averaged ramps.')
+            copied[1].data += coefficient * group[arm][1].data
+            copied['VARIANCE'].data += coefficient**2 * group[arm]['VARIANCE'].data
+        exptime = sum(readout_groups[j][arm][1].header['EXPTIME'] for j in source_indices)
+        for header in (copied[0].header, copied[1].header):
+            header['EXPTIME'] = exptime
+            header['HIERARCH SUBTRACTED'] = True
+            header['NDIT'] = sum(readout_groups[j][arm][1].header['NDIT'] for j in source_indices)
+            header['RON'] = np.sqrt(sum(c**2 * group[arm][1].header['RON']**2 for group, c in zip(readout_groups, coefficients, strict=True)))
+        result.append(copied)
+    return result

@@ -17,6 +17,12 @@ The [kilonova reduction repair](../../zshooter-drp/docs/source/kilonova-reductio
 records the updated DRP calibrations, executed extraction checks, thermal-background
 correction to the standard, and the host-light explanation of the apparent BLUE flux excess.
 
+The [resolution and sampling note](resolution-and-sampling.md) separates slit geometry,
+point-source illumination, diffraction and native-pixel width measurements. The
+[detector operating-point assessment](detector-operating-points.md) explains the
+current APD/H2RG noise and QE assumptions and the specifications needed to choose
+realistic integration lengths.
+
 ```{toctree}
 :maxdepth: 2
 :caption: Contents
@@ -28,6 +34,8 @@ xshooter
 xshooter-comparison-results
 xshooter-validation
 performance-reconciliation
+resolution-and-sampling
+detector-operating-points
 reproducibility
 troubleshooting
 ```
