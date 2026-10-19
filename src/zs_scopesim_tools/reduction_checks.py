@@ -11,7 +11,8 @@ def flat_ab_extraction_bins(files, *, intervals, max_gap, magnitude, bin_R):
     """Measure flat-AB recovery and S/N in finite wavelength integration bins.
 
     ``files`` maps arm names to flux-calibrated FITS files: one spliced spectrum
-    per arm, with flux density in erg/s/cm2/Angstrom and full sparse covariance.
+    per arm, with flux density and full sparse covariance. Required ``BUNIT``
+    and ``COVUNIT`` headers supply units convertible to FLAM and FLAM squared.
     ``intervals`` contains explicitly retained wavelength intervals per arm,
     and ``max_gap`` gives that arm's largest allowed adjacent native-sample gap;
     both require wavelength Quantities. Choose intervals to exclude specified
@@ -30,9 +31,12 @@ def flat_ab_extraction_bins(files, *, intervals, max_gap, magnitude, bin_R):
     flux_unit = u.erg / (u.s * u.cm**2 * u.AA)
     rows = []
     for arm, filename in files.items():
-        spectrum, = Spectra.read(filename, raw=True).data
+        product = Spectra.read(filename, raw=True)
+        spectrum, = product.data
         if spectrum.covariance is None:
             raise ValueError(f'{arm} has no propagated spectral covariance')
+        native_flux = (spectrum.spec * u.Unit(product.header['BUNIT'])).to(flux_unit)
+        covariance_scale = (1 * u.Unit(product.header['COVUNIT'])).to_value(flux_unit**2)
         wave = spectrum.wave * u.AA
         expected = (magnitude * u.ABmag).to(flux_unit, equivalencies=u.spectral_density(wave))
         valid = np.isfinite(wave) & np.isfinite(spectrum.spec) & np.isfinite(spectrum.covariance.diagonal())
@@ -62,8 +66,8 @@ def flat_ab_extraction_bins(files, *, intervals, max_gap, magnitude, bin_R):
                     width = overlap[selected].sum()
                     weights = overlap[selected] / width
                     covariance = spectrum.covariance[sample][:, sample]
-                    flux = weights @ spectrum.spec[sample] * flux_unit
-                    uncertainty = np.sqrt(weights @ (covariance @ weights)) * flux_unit
+                    flux = np.sum(weights * native_flux[sample])
+                    uncertainty = np.sqrt((weights @ (covariance @ weights)) * covariance_scale) * flux_unit
                     input_flux = np.sum(weights * expected[sample])
                     wavelength = np.sum(weights * wave[sample])
                     rows.append((arm, wavelength, low*u.AA, high*u.AA, width*u.AA, flux, uncertainty, input_flux, flux/input_flux, flux/uncertainty))
