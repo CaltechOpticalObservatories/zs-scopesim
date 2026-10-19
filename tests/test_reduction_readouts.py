@@ -62,6 +62,22 @@ def test_source_average_is_not_mislabeled_as_accumulated_exposure():
         combine_readouts([[readout(10., 12.)]], [.5], source_indices=[0])
 
 
+def test_source_cadence_is_retained_when_shorter_sky_is_listed_first():
+    groups = [[readout(8., 12., exptime=150.)], [readout(20., 25., exptime=300.)]]
+    combined, = combine_readouts(groups, [-2, 1], source_indices=[1])
+    np.testing.assert_array_equal(combined[1].data, 4.)
+    np.testing.assert_array_equal(combined['VARIANCE'].data, 73.)
+    for header in (combined[0].header, combined[1].header):
+        assert header['DIT'] == header['EXPTIME'] == 300.
+        assert header['NDIT'] == 1
+
+
+def test_mixed_source_cadences_do_not_manufacture_a_single_dit():
+    groups = [[readout(20., 25., exptime=300.)], [readout(40., 50., exptime=600.)]]
+    with pytest.raises(ValueError, match='same source integration time'):
+        combine_readouts(groups, [1, 1], source_indices=[0, 1])
+
+
 def test_save_preserves_prepared_total_exposure_and_noise(tmp_path):
     science = readout(10., 12., exptime=3600., ndit=12)
     science[0].header['RON'] = science[1].header['RON'] = 6.*np.sqrt(12)

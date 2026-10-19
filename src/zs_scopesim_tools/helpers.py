@@ -463,6 +463,7 @@ def combine_readouts(readout_groups, coefficients, *, source_indices):
     coefficients [1, 1, -2] and source_indices [0, 1]. B then contributes
     four times its variance. On-source exposure excludes the sky integrations.
     Source coefficients must be +1 so exposure and counts describe a sum.
+    Source integrations must share one DIT to retain a truthful DIT/NDIT header.
     """
     if len(readout_groups) != len(coefficients):
         raise ValueError('Each unique exposure needs one combination coefficient.')
@@ -470,6 +471,9 @@ def combine_readouts(readout_groups, coefficients, *, source_indices):
         raise ValueError('On-source exposures must enter the accumulated-electron sum with coefficient +1.')
     result = []
     for arm, hdul in enumerate(readout_groups[0]):
+        dit = readout_groups[source_indices[0]][arm][1].header['DIT']
+        if any(readout_groups[j][arm][1].header['DIT'] != dit for j in source_indices):
+            raise ValueError('A combined DIT/NDIT header requires the same source integration time.')
         copied = fits.HDUList([hdu.copy() for hdu in hdul])
         copied[1].data = np.zeros_like(hdul[1].data, dtype=np.float64)
         copied['VARIANCE'].data = np.zeros_like(hdul['VARIANCE'].data, dtype=np.float64)
@@ -481,6 +485,7 @@ def combine_readouts(readout_groups, coefficients, *, source_indices):
         exptime = sum(readout_groups[j][arm][1].header['EXPTIME'] for j in source_indices)
         for header in (copied[0].header, copied[1].header):
             header['EXPTIME'] = exptime
+            header['DIT'] = dit
             header['HIERARCH SUBTRACTED'] = True
             header['NDIT'] = sum(readout_groups[j][arm][1].header['NDIT'] for j in source_indices)
             header['RON'] = np.sqrt(sum(c**2 * group[arm][1].header['RON']**2 for group, c in zip(readout_groups, coefficients, strict=True)))

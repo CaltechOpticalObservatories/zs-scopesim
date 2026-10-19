@@ -126,7 +126,7 @@ def flat_ab_extraction_bins(files, *, intervals, max_gap, magnitude, bin_R):
     for arm in files:
         part = table[table['arm'] == arm]
         # Bin midpoints and horizontal extents show actual supported widths;
-        # the table separately retains the flux-weighted native wavelength.
+        # the table separately retains the width-weighted native wavelength.
         center = (part['wave_low'] + part['wave_high']) / 2
         half_width = part['covered_width'] / 2
         axes[0].errorbar(center.to_value(u.um), part['ratio'].value, xerr=half_width.to_value(u.um), yerr=(part['uncertainty']/part['expected_flux']).value, fmt='.', ms=2, elinewidth=.4, label=arm)
