@@ -8,7 +8,7 @@ from pyreduce.spectra import Spectra
 
 
 def flat_ab_band_integrals(files, *, intervals, max_gap, magnitude):
-    """Measure clean-window flux closure with all native-sample covariance.
+    """Measure flux closure in selected comparison windows with full covariance.
 
     Each arm gets one width-weighted flux-density mean over its explicit,
     non-overlapping wavelength intervals. Missing coverage contributes no
@@ -65,9 +65,9 @@ def flat_ab_extraction_bins(files, *, intervals, max_gap, magnitude, bin_R):
     and ``COVUNIT`` headers supply units convertible to FLAM and FLAM squared.
     ``intervals`` contains explicitly retained wavelength intervals per arm,
     and ``max_gap`` gives that arm's largest allowed adjacent native-sample gap;
-    both require wavelength Quantities. Choose intervals to exclude specified
-    telluric bands or poorly calibrated response, rather than selecting on the
-    noisy recovered flux. Gaps and masked samples split coverage. Native pixel
+    both require wavelength Quantities. Select comparison windows explicitly,
+    describing retained telluric or response structure and any exclusions;
+    do not select on noisy recovered flux. Gaps and masked samples split coverage. Native pixel
     edges are adjacent-center midpoints, with half-step outer edges.
 
     Width-weighted means use only supported wavelengths. The table reports the
