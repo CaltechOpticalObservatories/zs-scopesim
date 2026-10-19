@@ -70,13 +70,18 @@ for phase in args.phases:
         uncertainty = np.sqrt(weights @ (cov[selected][:, selected] @ weights))
         truth = convert_flux(wave[selected] * u.AA, models[phase](wave[selected] * u.AA), 'FLAM').value
         transient_mean = weights @ truth
+        if transient_mean == 0:
+            ratio = ratio_uncertainty = np.ma.masked
+            print(f'{phase:g}-day {arm}: the input transient is exactly zero in this window; scene flux retains host light and noise. The two scene/transient ratios are undefined and masked.')
+        else:
+            ratio, ratio_uncertainty = measured/transient_mean, uncertainty/transient_mean
         band = (wave >= lo) & (wave <= hi)
         sigma_median, sigma_p99, sigma_max = np.percentile(sig[band], [50, 99, 100])
-        rows.append((phase, arm, len(wave), wave[0], wave[-1], min(orders), max(orders), len(orders), lo, hi, widths.sum(), measured, uncertainty, transient_mean, measured/transient_mean, uncertainty/transient_mean, measured/uncertainty, np.mean(flux[band] < 0), sigma_median, sigma_p99, sigma_max))
+        rows.append((phase, arm, len(wave), wave[0], wave[-1], min(orders), max(orders), len(orders), lo, hi, widths.sum(), measured, uncertainty, transient_mean, ratio, ratio_uncertainty, measured/uncertainty, np.mean(flux[band] < 0), sigma_median, sigma_p99, sigma_max))
         del product, spectrum, cov, asymmetry
         gc.collect()
 
-table = Table(rows=rows, names=['phase_days', 'arm', 'samples', 'wave_min_A', 'wave_max_A', 'order_min', 'order_max', 'orders', 'window_low_A', 'window_high_A', 'covered_width_A', 'scene_mean_FLAM', 'sigma_mean_FLAM', 'transient_mean_FLAM', 'scene_over_transient', 'sigma_scene_over_transient', 'scene_band_snr', 'negative_sample_fraction', 'native_sigma_median_FLAM', 'native_sigma_p99_FLAM', 'native_sigma_max_FLAM'])
+table = Table(rows=rows, masked=True, names=['phase_days', 'arm', 'samples', 'wave_min_A', 'wave_max_A', 'order_min', 'order_max', 'orders', 'window_low_A', 'window_high_A', 'covered_width_A', 'scene_mean_FLAM', 'sigma_mean_FLAM', 'transient_mean_FLAM', 'scene_over_transient', 'sigma_scene_over_transient', 'scene_band_snr', 'negative_sample_fraction', 'native_sigma_median_FLAM', 'native_sigma_p99_FLAM', 'native_sigma_max_FLAM'])
 args.output.parent.mkdir(parents=True, exist_ok=True)
 table.write(args.output, format='ascii.csv', overwrite=True)
 table[['phase_days', 'arm', 'scene_over_transient', 'sigma_scene_over_transient', 'scene_band_snr']].pprint(max_width=-1)
