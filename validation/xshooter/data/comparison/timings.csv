@@ -1,31 +1,31 @@
 configuration,stage,seconds
-ZS natural .70,setup,8.93643654207699
-ZS natural .70,source + sky,65.79756779200397
-ZS natural .70,readout 300s case,1.31954070890788
-ZS natural .70,readout 3600s case,1.418442500056699
-ZS natural .70,sky,59.62581324996427
-ZS natural .70,isolated line grid,19.34325362497475
-ZS AO .33,setup,3.5776397499721497
-ZS AO .33,source + sky,103.91178445902187
-ZS AO .33,readout 300s case,1.2103574170032516
-ZS AO .33,readout 3600s case,1.4971712079131976
-ZS AO .33,sky,111.80643995897844
-ZS AO .33,isolated line grid,39.562340582953766
-ZS natural .33,setup,5.961892042076215
-ZS natural .33,source + sky,76.89011837495491
-ZS natural .33,readout 300s case,1.2740388750098646
-ZS natural .33,readout 3600s case,1.5579895410919562
-ZS natural .33,sky,62.773497999995016
-ZS natural .33,isolated line grid,21.356559832929634
-XS faint,setup,1.456304584047757
-XS faint,source + sky,116.40172633400653
-XS faint,readout 300s case,0.5129319590050727
-XS faint,readout 3600s case,0.8068490419536829
-XS faint,sky,98.5494910000125
-XS faint,isolated line grid,19.483445124933496
-XS high,setup,1.4727457920089364
-XS high,source + sky,105.95067641697824
-XS high,readout 300s case,0.702864124905318
-XS high,readout 3600s case,0.8553927500033751
-XS high,sky,92.76636487501673
-XS high,isolated line grid,22.9114631669363
+ZS natural .70,setup,11.188716874923557
+ZS natural .70,source + sky,77.14550387498457
+ZS natural .70,readout 300s case,1.3130047499435022
+ZS natural .70,readout 3600s case,1.5299987910548225
+ZS natural .70,sky,74.3433586669853
+ZS natural .70,isolated line grid,18.031268000020646
+ZS AO .33,setup,3.7658694999990985
+ZS AO .33,source + sky,105.38441858300939
+ZS AO .33,readout 300s case,1.1877240419853479
+ZS AO .33,readout 3600s case,1.566667125094682
+ZS AO .33,sky,112.87065891700331
+ZS AO .33,isolated line grid,52.032851332915016
+ZS natural .33,setup,5.803553125006147
+ZS natural .33,source + sky,91.6722566250246
+ZS natural .33,readout 300s case,1.3027320839464664
+ZS natural .33,readout 3600s case,1.5441177500179037
+ZS natural .33,sky,81.36098779202439
+ZS natural .33,isolated line grid,23.03104537492618
+XS faint,setup,1.4936001249589026
+XS faint,source + sky,115.38337683305144
+XS faint,readout 300s case,0.46871449996251613
+XS faint,readout 3600s case,0.5386254580225796
+XS faint,sky,117.0341388330562
+XS faint,isolated line grid,21.32138858293183
+XS high,setup,2.3999218329554424
+XS high,source + sky,99.27969520899933
+XS high,readout 300s case,0.6479639579774812
+XS high,readout 3600s case,0.8386681249830872
+XS high,sky,103.45255758299027
+XS high,isolated line grid,20.432885125046596
