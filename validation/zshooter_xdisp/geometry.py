@@ -18,6 +18,7 @@ from astropy.table import Table
 from scopesim.commands import UserCommands
 from scopesim.effects.data_container import DataContainer
 from scopesim.effects.spectral_trace_list import EchelleSpectralTraceList
+from scopesim.utils import from_currsys
 
 
 SCOPESIM_MAIN = '4830d68ace8a600885bfd2e06c1f341a6766c534'
@@ -89,7 +90,8 @@ def fsr_footprints(spectrograph, samples=513):
     for order, edges in zip(spectrograph.orders, spectrograph.edge_wave(fsr=True)):
         wave = np.linspace(edges[0], edges[1], samples)
         x, y = spectrograph._detector_pixels(wave, order)
-        footprints.append((order, wave, x, y))
+        slit_nodes = [0, np.argmin(np.abs(spectrograph._slit_offset_pix)), -1]
+        footprints.append((order, wave, x[slit_nodes], y[slit_nodes]))
     return footprints
 
 
@@ -109,8 +111,13 @@ def plot_footprints(axis, footprints, row, wave_limits):
 
 def build_selected(irdb_repo):
     path = irdb_repo / 'ZShooter_v2/traces/echelle_trace_parameters.dat'
+    commands = UserCommands(properties={'!SIM.file.local_packages_path': str(irdb_repo.resolve())})
+    commands.update(use_instrument='ZShooter_v2', set_modes=['SPEC'])
     params = DataContainer(filename=str(path))
-    effect = EchelleSpectralTraceList(cmds=UserCommands(), filename=str(path), wave_colname='wavelength', s_colname='s')
+    params.table = from_currsys(params.table, commands)
+    specification = next(effect for document in commands.yaml_dicts if 'effects' in document for effect in document['effects'] if effect['name'] == 'trace_list_analytical')
+    settings = specification['kwargs'] | {'filename': str(path)}
+    effect = EchelleSpectralTraceList(cmds=commands, **settings)
     return params, effect
 
 

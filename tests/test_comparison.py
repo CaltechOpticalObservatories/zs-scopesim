@@ -45,6 +45,16 @@ def test_limiting_magnitude_includes_source_shot_noise():
     assert limiting_abmag(100., 100., 0.) == pytest.approx(20 - 2.5*np.log10(.25))
 
 
+def test_avalanche_selection_keeps_physical_signal_and_scales_only_photon_variance():
+    signal = np.array([10., 10., 10.])
+    background_variance = np.array([2., 2., 10000.])
+    selected, magnitude = select_spectral_samples(signal, background_variance, excess_noise_factor=1.2)
+    assert set(selected) == {0, 1}
+    amplitude = 10**((20 - magnitude)/2.5)
+    snr = amplitude*signal[selected].sum()/np.sqrt(1.2*amplitude*signal[selected].sum() + background_variance[selected].sum())
+    assert snr == pytest.approx(5.)
+
+
 def test_native_bin_overlap_preserves_counts_and_shared_pixel_covariance():
     operator = overlap_bin_matrix(np.array([1., 2., 3.])*u.um, np.array([1., 1.5, 2.5, 3.])*u.um)
     counts = np.array([12., 20.])

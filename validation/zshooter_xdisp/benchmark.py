@@ -11,7 +11,7 @@ from astropy.utils import iers
 from synphot import SourceSpectrum
 from synphot.models import ConstFlux1D
 import scopesim as sim
-from scopesim.effects.spectral_trace_list import EchelleSpectralTraceList
+from validation.zshooter_xdisp.geometry import build_selected
 
 
 if __name__ == '__main__':
@@ -23,11 +23,10 @@ if __name__ == '__main__':
     sim.rc.__config__['!SIM.file.local_packages_path'] = str(args.irdb.resolve())
     sim.rc.__search_path__.append(str(args.atmosphere_data.resolve()))
     iers.conf.auto_download = False
-    parameters = args.irdb / 'ZShooter_v2/traces/echelle_trace_parameters.dat'
     timings = []
     for repeat in range(1, 4):
         start = perf_counter()
-        effect = EchelleSpectralTraceList(cmds=sim.UserCommands(), filename=str(parameters), wave_colname='wavelength', s_colname='s')
+        params, effect = build_selected(args.irdb)
         timings.append(('trace_construction', repeat, perf_counter() - start))
     start = perf_counter()
     # A fixed observation time makes atmosphere and PSF inputs repeatable.

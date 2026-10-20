@@ -40,7 +40,7 @@ def test_pitch_changes_sampling_without_moving_the_physical_prescription(detecto
     old_traces = current['trace_list_analytical']
     new_traces = alternate['trace_list_analytical']
     assert set(old_traces.spectral_traces) == set(new_traces.spectral_traces)
-    for trace_id in ('b_100', 'g_70', 'r_45', 'yj_70', 'h_47', 'k_35'):
+    for trace_id in old_traces.spectral_traces:
         old = old_traces.spectral_traces[trace_id]
         new = new_traces.spectral_traces[trace_id]
         wave = np.linspace(max(old.wave_min, new.wave_min), min(old.wave_max, new.wave_max), 9)
