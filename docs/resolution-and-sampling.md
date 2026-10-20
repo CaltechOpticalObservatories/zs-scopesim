@@ -1,6 +1,6 @@
 # ZShooter resolution: slit geometry, illumination and detector sampling
 
-Internal working note for interpreting the current simulator and discussing slit/PSF design with the optical engineer. The approximately 18,000 geometric slit specification and a measured point-source FWHM resolving power of 20,000–24,000 describe different widths. The AO scatter also contains a substantial detector-phase effect in the present half-height measurement. Neither observation, by itself, establishes extra optical resolving power in the proposed instrument.
+Internal working note for interpreting the current simulator and discussing slit/PSF design. The approximately 18,000 geometric slit specification and a measured point-source FWHM resolving power of 20,000–24,000 describe different widths. The AO scatter also contains a substantial detector-phase effect in the present half-height measurement. Neither observation, by itself, establishes extra optical resolving power in the proposed instrument.
 
 The calculations below use the configured June 2026 prescription, existing fixed placements, 15 micrometre pixels, and the existing natural/AO PSF prescriptions. No optical parameters or science figures were retuned. The [reproducible experiment](../validation/xshooter/resolution_sampling.py) uses the actual ScopeSim PSF, slit, spectral trace and native detector WCS.
 

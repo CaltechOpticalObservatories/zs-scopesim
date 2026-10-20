@@ -7,7 +7,7 @@ The existing detector plots compare effective read-noise/dark/QE assumptions at 
 | Detector case | Effective read noise per integration [input electrons RMS] | Dark rate [electrons/hour/pixel] | One-hour forecast |
 |---|---:|---:|---|
 | Current qCCD | .1 | .5976 | 1800 s x 2 |
-| Conventional CCD alternative | 2.5 | .01 | 1800 s x 2 |
+| Conventional CCD alternative | 2.5 | 2.0 | 1800 s x 2 |
 | Current LmAPD | .5 | .36 | 1800 s x 2 |
 | H2RG alternative | 6 | 23 | 1800 s x 2 |
 
