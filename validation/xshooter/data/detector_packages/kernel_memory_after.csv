@@ -1,0 +1,7 @@
+notebook,kernel_state,resident_GiB,macOS_footprint,peak_footprint
+validation/xshooter/Performance.ipynb,idle,0.05,3.1G,4.7G
+validation/xshooter/Upstream_Adoption.ipynb,idle,0.05,312.7M,5.2G
+validation/xshooter/Upstream_Observations.ipynb,idle,0.05,242.8M,3.4G
+notebooks/extraction_demo.ipynb,idle,0.05,1.3G,1.7G
+notebooks/03_Slit_Illumination_Lamps.ipynb,idle,0.05,4.4G,7.4G
+notebooks/zshooter_performance.ipynb,busy,13.91,13.3G,14.3G

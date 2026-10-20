@@ -22,9 +22,9 @@ covariance in the ZShooter and X-shooter examples.
 
 The [resolution and sampling note](resolution-and-sampling.md) separates slit geometry,
 point-source illumination, diffraction and native-pixel width measurements. The
-[detector operating-point assessment](detector-operating-points.md) explains the
-current APD/H2RG noise and QE assumptions and the specifications needed to choose
-realistic integration lengths.
+[detector operating-point assessment](detector-operating-points.md) gives the
+`SPEC`/`SPEC_ALTDETECT` packages, explicit per-arm exposure settings, charge-limit
+warnings, avalanche variance and the specifications needed for vendor discussions.
 
 ```{toctree}
 :maxdepth: 2

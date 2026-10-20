@@ -59,7 +59,7 @@ The remaining slit-integration cache includes every wavelength, across-slit coor
 
 Regression tests change spectral redshift, source weights, slit widths, exposure settings, WCS origins/steps/PC terms/units, slice centers, callable dispersion values, optical-transform coefficients, PSF return arrays, AO settings and table contents. Reused results are compared with fresh calculations. The combined cache/noise suite passed 147 tests with one inherited expected failure. After moving source sampling into the observation, 18 targeted source/FOV/image-plane and reused-versus-fresh tests passed. These suites overlap the earlier runs.
 
-Science observation examples, including both kilonova notebooks, retain enabled source/sky/dark shot noise and read noise. `ShotNoise` draws independently per detector pixel from accumulated source plus sky plus dark charge. Summing those expected charges before the Poisson draw has the same distribution as summing independent Poisson draws for their components. Read noise is then added separately. A fixed seed makes a run reproducible; distinct readout IDs produce independent realizations.
+Science observation examples, including both kilonova notebooks, retain enabled source/sky/dark shot noise and read noise. Conventional detectors draw Poisson photon/dark counts. ZShooter's configured LmAPDs draw compound Poisson/gamma photon counts with variance F times their physical mean, plus independent Poisson dark counts and effective read noise. F=1 recovers ordinary Poisson statistics. Fixed seeds make runs reproducible; distinct readout IDs and detector IDs produce independent realizations. The [detector operating points](detector-operating-points.md) define these engineering inputs and explicit per-arm exposure settings.
 
 Both performance forecast notebooks temporarily disable random draws while calculating expected-rate sensitivity. Their helper restores the original flags on normal completion and on exceptions, now covered by regression tests. The lamp centroid experiment uses expected-rate images to isolate systematic shifts, explicitly labeled electron/s; those are numerical diagnostics. The comparison notebook additionally extracts actual noisy readouts. New tests exercise nine spatial regions with different source/sky rates, including dark-only, sky-only and source-only regions, through all six ZShooter and three X-shooter detector arms. Their pixel-dependent variances and independent repeated realizations pass.
 
@@ -77,16 +77,20 @@ The estimator is source-plus-sky minus an independent equal-time sky frame. Sour
 
 The targeted shared optical/source/detector/instrument suite passed **184 tests**. The subsequent precision, discrete-PSF, image-plane, FOV and comparison tests passed **113 tests**, with three inherited expected failures; the source-preparation/spectral-integral suite passed **13 tests**. These runs overlap and are not additive. The 14 stale helper tests and two source-helper failures from the earlier report have been repaired and exercised; lamp normalization remains per input calibration file.
 
+The detector-package update passes the full **186-test zs-scopesim suite** and **28 DRP tests**. Added checks exercise actual SPEC/SPEC_ALTDETECT geometry and QE, all 125 physical trace mappings, avalanche photon variance, independent detector random draws, per-integration well warnings without changing exposure settings, and rejection of mismatched calibration geometry. The [operating-point assessment](detector-operating-points.md#reduction-and-verification) records the executed flat-AB controls, the 20-day ZShooter BLUE and X-shooter UVB extraction failures, and the failed faint-mode X-shooter NIR flux calibration. The two kilonova reruns are not counted as full scientific-validation passes.
+
 Useful skipped cross-representation tests have been replaced by current-subclass photon-integral tests. Two historical image tests have separate wavelength-grid/end-bin assumptions; their expected-failure labels remain. Relevant tests are not excluded merely for being slow.
 
-[Performance.ipynb](../validation/xshooter/Performance.ipynb) and [timings](../validation/xshooter/data/full_frame_timings.csv) retain historical and current measurements. Setup, observation and readout are timed separately; the comparison records line-analysis costs too. Benchmarks exclude network acquisition. The complete notebook executes five configurations and independent sky frames, while reusing optical rates across detector/exposure forecasts.
+[Performance.ipynb](../validation/xshooter/Performance.ipynb) and [timings](../validation/xshooter/data/full_frame_timings.csv) retain historical measurements. Setup, observation and readout are timed separately; the comparison records line-analysis costs too. Benchmarks exclude network acquisition. The current comparison executes eight configurations and independent sky frames, reusing optical rates for exposure changes within each package. Detector-package changes construct and observe a new train.
 
-The final benchmarks use fresh kernels, with double precision and the audited reuse described above:
+The preceding baseline benchmarks used fresh kernels, with double precision and the audited reuse described above:
 
 | Configuration | Setup (s) | Explicit update (s) | Observation (s) | Readout (s) | Peak process memory (GiB) |
 |---|---:|---:|---:|---:|---:|
 | ZShooter AO, .33 arcsec | 10.28 | .88 | 121.51 | 1.91 | 10.83 |
 | X-shooter faint, CCD spectral binning by two | 2.64 | .03 | 83.66 | .52 | 9.03 |
+
+The detector-package notebook reruns execute concurrently with other notebook work. Their saved timings measure that contention and are not an isolated two-minute performance acceptance test. The alternative package is observed separately because its geometry and QE differ; exposure-duration forecasts reuse rates within that package.
 
 The repositories retain upstream integration and the independently mergeable xdisp branch. Feature commits group configuration repairs, physical mapping, finite-cell integration, representation correction, extraction/covariance and executed evidence. The [stack manifest](../env/zshooter-stack.toml) pins ScopeSim and IRDB. Nothing is pushed.
 

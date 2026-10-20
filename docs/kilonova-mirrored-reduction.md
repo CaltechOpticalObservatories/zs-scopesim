@@ -7,11 +7,14 @@ The scenes include the host galaxy. Extracted scene flux divided by the input
 transient alone is therefore not a flux-conservation test; the previous BLUE
 excess is explained in the [host-light investigation](../../zshooter-drp/docs/source/kilonova-reduction-repair.md).
 
-Both notebooks completed all three epochs: 18 ZShooter channel/epoch products
-and 18 X-shooter mode/arm/epoch products, plus their flat-AB controls. The saved
-frames and plots form the **pre-ADC-correction baseline**, generated with
-ScopeSim `a0495f7`. The separate ADC correction discussed below must not be
-inferred to have been exercised by these archived frames.
+This page retains the original reduction/ADC investigation: 18 ZShooter
+channel/epoch products and 18 X-shooter mode/arm/epoch products, plus flat-AB
+controls, generated with ScopeSim `a0495f7`. Its tables and figures are the
+**pre-ADC-correction baseline**. The current notebooks use the corrected ADC,
+physical LmAPD QE, excess photon variance and explicit per-arm cadences. Their
+detector settings and new extraction checks are recorded in the
+[detector operating-point report](detector-operating-points.md); the 1800-second
+ZShooter NIR settings below are historical and superseded.
 
 Both notebooks use the same evaluated atmospheric transmission and sky curves,
 dark conditions, airmass 1.3, seeing 0.7 arcsec and MJD 60310.25. These preserve
@@ -414,8 +417,7 @@ they are not achieved merely by changing a regularization strength.
 
 The [resolution teaching note](resolution-and-sampling.md) addresses geometric
 slit width, diffraction, point-source FWHM and detector sampling. The
-[detector operating-point assessment](detector-operating-points.md) identifies
-the usable-well, gain and effective-noise inputs needed for a fair APD/H2RG or
-qCCD/CCD cadence comparison. In particular, the current long ZShooter NIR
-integrations are engineering scenarios, not demonstrated feasible detector
-operating points.
+[detector operating-point assessment](detector-operating-points.md) defines
+the usable-well, gain and effective-noise inputs now used for the APD/H2RG and
+qCCD/CCD comparison. Explicit shorter NIR integrations replace this report's
+original 1800-second forecasts, with peak-charge checks on the simulated frames.
