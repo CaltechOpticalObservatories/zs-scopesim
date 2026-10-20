@@ -98,15 +98,15 @@ def limiting_abmag(signal, source_variance, background_variance, reference_mag=2
     return reference_mag - 2.5 * np.log10(amplitude)
 
 
-def choose_boxcar(source, background, axis, pixels, centers, max_width, noise_per_pixel, sky_variance_factor=2., reference_mag=20.):
+def choose_boxcar(source, background, axis, pixels, centers, max_width, noise_per_pixel, sky_variance_factor=2., reference_mag=20., excess_noise_factor=1.):
     """Choose the smallest aperture within 0.01 mag of the best expected limit at nine wavelengths."""
     samples = np.linspace(0, len(pixels) - 1, 9).astype(int)
     limits = []
     for width in range(1, max_width + 1):
         signal = boxcar_sum(source, axis, pixels[samples], centers[samples], width)
         sky = boxcar_sum(background, axis, pixels[samples], centers[samples], width)
-        variance = sky_variance_factor * (sky + width * noise_per_pixel)
-        limits.append(limiting_abmag(signal, signal, variance, reference_mag))
+        variance = sky_variance_factor * (excess_noise_factor * sky + width * noise_per_pixel)
+        limits.append(limiting_abmag(signal, excess_noise_factor * signal, variance, reference_mag))
     limits = np.array(limits)
     choices = np.argmax(limits >= limits.max(axis=0) - .01, axis=0) + 1
     return np.rint(np.interp(np.arange(len(pixels)), samples, choices)).astype(int)
@@ -218,7 +218,7 @@ def trace_line_profiles(train, extracted, centers, eta=0.):
     return profiles
 
 
-def select_spectral_samples(signal, variance_background, reference_mag=20.):
+def select_spectral_samples(signal, variance_background, reference_mag=20., excess_noise_factor=1.):
     """Hard wavelength selection for the best expected faint-continuum limit, separate from extraction.
 
     Ranking by S/V_background gives candidate hard cuts. Source Poisson noise is
@@ -228,6 +228,6 @@ def select_spectral_samples(signal, variance_background, reference_mag=20.):
     rank = np.argsort(signal / variance_background)[::-1]
     cumulative_signal = np.cumsum(signal[rank])
     cumulative_background = np.cumsum(variance_background[rank])
-    limits = limiting_abmag(cumulative_signal, cumulative_signal, cumulative_background, reference_mag)
+    limits = limiting_abmag(cumulative_signal, excess_noise_factor*cumulative_signal, cumulative_background, reference_mag)
     count = np.argmax(limits) + 1
     return rank[:count], limits[count - 1]

@@ -440,7 +440,15 @@ class DetectorList:
             "y_size": [2],
             "pixel_size": [0.015],
             "gain": [1.0],
+            "detmode": ["SPEC"],
+            "exnoise": [1.0],
+            "avgain": [1.0],
+            "welldep": [100.0],
         })
+
+    @property
+    def active_table(self):
+        return self.table
 
 
 class FakeSelectedEffect:
@@ -1661,7 +1669,7 @@ def test_detector_background_budget_table_combines_detector_terms():
     np.testing.assert_allclose(table["dark_current_e_pix"], [3.0])
     np.testing.assert_allclose(table["additive_signal_e_pix"], [63.0])
     np.testing.assert_allclose(table["full_well_e"], [100.0])
-    np.testing.assert_allclose(table["signal_fraction_of_full_well"], [0.63])
+    np.testing.assert_allclose(table["signal_fraction_of_full_well"], [0.21])
     assert list(table["saturation_status"]) == ["ok"]
     np.testing.assert_allclose(table["read_noise_e_rms"], [5.0 * np.sqrt(3)])
     expected_total_noise = np.sqrt(60.0 + 3.0 + 75.0)
@@ -1678,18 +1686,18 @@ def test_detector_background_budget_table_flags_saturation():
         },
     }
     ztrain = FakeBudgetTrain()
-    ztrain.cmds = {"!DET.full_well": 50.0}
+    ztrain.optics_manager.all_effects[0].table['welldep'] = [20.0]
 
     table = val.detector_background_budget_table(ztrain, post_diffuse_data=diffuse_data)
 
-    np.testing.assert_allclose(table["signal_fraction_of_full_well"], [1.26])
+    np.testing.assert_allclose(table["signal_fraction_of_full_well"], [1.05])
     assert list(table["saturation_status"]) == ["saturated"]
 
 
-def test_detector_background_budget_table_requires_full_well_command():
+def test_detector_background_budget_table_requires_configured_usable_well():
     ztrain = FakeBudgetTrain()
-
-    with np.testing.assert_raises_regex(ValueError, "!DET.full_well"):
+    ztrain.optics_manager.all_effects[0].table.remove_column('welldep')
+    with np.testing.assert_raises_regex(KeyError, "welldep"):
         val.detector_background_budget_table(
             ztrain,
             post_diffuse_data={

@@ -534,10 +534,10 @@ def plot_detector_background_budget(table: Table):
     if "full_well_e" in table.colnames:
         full_well = np.asarray(table["full_well_e"], dtype=float)
         first_full_well = True
-        for xi, well_depth in zip(x, full_well, strict=True):
+        for xi, well_depth, ndit in zip(x, full_well, table["ndit"], strict=True):
             if not np.isfinite(well_depth) or well_depth <= 0:
                 continue
-            signal_ax.hlines(well_depth, xi - 0.36, xi + 0.36, colors="tab:red", linewidth=1.7 * base_width, label="full well" if first_full_well else None)
+            signal_ax.hlines(well_depth * ndit, xi - 0.36, xi + 0.36, colors="tab:red", linewidth=1.7 * base_width, label="usable well x NDIT" if first_full_well else None)
             first_full_well = False
     signal_ax.set_yscale("symlog", linthresh=1.0)
     signal_ax.set_xticks(x, channels)

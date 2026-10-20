@@ -437,7 +437,8 @@ def electron_readouts(train, readouts):
         exptime, dark, read_variance = detector_noise(train, i)
         copied = fits.HDUList([hdu.copy() for hdu in hdul])
         copied[1].data = hdul[1].data * scale
-        variance = rate * exptime + dark + read_variance
+        factor = detector._native_header['EXNOISE']
+        variance = factor * rate * exptime + dark + read_variance
         if np.any(variance < 0):
             raise ValueError('The configured source/background has a negative expected pixel variance.')
         copied.append(fits.ImageHDU(variance, name='VARIANCE'))
@@ -447,6 +448,7 @@ def electron_readouts(train, readouts):
             header['BUNIT'] = 'electron'
             header['GAIN'] = 1.
             header['COMBINE'] = 'sum'
+            header['EXNOISE'] = (factor, 'Photon variance multiplier')
             header['EXPTIME'] = exptime
             header['DIT'] = hdul[1].header['DIT']
             header['NDIT'] = hdul[1].header['NDIT']

@@ -129,6 +129,7 @@ def test_plot_source_converts_photlam_like_spectra_to_human_units():
 
 def test_detector_background_budget_plot_handles_saturation_annotation():
     table = Table({
+        "ndit": [1, 1],
         "channel": ["B", "K"],
         "post_diffuse_e_pix": [60.0, 1.0e8],
         "dark_current_e_pix": [3.0, 20.0],
@@ -154,6 +155,7 @@ def test_detector_background_budget_plot_handles_saturation_annotation():
 
 def test_detector_background_budget_plot_omits_disabled_diffuse_terms():
     table = Table({
+        "ndit": [1, 1],
         "channel": ["B", "K"],
         "post_diffuse_e_pix": [0.0, 0.0],
         "dark_current_e_pix": [3.0, 20.0],

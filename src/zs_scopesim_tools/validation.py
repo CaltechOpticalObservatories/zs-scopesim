@@ -2156,16 +2156,20 @@ def detector_geometry_table(ztrain: Any) -> Table:
     for effect in active_effects(ztrain):
         if effect.__class__.__name__ != "DetectorList":
             continue
-        for row in effect.table:
+        for row in effect.active_table:
             rows.append({
                 "detector_id": int(_row_scalar(row, "id")),
                 "image_plane_id": int(effect.meta.get("image_plane_id")),
                 "channel": effect_name(effect).replace("detector_", "").upper(),
-                "detector": effect.meta.get("detector", ""),
+                "detector": from_currsys(effect.meta["detector"], ztrain.cmds),
                 "x_size": _row_scalar(row, "x_size"),
                 "y_size": _row_scalar(row, "y_size"),
                 "pixel_size_mm": _row_scalar(row, "pixel_size"),
                 "gain_e_per_adu": _row_scalar(row, "gain"),
+                "detector_mode": row["detmode"],
+                "excess_noise_factor": row["exnoise"],
+                "avalanche_gain": row["avgain"],
+                "usable_well_e": row["welldep"],
             })
     return Table(rows=sorted(rows, key=lambda row: row["detector_id"]))
 
@@ -2256,12 +2260,9 @@ def detector_background_budget_table(ztrain: Any, post_diffuse_data: Mapping[str
         diffuse_counts = diffuse_rate * exposure_time
         dark_counts = dark_rate * exposure_time
         additive_signal = diffuse_counts + dark_counts
-        full_well = _required_detector_cmd_float(ztrain.cmds, "!DET.full_well", detector_id)
-        if np.isfinite(full_well) and full_well > 0:
-            full_well_fraction = additive_signal / full_well
-        else:
-            full_well_fraction = np.nan
-        diffuse_noise = np.sqrt(max(diffuse_counts, 0.0))
+        full_well = detector["usable_well_e"]
+        full_well_fraction = (diffuse_rate + dark_rate) * dit / full_well
+        diffuse_noise = np.sqrt(detector["excess_noise_factor"] * diffuse_counts)
         dark_noise = np.sqrt(max(dark_counts, 0.0))
         read_noise_total = read_noise_single * np.sqrt(read_ndit)
         total_noise = np.sqrt(diffuse_noise**2 + dark_noise**2 + read_noise_total**2)
@@ -2271,6 +2272,8 @@ def detector_background_budget_table(ztrain: Any, post_diffuse_data: Mapping[str
             "image_plane_id": image_plane_id,
             "channel": str(detector["channel"]),
             "detector": str(detector["detector"]),
+            "detector_mode": detector["detector_mode"],
+            "excess_noise_factor": detector["excess_noise_factor"],
             "dit_s": dit,
             "ndit": ndit,
             "exposure_time_s": exposure_time,

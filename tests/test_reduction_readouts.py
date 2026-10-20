@@ -18,19 +18,20 @@ def readout(value, variance=None, exptime=300., ndit=1):
 
 @pytest.mark.parametrize('average', [False, True])
 @pytest.mark.parametrize('dit', [0., 30.])
-def test_electron_conversion_preserves_mean_and_accumulated_variance(monkeypatch, average, dit):
+@pytest.mark.parametrize('factor', [1., 1.2])
+def test_electron_conversion_preserves_mean_and_accumulated_variance(monkeypatch, average, dit, factor):
     from zs_scopesim_tools import comparison
     ndit, gain, rate, dark, ron = 4, 2.3, 7., .02, 3.
     effects = [ExposureIntegration(dit=dit, ndit=ndit), DarkCurrent(value=dark, dit=dit, ndit=ndit), BasicReadoutNoise(noise_std=ron, ndit=ndit), ADConversion(gain=gain, dtype='float64')]
     if average:
         effects.append(ExposureOutput(mode='average', dit=dit, ndit=ndit))
-    train = SimpleNamespace(detector_managers=[[SimpleNamespace(det_id=0)]], optics_manager=SimpleNamespace(detector_effects=effects), cmds={})
+    train = SimpleNamespace(detector_managers=[[SimpleNamespace(det_id=0, _native_header={'EXNOISE': factor})]], optics_manager=SimpleNamespace(detector_effects=effects), cmds={})
     monkeypatch.setattr(comparison, 'detector_rates', lambda train: [np.full((2, 3), rate)])
     charge = (rate + dark) * dit * ndit
     original = readout(charge / gain / (ndit if average else 1), exptime=dit*ndit, ndit=ndit)
     result, = electron_readouts(train, [original])
     np.testing.assert_allclose(result[1].data, charge)
-    np.testing.assert_allclose(result['VARIANCE'].data, charge + ndit*ron**2)
+    np.testing.assert_allclose(result['VARIANCE'].data, (factor*rate + dark)*dit*ndit + ndit*ron**2)
     assert result[1].header['EXPTIME'] == dit*ndit
     assert result[1].header['RON'] == np.sqrt(ndit)*ron
     assert result[1].header['GAIN'] == 1
