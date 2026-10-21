@@ -286,7 +286,10 @@ extraction choice to evaluate.
 
 A different 7.5-day BLUE segment needed 1,190 native iterations before refinement
 could converge. Runs with limits of 2,000 and 4,000 stopped at the same iteration
-and gave the same result. The BLUE science limit is therefore 2,000. A 20-day
+and gave the same result. That run used a BLUE science limit of 2,000. The later
+detector-package 20-day realization needs 3,304 iterations, so the current limit
+is 4,000; [the runtime assessment](notebook-runtime-checks.md) preserves that
+experiment and the separate repair for cycling UVB refinement. A 20-day
 GREEN segment converged after 2,083 native iterations; continuation from 2,000
 and from 2,083 iterations gave the same refined spectrum and response to about
 1e-10 relative, with the same rejection mask. GREEN receives a 3,000-iteration

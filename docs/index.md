@@ -19,6 +19,8 @@ correction to the standard, and the host-light explanation of the apparent BLUE 
 The [mirrored kilonova reductions](kilonova-mirrored-reduction.md) describe the
 shared electron-variance inputs, native optimal extraction and propagated spectral
 covariance in the ZShooter and X-shooter examples.
+The [notebook runtime assessment](notebook-runtime-checks.md) identifies the five
+saved exceptions, their repairs and the exact scope of the executed checks.
 
 The [resolution and sampling note](resolution-and-sampling.md) separates slit geometry,
 point-source illumination, diffraction and native-pixel width measurements. The
@@ -40,6 +42,7 @@ performance-reconciliation
 resolution-and-sampling
 detector-operating-points
 kilonova-mirrored-reduction
+notebook-runtime-checks
 reproducibility
 troubleshooting
 ```
