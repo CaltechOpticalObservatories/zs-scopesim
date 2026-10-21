@@ -25,7 +25,7 @@ managed = true
 url = "https://github.com/CaltechOpticalObservatories/zshooter-drp.git"
 path = "zshooter-drp"
 relative_to = "src_dir"
-ref = "86ba42000b2baece0efc5b75924f44b04519acad"
+ref = "e7bfd5a91770fe1ee47e11dcd2a170752d15a744"
 editable = true
 managed = true
 
