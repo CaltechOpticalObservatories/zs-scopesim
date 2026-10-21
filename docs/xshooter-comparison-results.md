@@ -4,7 +4,9 @@ The executed [comparison notebook](../notebooks/02_Flat_AB_Comparison.ipynb) sta
 
 The subsequent [mirrored kilonova reduction assessment](kilonova-mirrored-reduction.md) covers native PyReduce extraction, propagated covariance and flat-AB controls in both kilonova notebooks. The [resolution teaching note](resolution-and-sampling.md) and [detector operating-point assessment](detector-operating-points.md) address the optical and detector questions raised while reviewing these plots.
 
-The plots on this page have now been regenerated with the shared ADC correction and the configured detector packages. Atmospheric displacement precedes slit clipping in the Moffat/AO path. `SPEC` and `SPEC_ALTDETECT` each run at all three ZShooter slit/seeing settings; the alternative changes the actual QE, noise and H/K pixel pitch. These plots supersede the earlier QE-rescaled detector forecasts.
+The plots on this page were regenerated with the shared ADC correction and the first configured detector-package comparison: untapered CCDs in B/G/R, LmAPD in YJ and H2RGs in H/K for `SPEC_ALTDETECT`. Atmospheric displacement precedes slit clipping in the Moffat/AO path. Each package runs at all three ZShooter slit/seeing settings. These plots supersede the earlier QE-rescaled detector forecasts.
+
+**Configuration snapshot:** the editable alternative package has since changed YJ to an 18 um H2RG. Notebook settings now use 300 s x 12 / 300 s x 1 there, but this page's saved figures and numerical results still describe the preceding YJ LmAPD run. In particular, its zero YJ detector difference is not a result for the revised package. The [operating-point report](detector-operating-points.md) records the new performance rerun and the current settings.
 
 All configurations share the same evaluated atmospheric curves: dark sky, airmass 1.1, seeing .65 arcsec and MJD 60310.25. AB 20 sets the simulation normalization; the limiting-magnitude calculation solves for the source amplitude giving S/N=5, including source shot noise.
 
@@ -68,7 +70,7 @@ OH selection uses the same expected-signal/variance procedure for both instrumen
 
 ![Noise contributions at the limiting magnitude](../validation/xshooter/data/comparison/detector_noise_budget.png)
 
-The detector trade covers five minutes and one hour, native and R approximately 1000, for natural/.70, AO/.33 and natural/.33. SPEC_ALTDETECT uses untapered CCDs in B/G/R, the same LmAPD in YJ, and 18 um H2RGs in H/K. SPEC uses tapered qCCDs and 15 um LmAPDs. Effective RN is .1/.5 e for qCCD/LmAPD and 2.5/6 e for CCD/H2RG; these are engineering specifications. Each package is simulated and extracted on its own grid. Only the displayed magnitude difference interpolates within each order's shared wavelength coverage.
+The detector trade covers five minutes and one hour, native and R approximately 1000, for natural/.70, AO/.33 and natural/.33. In this saved run, SPEC_ALTDETECT used untapered CCDs in B/G/R, the same LmAPD in YJ, and 18 um H2RGs in H/K. SPEC used tapered qCCDs and 15 um LmAPDs. Effective RN was .1/.5 e for qCCD/LmAPD and 2.5/6 e for CCD/H2RG; these are engineering specifications. Each package was simulated and extracted on its own grid. Only the displayed magnitude difference interpolates within each order's shared wavelength coverage.
 
 YJ's magnitude difference is exactly zero. For natural/.70 and one hour, the median SPEC advantage across the sampled H orders is .73 mag at native resolution and .08 mag at R=1000; K gives .04 and -.03 mag. These medians summarize structured curves, not uniform band sensitivities. H's interline regions show the largest read-noise benefit; sky-dominated bins gain little. Native-resolution comparisons also include different pixel sampling, so R=1000 is the cleaner comparison at common measured resolution.
 
