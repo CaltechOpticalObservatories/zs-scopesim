@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import io
+import gzip
 from pathlib import Path
 import warnings
 from contextlib import contextmanager
@@ -310,9 +311,13 @@ def add_cmds_to_readout_header(hdul: fits.HDUList, cmds: sim.UserCommands, train
         raise TypeError(f"Expected hdul to be an instance of astropy.io.fits.HDUList, got {type(hdul)} instead.")
 
 def save_readout_to_fits(hdul: fits.HDUList, filename: str):
-    """Save the readout HDUList to a FITS file."""
+    """Save a readout losslessly, using fast gzip for a .gz destination."""
     if isinstance(hdul, fits.HDUList):
-        hdul.writeto(filename, overwrite=True)
+        if Path(filename).suffix == '.gz':
+            with gzip.open(filename, 'wb', compresslevel=1) as stream:
+                hdul.writeto(stream)
+        else:
+            hdul.writeto(filename, overwrite=True)
     else:
         raise TypeError(f"Expected hdul to be an instance of astropy.io.fits.HDUList, got {type(hdul)} instead.")
 
@@ -334,7 +339,7 @@ def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Pa
                           cmds: sim.UserCommands | None = None, train: sim.OpticalTrain | None = None,
                           extra_headers: dict | None = None):
     """
-    Save a list of readout HDULists to FITS files from ZShooter spectral channels.
+    Save ZShooter channel readouts as .fits.gz and return their paths.
     :param list_of_hdul: List of HDULists corresponding to the ZShooter channels (blue, green, red, yj, h, k).
     :param output_dir: Directory to save the FITS files.
     :param object_name: Name of the object being observed (default: 'sim').
@@ -385,7 +390,7 @@ def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Pa
                 hdul[0].header[key] = value
 
         filename_prefix = f"{object_name}_{ndit}"
-        filename = output_dir / f"{filename_prefix}_{channels[i].upper()}.fits"
+        filename = output_dir / f"{filename_prefix}_{channels[i].upper()}.fits.gz"
         save_readout_to_fits(hdul, str(filename))
         outfiles.append(filename)
     return outfiles

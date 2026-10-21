@@ -990,6 +990,8 @@ def test_show_and_save_hdul_saves_hdul_reference_and_delta(tmp_path):
     assert len(result["files"]["reference"]) == 2
     assert len(result["files"]["delta"]) == 2
     assert len(result["files"]["figures"]) == 2
+    for kind in ('hdul', 'reference', 'delta'):
+        assert all(path.name.endswith('.fits.gz') for path in result['files'][kind])
     for paths in result["files"].values():
         for path in paths:
             assert path.exists()

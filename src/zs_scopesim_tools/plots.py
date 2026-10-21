@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+import gzip
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -1226,22 +1227,17 @@ def _readout_image_hdu(channel_hdul: Any) -> Any:
 
 def _write_readout_product(path: Path, channel_hdul: Any) -> None:
     if isinstance(channel_hdul, np.ndarray):
-        fits.PrimaryHDU(data=np.asarray(channel_hdul, dtype=float)).writeto(path, overwrite=True)
-        return
-
-    if hasattr(channel_hdul, "writeto"):
-        channel_hdul.writeto(path, overwrite=True)
-        return
-
-    image_hdu = _readout_image_hdu(channel_hdul)
-    if hasattr(image_hdu, "writeto"):
-        image_hdu.writeto(path, overwrite=True)
-        return
-
-    fits.HDUList([
-        fits.PrimaryHDU(),
-        fits.ImageHDU(data=_readout_image_data(channel_hdul)),
-    ]).writeto(path, overwrite=True)
+        product = fits.PrimaryHDU(data=np.asarray(channel_hdul, dtype=float))
+    elif hasattr(channel_hdul, "writeto"):
+        product = channel_hdul
+    else:
+        image_hdu = _readout_image_hdu(channel_hdul)
+        if hasattr(image_hdu, "writeto"):
+            product = image_hdu
+        else:
+            product = fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(data=_readout_image_data(channel_hdul))])
+    with gzip.open(path, 'wb', compresslevel=1) as stream:
+        product.writeto(stream)
 
 
 def _readout_delta_images(signal_hdul: Any, reference_hdul: Any) -> list[np.ndarray]:
@@ -1738,13 +1734,13 @@ def show_and_save_hdul(
 
     if readout_dir is not None and save_hdul:
         for title, channel_hdul in zip(titles, readouts, strict=True):
-            path = readout_dir / f"{label}_hdul_{title}.fits"
+            path = readout_dir / f"{label}_hdul_{title}.fits.gz"
             _write_readout_product(path, channel_hdul)
             files["hdul"].append(path)
 
     if readout_dir is not None and save_reference:
         for title, channel_hdul in zip(titles, reference_readouts, strict=True):
-            path = readout_dir / f"{label}_reference_{title}.fits"
+            path = readout_dir / f"{label}_reference_{title}.fits.gz"
             _write_readout_product(path, channel_hdul)
             files["reference"].append(path)
 
@@ -1752,8 +1748,8 @@ def show_and_save_hdul(
         for title, image, channel_hdul in zip(titles, delta_images, readouts, strict=True):
             header = getattr(_readout_image_hdu(channel_hdul), "header", None)
             image_hdu = fits.ImageHDU(data=np.asarray(image, dtype=float), header=header.copy() if header is not None else None, name="DELTA")
-            path = readout_dir / f"{label}_delta_{title}.fits"
-            fits.HDUList([fits.PrimaryHDU(), image_hdu]).writeto(path, overwrite=True)
+            path = readout_dir / f"{label}_delta_{title}.fits.gz"
+            _write_readout_product(path, fits.HDUList([fits.PrimaryHDU(), image_hdu]))
             files["delta"].append(path)
 
     return {"figures": figures, "files": files, "directory": readout_dir}

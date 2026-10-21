@@ -5,7 +5,7 @@ import pytest
 from astropy.io import fits
 from scopesim.effects.electronic import ADConversion, ExposureOutput, ExposureIntegration, DarkCurrent, BasicReadoutNoise
 
-from zs_scopesim_tools.helpers import electron_readouts, combine_readouts, save_zshooter_readout, subtract_hduls
+from zs_scopesim_tools.helpers import electron_readouts, combine_readouts, save_readout_to_fits, save_zshooter_readout, subtract_hduls
 
 
 def readout(value, variance=None, exptime=300., ndit=1):
@@ -83,8 +83,26 @@ def test_save_preserves_prepared_total_exposure_and_noise(tmp_path):
     science = readout(10., 12., exptime=3600., ndit=12)
     science[0].header['RON'] = science[1].header['RON'] = 6.*np.sqrt(12)
     path, = save_zshooter_readout([science], tmp_path, object_name='test', train=None)
+    assert path.name == 'test_0_BLUE.fits.gz'
     with fits.open(path) as saved:
         assert saved[1].header['EXPTIME'] == 3600.
         assert saved[0].header['RON'] == pytest.approx(6.*np.sqrt(12))
         assert saved[0].header['DATE-OBS'] != '2026-09-01T00:00:00.000'
         np.testing.assert_array_equal(saved['VARIANCE'].data, 12.)
+
+
+@pytest.mark.parametrize('suffix', ['.fits', '.fits.gz'])
+def test_readout_roundtrip_is_lossless_and_overwrites(tmp_path, suffix):
+    science = readout(10., 12., exptime=3600., ndit=12)
+    science[1].data = np.array([[np.pi, -1.e-100, 0.], [1.e100, np.nextafter(1., 2.), -np.e]])
+    science['VARIANCE'].data = np.abs(science[1].data) + .01
+    path = tmp_path / f'science{suffix}'
+    save_readout_to_fits(science, path)
+    science[1].data[0, 0] *= 2
+    save_readout_to_fits(science, path)
+    with fits.open(path) as saved:
+        for original, restored in zip(science, saved, strict=True):
+            assert original.header == restored.header
+            if original.data is not None:
+                assert restored.data.dtype.itemsize == original.data.dtype.itemsize
+                np.testing.assert_array_equal(original.data, restored.data)

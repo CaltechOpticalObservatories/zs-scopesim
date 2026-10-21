@@ -87,6 +87,7 @@ notebooks/zshooter_performance_corrected/
 notebooks/01_Kilonovae/*_optimal_variance/
 notebooks/xshooter_kilonova_reduced/
 notebooks/**/*.fits
+notebooks/**/*.fits.gz
 notebooks/**/*.png
 notebooks/source_data/Kasen2017/*.h5
 
@@ -212,12 +213,15 @@ cmake-build-*/
 /dev_notebooks/zspec_K.fits
 /dev_notebooks/zspec_R.fits
 /dev_notebooks/zspec_YJ.fits
+/dev_notebooks/zspec_*.fits.gz
 /dev_notebooks/sims/
 /zshooter-exptime/
 /sims/
 /ZShooter_v2_*.fits
+/ZShooter_v2_*.fits.gz
 validation/xshooter/cache/
 validation/xshooter/data/comparison/*.fits
+validation/xshooter/data/comparison/*.fits.gz
 validation/xshooter/data/comparison/*.npz
 validation/xshooter/data/comparison/*.npy
 validation/xshooter/data/lamps/*.npy

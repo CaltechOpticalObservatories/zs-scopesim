@@ -33,7 +33,9 @@ flux_unit = u.erg / (u.s * u.cm**2 * u.AA)
 rows = []
 for phase in args.phases:
     for arm, (lo, hi) in windows.items():
-        path = args.reduced_dir / f'spectra_KN_{phase}D_SUB_{arm}_fluxcal.fits'
+        path = args.reduced_dir / f'spectra_KN_{phase}D_SUB_{arm}_fluxcal.fits.gz'
+        if not path.exists():
+            path = path.with_suffix('')
         product = Spectra.read(path, raw=True)
         spectrum, = product.data
         assert u.Unit(product.header['BUNIT']) == flux_unit
@@ -49,7 +51,10 @@ for phase in args.phases:
         asymmetry = cov - cov.T
         assert not asymmetry.nnz or np.max(np.abs(asymmetry.data)) < 1e-12 * np.max(cov.diagonal())
 
-        traces = [trace for trace in TraceWrapper.load(args.reduced_dir / f'trace_{arm}.fits') if not trace.invalid]
+        trace_path = args.reduced_dir / f'trace_{arm}.fits.gz'
+        if not trace_path.exists():
+            trace_path = trace_path.with_suffix('')
+        traces = [trace for trace in TraceWrapper.load(trace_path) if not trace.invalid]
         with np.load(args.reduced_dir / f'wavecal_{arm}.npz') as calibration:
             native_steps = np.concatenate([np.diff(cal_wave[trace.column_range[0]:trace.column_range[1]]) for cal_wave, trace in zip(calibration['wave_img'], traces, strict=True)])
             native_gap = np.max(np.abs(native_steps))
