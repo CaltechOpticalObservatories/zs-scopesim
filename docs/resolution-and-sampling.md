@@ -2,7 +2,11 @@
 
 Internal working note for interpreting the current simulator and discussing slit/PSF design. The approximately 18,000 geometric slit specification and a measured point-source FWHM resolving power of 20,000–24,000 describe different widths. The AO scatter also contains a substantial detector-phase effect in the present half-height measurement. Neither observation, by itself, establishes extra optical resolving power in the proposed instrument.
 
-The calculations below use the configured June 2026 prescription, existing fixed placements, 15 micrometre pixels, and the existing natural/AO PSF prescriptions. No optical parameters or science figures were retuned. The [reproducible experiment](../validation/xshooter/resolution_sampling.py) uses the actual ScopeSim PSF, slit, spectral trace and native detector WCS.
+The calculations were rerun on 2026-10-21 in [03_Resolution_and_Sampling.ipynb](../notebooks/03_Resolution_and_Sampling.ipynb), which now contains the executed experiment, checks and figures. The preceding report used a standalone script and covered only the default 15 micrometre detectors; it had not been updated for the alternate detector mode.
+
+Both `SPEC` and `SPEC_ALTDETECT` now use the configured June 2026 prescription, existing fixed placements and natural/AO PSFs. The notebook reads detector types and pitches from the configured detector headers. In this run, `SPEC` has 15 micrometre pixels in all six channels; `SPEC_ALTDETECT` has 15 micrometre CCD pixels in B/G/R and 18 micrometre H2RG pixels in YJ/H/K. These describe the current editable IRDB settings. No optical parameters or science notebooks were retuned. The [line-projection helper](../validation/xshooter/resolution_sampling.py) uses the actual ScopeSim PSF, slit, spectral trace and native detector WCS.
+
+The rerun changes the preceding `SPEC` resolving powers by at most .0064%, sampled FWHM by .0066%, and integrated flux by .00017%. Its previous interpretation remains applicable. The larger alternate NIR pixels materially increase phase sensitivity at the .33 arcsec slit, as quantified below.
 
 ## Which width is being measured?
 
@@ -49,7 +53,7 @@ The configured 1500/1250 mm collimators, 225 mm camera and 0.5306 mm/arcsec entr
 =4.457\,\mathrm{pixels}.
 \]
 
-That is the reference magnification, not a constant at every wavelength. The effective dispersion focal length is \(225(1500/1250)=270\) mm; inserting the collimator ratio again into \(\Delta\alpha\) would double-count it. Across one primary FSR, approximately \(\lambda/m\), geometric \(R=\lambda/\Delta\lambda_{\rm slit}\) varies by approximately \(1/m\), about 1–3% here. The existing [finite-angle check](../validation/xshooter/slit_anamorphism.py) independently propagates the slit edges and confirms this calculation.
+That is the reference magnification for 15 micrometre pixels, not a constant at every wavelength. With the current alternate NIR pitch of 18 micrometres, the same physical image spans 3.714 pixels at the reference position. The effective dispersion focal length is \(225(1500/1250)=270\) mm; inserting the collimator ratio again into \(\Delta\alpha\) would double-count it. Across one primary FSR, approximately \(\lambda/m\), geometric \(R=\lambda/\Delta\lambda_{\rm slit}\) varies by approximately \(1/m\), about 1–3% here. The existing [finite-angle check](../validation/xshooter/slit_anamorphism.py) independently propagates the slit edges and confirms this calculation.
 
 This is a conclusion about the adopted separable planar prescription. It is not evidence that Jason's description of the Zemax model is wrong. A useful comparison with him is a common table of full-slit width, point-source FWHM, dispersion, wavelength, order/FSR position and illumination, including the actual camera spot or LSF. A statement of “18k” without the width convention cannot resolve the disagreement.
 
@@ -70,18 +74,18 @@ The comparison's `seeing=.65` specifies the natural **radial FWHM at 500 nm befo
 
 ## The rising natural R and the AO scatter, tested separately
 
-The new experiment projects a narrow Gaussian line through the actual configured PSF/slit/trace. For each channel it holds the slit, PSF and order fixed and moves the line by one native pixel in 17 steps. It sums the complete spatial cutout, so aperture-selection changes are absent. The input line has \(R_{\rm FWHM}=200{,}000\), as in the comparison notebook; it is finite and much narrower than the output. Atmosphere, throughput and background are omitted because this experiment measures shape.
+The notebook projects a narrow Gaussian line through the actual configured PSF/slit/trace in each detector mode. For each channel it holds the slit, PSF and order fixed and moves the line by one native pixel in 17 steps. It sums the complete spatial cutout, so aperture-selection changes are absent. The input line has \(R_{\rm FWHM}=200{,}000\), as in the comparison notebook; it is finite and much narrower than the output. Atmosphere, throughput and background are omitted because this experiment measures shape. The first figure and table show `SPEC`.
 
 ![Detector-phase dependence of the measured width](../validation/xshooter/data/resolution_sampling/pixel_phase.png)
 
 | Representative order | Wavelength [micrometres] | Natural/.70 measured R range | AO/.33 measured R range |
 |---|---:|---:|---:|
 | B 102 | .356 | 20,186–20,310 | 37,388–41,719 |
-| G 71 | .512 | 20,545–20,660 | 38,099–43,981 |
-| R 47 | .773 | 20,964–21,398 | 38,143–45,781 |
+| G 71 | .512 | 20,545–20,660 | 38,098–43,981 |
+| R 47 | .773 | 20,964–21,398 | 38,145–45,781 |
 | YJ 69 | 1.100 | 21,407–22,120 | 38,291–45,951 |
-| H 47 | 1.615 | 21,986–23,010 | 38,253–46,077 |
-| K 35 | 2.168 | 22,515–23,702 | 38,385–46,091 |
+| H 47 | 1.615 | 21,986–23,010 | 38,252–46,078 |
+| K 35 | 2.168 | 22,515–23,702 | 38,385–46,092 |
 
 The natural/.70 trend survives with the same order-center selection and fixed extraction. The redder, narrower seeing profile changes the slit illumination; pixel integration and half-height interpolation also matter, including where the continuous clipped profile has its half-height at the slit edge. It is not a wavelength-dependent improvement in the geometric full-slit specification. The comparison's broader 19,855–24,205 range additionally samples other orders and 20/50/80% FSR positions.
 
@@ -91,24 +95,51 @@ The AO prescription is an absolute Moffat FWHM table, roughly .394 arcsec at the
 
 The joined points show the actual width estimator: the maximum recorded pixel sets half-height, and adjacent samples determine each crossing. They are not a reconstructed continuous optical LSF. A later engineering comparison should fit or compare pixel-integrated line-profile models and report the phase dependence alongside the width. Merely smoothing this graph would hide the effect.
 
-The 306 line projections plus 18 quadrature checks took approximately 25 seconds. Moving the line across a pixel changes integrated flux by at most .041%. Increasing detector integration quadrature from 4 to 16 changes flux by at most .24%, FWHM by .018%, and centroid by .00023 pixel. Those fixed-phase changes are much smaller than the phase-driven FWHM excursions. The existing [spatial/spectral convergence experiment](../validation/xshooter/line_convergence.py) separately checks those grid directions. These tests explain the scatter without attributing it to an unconverged detector integration.
+### Alternate detector mode
+
+![Alternate detector phase dependence](../validation/xshooter/data/resolution_sampling/pixel_phase_SPEC_ALTDETECT.png)
+
+B/G/R match `SPEC` in this noiseless experiment because their geometry and pitch are unchanged. The current 18 micrometre NIR pixels give these ranges at the same representative orders:
+
+| Order | Natural/.70 measured R | Natural/.33 measured R | AO/.33 measured R | AO/.33 FWHM [pixels] |
+|---|---:|---:|---:|---:|
+| YJ 69 | 20,711–22,337 | 32,804–42,773 | 33,173–47,381 | 1.40–2.00 |
+| H 47 | 21,530–22,944 | 32,934–42,931 | 33,358–47,387 | 1.40–1.99 |
+| K 35 | 22,145–23,466 | 32,712–43,149 | 33,063–47,471 | 1.40–2.01 |
+
+![Alternate native sampled profiles at four phases](../validation/xshooter/data/resolution_sampling/profiles_SPEC_ALTDETECT.png)
+
+The narrower slit now shows substantial phase dependence even under natural seeing. The higher apparent maxima do not mean larger pixels improve optical resolution: the peak-pixel half-height estimator changes with sampling phase. The unchanged geometric slit resolving power and the sampled profiles make that distinction directly inspectable. These excursions make a single measured FWHM a poor summary of the .33 arcsec NIR trade; pixel-integrated profile fitting remains the useful next measurement improvement.
+
+The 612 line projections plus 36 quadrature checks took **57 seconds**, including six fresh train constructions; setup and projection times are saved separately. Moving the line across a pixel changes integrated flux by at most .041% in `SPEC` and .193% in `SPEC_ALTDETECT`. Increasing detector integration quadrature from 4 to 16 changes flux by at most .24%, FWHM by .101%, and centroid by .00024 pixel across both modes. All pass the 1% flux, 2% FWHM and .01-pixel convergence checks. Those fixed-phase changes are much smaller than the phase-driven FWHM excursions. The existing [spatial/spectral convergence experiment](../validation/xshooter/line_convergence.py) separately checks those grid directions; it was not rerun for this update.
 
 ## How narrow before detector sampling matters?
 
-The following map projects the slit edges using the **actual rotated trace and native detector WCS**. It includes only center-ray locations on the detector within each primary FSR. It therefore differs slightly from unrotated internal echelle-coordinate widths. The lower panel is the slit width that projects to two detector-x pixels locally; the script substitutes this width back into the configured mapping and checks the result.
+The following map projects the slit edges using the **actual rotated trace and native detector WCS**. It includes only center-ray locations on the detector within each primary FSR. It therefore differs slightly from unrotated internal echelle-coordinate widths. The lower panel is the slit width that projects to two detector-x pixels locally; the notebook substitutes this width back into the configured mapping and checks the result.
 
 ![Slit sampling and the two-pixel full-slit width](../validation/xshooter/data/resolution_sampling/slit_sampling.png)
 
-| Channel | .70 arcsec full-slit width [detector-x pixels] | Slit projecting to two pixels [arcsec] |
+| SPEC channel | .70 arcsec full-slit width [detector-x pixels] | Slit projecting to two pixels [arcsec] |
 |---|---:|---:|
 | B | 4.31–4.82 | .291–.325 |
 | G | 4.17–4.96 | .282–.335 |
-| R | 4.02–5.17 | .271–.348 |
+| R | 4.02–5.18 | .270–.348 |
 | YJ | 4.15–4.91 | .285–.337 |
 | H | 4.06–5.13 | .273–.345 |
 | K | 3.99–5.22 | .268–.351 |
 
 Thus .33 arcsec is already near two pixels, and its full-slit projection falls below two pixels in parts of some orders. A narrower illuminated spot can have still fewer pixels across its LSF even with a wider physical slit. The 4.46-pixel reference alone cannot set a safe lower slit width over the whole format.
+
+![Alternate slit sampling and two-pixel full-slit width](../validation/xshooter/data/resolution_sampling/slit_sampling_SPEC_ALTDETECT.png)
+
+| SPEC_ALTDETECT channel | .70 arcsec full-slit width [detector-x pixels] | Slit projecting to two pixels [arcsec] |
+|---|---:|---:|
+| B/G/R | Same as SPEC | Same as SPEC |
+| YJ | 3.46–4.09 | .342–.405 |
+| H | 3.38–4.28 | .327–.414 |
+| K | 3.30–4.42 | .317–.425 |
+
+At identical wavelengths the projected slit width scales with inverse pitch. The notebook verifies that the physical widths agree within .00045 of a 15 micrometre pixel, while geometric R is unchanged. Small mapping differences arise because the fitted trace tables span each detector's coverage. The table above also includes the extra primary-FSR coverage admitted by the larger physical NIR detectors, so its extrema need not be exactly the `SPEC` extrema divided by 1.2. With the present alternate YJ detector, the .33 arcsec full slit projects to fewer than two pixels throughout the covered primary FSRs. The configured order list is unchanged; this experiment does not restore the removed reddest YJ order.
 
 **Two pixels per FWHM is an engineering sampling indicator, not a universal Nyquist limit.** Strict Nyquist concerns the highest spatial frequency transmitted by the optical/pixel transfer function. Slit edges, pupil diffraction and aberrations determine that function; profiles with the same FWHM can have different sampling requirements. [Robertson (2017)](https://arxiv.org/abs/1707.06455) demonstrates the dependence on LSF shape and phase and cautions against identifying two pixels/FWHM with Nyquist.
 
@@ -120,4 +151,4 @@ The current path applies an effective natural/AO PSF before the slit, then geome
 
 The useful next optical-engineering input is a monochromatic detector PSF or line profile, including its pupil/illumination convention, at representative order centers and FSR edges. That permits a direct comparison of geometric slit width, continuous optical LSF and native detector samples, and an informed slit/defocus trade. It also gives a concrete way to determine whether the present 20–24k point-source predictions are realistic for the intended camera image quality.
 
-Data: [all-order sampling](../validation/xshooter/data/resolution_sampling/slit_sampling.csv), [phase measurements](../validation/xshooter/data/resolution_sampling/pixel_phase.csv), [native profiles](../validation/xshooter/data/resolution_sampling/profiles.csv), [quadrature comparison](../validation/xshooter/data/resolution_sampling/quadrature_check.csv). Existing comparison plots retain their original values; this note clarifies their physical and measurement conventions.
+Data: [configured detectors](../validation/xshooter/data/resolution_sampling/detectors.csv), [all-order sampling](../validation/xshooter/data/resolution_sampling/slit_sampling.csv), [phase measurements](../validation/xshooter/data/resolution_sampling/pixel_phase.csv), [native profiles](../validation/xshooter/data/resolution_sampling/profiles.csv), [quadrature comparison](../validation/xshooter/data/resolution_sampling/quadrature_check.csv), and [timings](../validation/xshooter/data/resolution_sampling/timing.csv). Each table identifies the detector mode. Run the linked notebook to regenerate these products from the current IRDB settings. These replace the report's earlier default-only sampling results; performance and kilonova notebook outputs were not changed by this experiment.

@@ -23,7 +23,9 @@ The [notebook runtime assessment](notebook-runtime-checks.md) identifies the fiv
 saved exceptions, their repairs and the exact scope of the executed checks.
 
 The [resolution and sampling note](resolution-and-sampling.md) separates slit geometry,
-point-source illumination, diffraction and native-pixel width measurements. The
+point-source illumination, diffraction and native-pixel width measurements. Its
+[executed notebook](../notebooks/03_Resolution_and_Sampling.ipynb) compares the current
+`SPEC` and `SPEC_ALTDETECT` sampling, with detector pitches read from IRDB. The
 [detector operating-point assessment](detector-operating-points.md) gives the
 `SPEC`/`SPEC_ALTDETECT` packages, explicit per-arm exposure settings, charge-limit
 warnings, avalanche variance and the specifications needed for vendor discussions.
