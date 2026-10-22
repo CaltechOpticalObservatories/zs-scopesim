@@ -3,6 +3,10 @@
 This documentation covers the ZShooter simulator workspace: environment setup,
 science notebooks, reproducibility tools, and common troubleshooting.
 
+The [ZImager integration report](zimager-integration.md) describes the
+`zimager_xshooter` branches, the imaging notebook and the spectroscopy
+regression checks against the pre-merge stack.
+
 For the current instrument comparison, start with the
 [flat-AB comparison notebook](../notebooks/02_Flat_AB_Comparison.ipynb) and the
 [executed results report](xshooter-comparison-results.md). The
@@ -36,6 +40,7 @@ warnings, avalanche variance and the specifications needed for vendor discussion
 
 install
 notebooks
+zimager-integration
 zshooter-xdisp-geometry
 xshooter
 xshooter-comparison-results
