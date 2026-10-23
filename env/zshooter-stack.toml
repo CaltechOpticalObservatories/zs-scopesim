@@ -9,7 +9,7 @@ src_dir = "~/src"
 url = "https://github.com/CaltechOpticalObservatories/ScopeSim.git"
 path = "ScopeSim"
 relative_to = "src_dir"
-ref = "main"
+ref = "4830d68ace8a600885bfd2e06c1f341a6766c534"
 editable = true
 managed = true
 
@@ -17,15 +17,15 @@ managed = true
 url = "https://github.com/CaltechOpticalObservatories/irdb.git"
 path = "irdb"
 relative_to = "src_dir"
-ref = "dev_master"
+ref = "d1415c4a6bdad7d3ce0fdee58e17cd9d2424cc8d"
 editable = true
 managed = true
 
 [repos.zsdrp]
 url = "https://github.com/CaltechOpticalObservatories/zshooter-drp.git"
 path = "zshooter-drp"
-relative_to = "main"
-ref = "main"
+relative_to = "src_dir"
+ref = "f02a53962be554cd6bf56ca50e7e47df5991fe27"
 editable = true
 managed = true
 
