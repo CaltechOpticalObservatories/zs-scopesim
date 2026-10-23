@@ -1,0 +1,6 @@
+notebook,cell,exception,message
+dev_notebooks/psf_adc.ipynb,b8ca468696421318,NameError,name 'input_psf' is not defined
+dev_notebooks/zshooter_science_validation.ipynb,a55b6247,NotImplementedError,Trace detector coordinates do not yet support image-plane effects.
+notebooks/01_Kilonovae.ipynb,7d9396c34725b5aa,RuntimeError,Slit decomposition did not reach a fixed point for uncertainty propagation
+notebooks/01_Kilonovae_XSHOOTER.ipynb,27dee46f23bfcabd,RuntimeError,Slit decomposition did not reach a fixed point for uncertainty propagation
+validation/xshooter/Upstream_Adoption.ipynb,9003a4957d7808a8,KeyError,"""Keyword 'INSTRUME' not found."""
