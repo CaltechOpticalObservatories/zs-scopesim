@@ -1,0 +1,13 @@
+stage,module,function,calls,self_seconds,cumulative_seconds
+source,spectral_trace_list_utils.py,map_spectra_to_focal_plane,125,3.1856,52.8112
+source,fov.py,make_hdu,250,13.2028,42.9438
+source,analytical.py,_apply_convolution,125,0.7531,46.9585
+background,spectral_trace_list_utils.py,map_spectra_to_focal_plane,125,4.0132,47.964
+background,fov.py,make_hdu,250,12.6539,41.0806
+background,analytical.py,_apply_convolution,125,0.7611,45.0373
+paired-extraction,column.py,_convert_sequence_data_to_array,127,0.6947,4.5584
+paired-extraction,table.py,_init_from_list_of_dicts,3,1.7076,6.644
+paired-extraction,column.py,__array_finalize__,570955,0.6373,6.6139
+aggregation,column.py,_convert_sequence_data_to_array,39,0.2445,1.5722
+aggregation,table.py,_init_from_list_of_dicts,1,0.3027,1.9777
+aggregation,column.py,__array_finalize__,570826,0.6393,6.5193

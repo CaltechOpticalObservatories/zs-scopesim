@@ -1,0 +1,7 @@
+channel,wavelength [nm],slit throughput,spatial aperture [arcsec],extraction area [arcsec2],extraction throughput,flat AB=19.5 source rate [ph/s/nm],cumulative sky rate [ph/s/nm],cumulative sky [AB/arcsec2],sky/source
+B,378,0.684,0.734,0.514,0.5,87.9,3.33,23.08,0.0379
+G,534,0.715,0.681,0.477,0.491,61.1,4.18,22.38,0.0685
+R,956,0.766,0.627,0.439,0.545,37.9,2.65,22.15,0.0699
+YJ,1133,0.756,0.586,0.41,0.562,33.0,4.97,21.21,0.151
+H,1615,0.786,0.543,0.38,0.566,23.3,15.8,19.49,0.676
+K,2168,0.81,0.512,0.358,0.577,17.7,18.4,18.94,1.04

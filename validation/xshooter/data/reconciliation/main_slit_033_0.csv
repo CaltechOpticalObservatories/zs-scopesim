@@ -1,0 +1,17 @@
+quantity,value,why it matters
+instrument,ZShooter_v2 SPEC,loads the release IRDB model
+zs-scopesim revision,d383ad2-dirty,identifies the notebook and package implementation
+ScopeSim version,0.11.5a3,identifies the simulation engine
+IRDB revision,d1415c4,identifies the configured instrument data
+airmass,1.100000,"sets atmospheric path, dispersion, and sky"
+altitude [deg],65.380023,derived from airmass for ScopeSim AltAz context
+RA/Dec,None/None,cleared so they do not override airmass
+seeing [arcsec],0.650000,natural-seeing PSF scale
+sky brightness,dark,SkyCalc continuum/line brightness preset
+command telescope area,0,pre-train default; should be replaced by optical-train derived area
+train telescope area,76.52965998654079 m2,derived from the active Keck mirror SurfaceList and used by FOV/source scaling
+VIS slit [arcsec],0.330000,source throughput and resolution
+NIR slit [arcsec],0.330000,source throughput and resolution
+spectral resolving power guardrail,40000,internal spectral work grid / sky sampling guardrail
+DIT x NDIT,1800 x 2,per-channel detector exposure; total is DIT*NDIT
+pupil angle [deg],0.000000,source-pair orientation used below
