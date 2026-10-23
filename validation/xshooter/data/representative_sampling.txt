@@ -1,0 +1,4 @@
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/feature-scopesim/scopesim; irdb /Users/jibailey/src/irdb
+Ordinary seeing: FWHM=0.633165 arcsec; in-slit/exact=0.919472
+Line R=20000; wavelength step=0.100 A; prepared/exact range=0.999916..1.000086
+Line R=200000; wavelength step=0.100 A; prepared/exact range=0.002829..3.308268
