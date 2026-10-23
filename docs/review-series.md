@@ -65,6 +65,16 @@ These suites overlap; their counts must not be summed as unique tests. Twelve ad
 
 The preserved ZImager integration evidence compares 18 full spectroscopy rate arrays bit for bit. This remains the original source-branch execution; exact production-tree comparisons establish that the review stack contains the same implementation. The X-shooter faint-mode NIR absolute flux-calibration limitation remains flagged beside its science evidence.
 
+## GitHub CI at publication
+
+The local results above are separate from GitHub Actions. The new PRs are open for review, but CI is not uniformly passing. The inspected jobs identify three follow-up areas:
+
+- [ScopeSim baseline offline job](https://github.com/CaltechOpticalObservatories/ScopeSim/actions/runs/40016217269/job/120628819529): test collection fails with `ModuleNotFoundError: No module named 'palace'`. The hosted runner needs the fork's PALACE dependency configured; the local `zssim` environment already has it.
+- [Workspace documentation job](https://github.com/CaltechOpticalObservatories/zs-scopesim/actions/runs/40016572334/job/120630043859): `sphinx-build -W` fails on unresolved report/evidence links, including files outside the documentation source tree and references supplied by later PRs in the stack. Resolve those links for the built documentation and account for intermediate PR boundaries.
+- [IRDB MICADO notebook job](https://github.com/CaltechOpticalObservatories/irdb/actions/runs/40016224858/job/120628895328): SkyCalc times out connecting to the ESO service. A fixed local sky input or an explicit policy for network-dependent jobs is needed for reliable CI.
+
+These are representative job inspections, not a complete CI failure diagnosis. Other matrix jobs were still running at handoff. No workflow behavior, test selection or failure policy was changed during the PR split.
+
 ## Notebook review
 
 The following files contain cell sources only, with output blobs and execution metadata excluded. They are review material; the corresponding committed notebooks retain their executed tables and figures.
