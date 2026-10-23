@@ -10,35 +10,35 @@ Yashvi-Sharma is requested on every PR; cfremling is additionally requested on s
 
 | Series | Repository | Theme / PR | Base |
 |---:|---|---|---|
-| 01 | zs-scopesim | [Pin the deployed simulator baseline for the review series](https://github.com/CaltechOpticalObservatories/zs-scopesim/tree/review/xs-01-baseline-pins) | `main` |
-| 02 | scopesim | [Integrate the adopted upstream ScopeSim baseline](https://github.com/CaltechOpticalObservatories/scopesim/tree/review/xs-02-upstream-baseline) | `main` |
-| 03 | irdb | [Integrate the adopted upstream instrument baseline](https://github.com/CaltechOpticalObservatories/irdb/tree/review/xs-03-upstream-baseline) | `dev_master` |
-| 04 | PyReduce | [Update the Caltech reduction fork to the adopted PyReduce 0.9 baseline](https://github.com/CaltechOpticalObservatories/PyReduce/tree/review/xs-04-version-09) | `master` |
-| 05 | scopesim | [Preserve arm exposures, charge binning and independent detector readouts](https://github.com/CaltechOpticalObservatories/scopesim/tree/review/xs-05-detector-readouts) | `review/xs-02-upstream-baseline` |
-| 06 | scopesim | [Correct analytical echelle angles, placement and physical slit dispersion](https://github.com/CaltechOpticalObservatories/scopesim/tree/review/xs-06-echelle-geometry) | `review/xs-05-detector-readouts` |
-| 07 | scopesim | [Use calibrated traces and physical slit and detector coordinates](https://github.com/CaltechOpticalObservatories/scopesim/tree/review/xs-07-calibrated-traces) | `review/xs-06-echelle-geometry` |
-| 08 | scopesim | [Preserve native spectral photon integrals and source representations](https://github.com/CaltechOpticalObservatories/scopesim/tree/review/xs-08-spectral-integrals) | `review/xs-07-calibrated-traces` |
-| 09 | scopesim | [Integrate slit illumination and detector pixels with pre-slit ADC shifts](https://github.com/CaltechOpticalObservatories/scopesim/tree/review/xs-09-slit-projection) | `review/xs-08-spectral-integrals` |
-| 10 | scopesim | [Model configured avalanche noise and warn at detector exposure limits](https://github.com/CaltechOpticalObservatories/scopesim/tree/review/xs-10-detector-operating-points) | `review/xs-09-slit-projection` |
-| 11 | irdb | [Add attributed X-shooter calibration inputs and preparation calculations](https://github.com/CaltechOpticalObservatories/irdb/tree/review/xs-11-xshooter-calibrations) | `review/xs-03-upstream-baseline` |
-| 12 | irdb | [Configure full-frame X-shooter spectroscopy and detector readouts](https://github.com/CaltechOpticalObservatories/irdb/tree/review/xs-12-xshooter-instrument) | `review/xs-11-xshooter-calibrations` |
-| 13 | irdb | [Adopt the selected ZShooter optical prescription and physical slit settings](https://github.com/CaltechOpticalObservatories/irdb/tree/review/xs-13-zshooter-prescription) | `review/xs-12-xshooter-instrument` |
-| 14 | irdb | [Configure editable ZShooter detector alternatives and operating points](https://github.com/CaltechOpticalObservatories/irdb/tree/review/xs-14-alternate-detectors) | `review/xs-13-zshooter-prescription` |
-| 15 | PyReduce | [Preserve joint slit-curvature fits and register wavelength search radius](https://github.com/CaltechOpticalObservatories/PyReduce/tree/review/xs-15-curvature-configuration) | `review/xs-04-version-09` |
-| 16 | PyReduce | [Propagate extraction covariance and converge faint slit profiles](https://github.com/CaltechOpticalObservatories/PyReduce/tree/review/xs-16-extraction-covariance) | `review/xs-15-curvature-configuration` |
-| 17 | zshooter-drp | [Repair ZShooter order identities, calibration ranges and extraction settings](https://github.com/CaltechOpticalObservatories/zshooter-drp/tree/review/xs-17-zshooter-format) | `main` |
-| 18 | zshooter-drp | [Propagate prepared detector variance and physical spectral covariance](https://github.com/CaltechOpticalObservatories/zshooter-drp/tree/review/xs-18-extraction-variance) | `review/xs-17-zshooter-format` |
-| 19 | zshooter-drp | [Reduce native X-shooter arms with their configured count conventions](https://github.com/CaltechOpticalObservatories/zshooter-drp/tree/review/xs-19-xshooter-reduction) | `review/xs-18-extraction-variance` |
-| 20 | zshooter-drp | [Bind calibrations to detector geometry and store compressed FITS products](https://github.com/CaltechOpticalObservatories/zshooter-drp/tree/review/xs-20-detector-calibration-products) | `review/xs-19-xshooter-reduction` |
-| 21 | zs-scopesim | [Use configured detector rates and covariance-aware readout helpers](https://github.com/CaltechOpticalObservatories/zs-scopesim/tree/review/xs-21-scientific-helpers) | `review/xs-01-baseline-pins` |
-| 22 | zs-scopesim | [Reconcile performance forecasts and compare configured detector packages](https://github.com/CaltechOpticalObservatories/zs-scopesim/tree/review/xs-22-performance-trades) | `review/xs-21-scientific-helpers` |
-| 23 | zs-scopesim | [Document accepted geometry and execute resolution and slit-illumination checks](https://github.com/CaltechOpticalObservatories/zs-scopesim/tree/review/xs-23-resolution-lamps) | `review/xs-22-performance-trades` |
-| 24 | zs-scopesim | [Compare flat-AB observations at native and common resolving power](https://github.com/CaltechOpticalObservatories/zs-scopesim/tree/review/xs-24-flat-ab-comparison) | `review/xs-23-resolution-lamps` |
-| 25 | zs-scopesim | [Mirror kilonova reductions and compare the simulated and published spectra](https://github.com/CaltechOpticalObservatories/zs-scopesim/tree/review/xs-25-kilonova-comparison) | `review/xs-24-flat-ab-comparison` |
-| 26 | zs-scopesim | [Consolidate simulator validation and publish reproducible dependency pins](https://github.com/CaltechOpticalObservatories/zs-scopesim/tree/review/xs-26-validation-reproducibility) | `review/xs-25-kilonova-comparison` |
-| 27 | scopesim | [Apply imaging branch throughput before wavelength integration](https://github.com/CaltechOpticalObservatories/scopesim/tree/review/zi-27-zimager-throughput) | `review/xs-10-detector-operating-points` |
-| 28 | irdb | [Configure ZImager optics, filters and stochastic detector readouts](https://github.com/CaltechOpticalObservatories/irdb/tree/review/zi-28-zimager-instrument) | `review/xs-14-alternate-detectors` |
-| 29 | zs-scopesim | [Execute ZImager and verify unchanged spectroscopic simulations](https://github.com/CaltechOpticalObservatories/zs-scopesim/tree/review/zi-29-zimager-example) | `review/xs-26-validation-reproducibility` |
+| 01 | zs-scopesim | [Pin the deployed simulator baseline for the review series](https://github.com/CaltechOpticalObservatories/zs-scopesim/pull/11) | `main` |
+| 02 | scopesim | [Integrate the adopted upstream ScopeSim baseline](https://github.com/CaltechOpticalObservatories/ScopeSim/pull/24) | `main` |
+| 03 | irdb | [Integrate the adopted upstream instrument baseline](https://github.com/CaltechOpticalObservatories/irdb/pull/12) | `dev_master` |
+| 04 | PyReduce | [Update the Caltech reduction fork to the adopted PyReduce 0.9 baseline](https://github.com/CaltechOpticalObservatories/PyReduce/pull/1) | `master` |
+| 05 | scopesim | [Preserve arm exposures, charge binning and independent detector readouts](https://github.com/CaltechOpticalObservatories/ScopeSim/pull/25) | `review/xs-02-upstream-baseline` |
+| 06 | scopesim | [Correct analytical echelle angles, placement and physical slit dispersion](https://github.com/CaltechOpticalObservatories/ScopeSim/pull/26) | `review/xs-05-detector-readouts` |
+| 07 | scopesim | [Use calibrated traces and physical slit and detector coordinates](https://github.com/CaltechOpticalObservatories/ScopeSim/pull/27) | `review/xs-06-echelle-geometry` |
+| 08 | scopesim | [Preserve native spectral photon integrals and source representations](https://github.com/CaltechOpticalObservatories/ScopeSim/pull/28) | `review/xs-07-calibrated-traces` |
+| 09 | scopesim | [Integrate slit illumination and detector pixels with pre-slit ADC shifts](https://github.com/CaltechOpticalObservatories/ScopeSim/pull/29) | `review/xs-08-spectral-integrals` |
+| 10 | scopesim | [Model configured avalanche noise and warn at detector exposure limits](https://github.com/CaltechOpticalObservatories/ScopeSim/pull/30) | `review/xs-09-slit-projection` |
+| 11 | irdb | [Add attributed X-shooter calibration inputs and preparation calculations](https://github.com/CaltechOpticalObservatories/irdb/pull/13) | `review/xs-03-upstream-baseline` |
+| 12 | irdb | [Configure full-frame X-shooter spectroscopy and detector readouts](https://github.com/CaltechOpticalObservatories/irdb/pull/14) | `review/xs-11-xshooter-calibrations` |
+| 13 | irdb | [Adopt the selected ZShooter optical prescription and physical slit settings](https://github.com/CaltechOpticalObservatories/irdb/pull/15) | `review/xs-12-xshooter-instrument` |
+| 14 | irdb | [Configure editable ZShooter detector alternatives and operating points](https://github.com/CaltechOpticalObservatories/irdb/pull/16) | `review/xs-13-zshooter-prescription` |
+| 15 | PyReduce | [Preserve joint slit-curvature fits and register wavelength search radius](https://github.com/CaltechOpticalObservatories/PyReduce/pull/2) | `review/xs-04-version-09` |
+| 16 | PyReduce | [Propagate extraction covariance and converge faint slit profiles](https://github.com/CaltechOpticalObservatories/PyReduce/pull/3) | `review/xs-15-curvature-configuration` |
+| 17 | zshooter-drp | [Repair ZShooter order identities, calibration ranges and extraction settings](https://github.com/CaltechOpticalObservatories/zshooter-drp/pull/5) | `main` |
+| 18 | zshooter-drp | [Propagate prepared detector variance and physical spectral covariance](https://github.com/CaltechOpticalObservatories/zshooter-drp/pull/6) | `review/xs-17-zshooter-format` |
+| 19 | zshooter-drp | [Reduce native X-shooter arms with their configured count conventions](https://github.com/CaltechOpticalObservatories/zshooter-drp/pull/7) | `review/xs-18-extraction-variance` |
+| 20 | zshooter-drp | [Bind calibrations to detector geometry and store compressed FITS products](https://github.com/CaltechOpticalObservatories/zshooter-drp/pull/8) | `review/xs-19-xshooter-reduction` |
+| 21 | zs-scopesim | [Use configured detector rates and covariance-aware readout helpers](https://github.com/CaltechOpticalObservatories/zs-scopesim/pull/12) | `review/xs-01-baseline-pins` |
+| 22 | zs-scopesim | [Reconcile performance forecasts and compare configured detector packages](https://github.com/CaltechOpticalObservatories/zs-scopesim/pull/13) | `review/xs-21-scientific-helpers` |
+| 23 | zs-scopesim | [Document accepted geometry and execute resolution and slit-illumination checks](https://github.com/CaltechOpticalObservatories/zs-scopesim/pull/14) | `review/xs-22-performance-trades` |
+| 24 | zs-scopesim | [Compare flat-AB observations at native and common resolving power](https://github.com/CaltechOpticalObservatories/zs-scopesim/pull/15) | `review/xs-23-resolution-lamps` |
+| 25 | zs-scopesim | [Mirror kilonova reductions and compare the simulated and published spectra](https://github.com/CaltechOpticalObservatories/zs-scopesim/pull/16) | `review/xs-24-flat-ab-comparison` |
+| 26 | zs-scopesim | [Consolidate simulator validation and publish reproducible dependency pins](https://github.com/CaltechOpticalObservatories/zs-scopesim/pull/17) | `review/xs-25-kilonova-comparison` |
+| 27 | scopesim | [Apply imaging branch throughput before wavelength integration](https://github.com/CaltechOpticalObservatories/ScopeSim/pull/31) | `review/xs-10-detector-operating-points` |
+| 28 | irdb | [Configure ZImager optics, filters and stochastic detector readouts](https://github.com/CaltechOpticalObservatories/irdb/pull/17) | `review/xs-14-alternate-detectors` |
+| 29 | zs-scopesim | [Execute ZImager and verify unchanged spectroscopic simulations](https://github.com/CaltechOpticalObservatories/zs-scopesim/pull/18) | `review/xs-26-validation-reproducibility` |
 
 ## Verification of the split
 
