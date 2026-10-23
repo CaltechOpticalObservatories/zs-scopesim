@@ -1,0 +1,230 @@
+--- review/xs-26-validation-reproducibility/notebooks/06_ZImager.ipynb
++++ review/zi-29-zimager-example/notebooks/06_ZImager.ipynb
+@@ -0,0 +1,137 @@
++
+# %% markdown cell 544f99bbcbad41bd
++# ZIMAGER simulation
++
+# %% code cell initial_id
++from time import perf_counter
++import astropy.units as u
++import matplotlib.pyplot as plt
++import numpy as np
++import pandas as pd
++
++import scopesim as sim
++import scopesim_templates as sim_tp
++from scopesim.source.source_templates import ab_spectrum
++from zs_scopesim_tools.helpers import configure_irdb_path, disable_scopesim_top_level_catch, warning_prevent_sync_alt_ra_dec, set_scopesim_log_level, make_local_output_dir, list_effects, disable_scopesim_progress_bars, save_readout_to_fits
++
++configure_irdb_path()
++set_scopesim_log_level("WARNING")
++disable_scopesim_top_level_catch()
++
+# %% code cell ef3ca0da507fa46
++OUTDIR = make_local_output_dir(dirname="06_ZImager/")
++
+# %% markdown cell 52a13f8c2cdca6dc
++The middle arm accepts Sloan g, r or i. The u and z arms use their dichroic passbands. These engineering detector settings come from the IMAGER files in IRDB. Source, sky and dark counts receive Poisson noise; read noise and the electronic bias follow.
++
++The source and independent sky frame use the explicit integrations below. The displayed images subtract the sky frame; aperture photometry uses a local annulus on the science frame, retaining the original notebook's background-dominated comparison.
++
+# %% code cell f5abd0667e9c6c2b
++zs_config = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=["IMAGER"])
++zs_config["!OBS.airmass"] = 1.1
++zs_config["!OBS.seeing"] = 0.65
++zs_config["!OBS.brightness"] = "dark"
++zs_config["!OBS.mjdobs"] = 60310.25
++zs_config["!ATMO.ao_enabled"] = False
++zs_config["!INST.imager_filter_v"] = "g"
++zs_config["!SIM.random.seed"] = 736
++
++# Explicit per-arm exposures; the detector warns about overfilled wells.
++zs_config["!OBS.imager_dit_u"] = 300
++zs_config["!OBS.imager_ndit_u"] = 1
++zs_config["!OBS.imager_dit_v"] = 300
++zs_config["!OBS.imager_ndit_v"] = 1
++# The z-band sky nearly fills the configured well in 300 s.
++zs_config["!OBS.imager_dit_z"] = 150
++zs_config["!OBS.imager_ndit_z"] = 2
++warning_prevent_sync_alt_ra_dec(zs_config)
++
+# %% code cell 47cc58803765c52e
++df = list_effects(zs_config)
++df
++
+# %% code cell 7931a38fd0e23a8b
++zs_config['!OBS']
++
+# %% code cell 94b79d58f322a2a3
++source = sim_tp.stars(filter_name='V', amplitudes=[25, 25, 25], spec_types=['B1V', 'G1V', 'M1V'], x=[-50, 0, 50], y=[0., 0., 0.])
++ab_mag = 23
++source.fields[0].spectra[4] = ab_spectrum(mag=23)
++source.fields[0].field.add_row((0., 25., 4, 1., 'AB'))
++
+# %% code cell d5123b226b75a5b7
++start = perf_counter()
++zs = sim.OpticalTrain(zs_config)
++setup_s = perf_counter() - start
++start = perf_counter()
++with disable_scopesim_progress_bars():
++    zs.observe(source, update=False)
++observe_s = perf_counter() - start
++start = perf_counter()
++hdul = zs.readout(roid=0)
++readout_s = perf_counter() - start
++
++# Reuse the optical configuration, clearing the rates for an independent sky.
++for plane in zs.image_planes:
++    plane.data.fill(0)
++start = perf_counter()
++with disable_scopesim_progress_bars():
++    zs.observe(update=False)
++sky_observe_s = perf_counter() - start
++start = perf_counter()
++hdul_sky = zs.readout(roid=1)
++sky_readout_s = perf_counter() - start
++
++for arm, science, sky in zip(("u", "v", "z"), hdul, hdul_sky, strict=True):
++    save_readout_to_fits(science, OUTDIR / f"zimager_{arm}.fits.gz")
++    save_readout_to_fits(sky, OUTDIR / f"zimager_sky_{arm}.fits.gz")
++display(pd.DataFrame([{"arm": arm, "DIT s": hdu[1].header["DIT"], "NDIT": hdu[1].header["NDIT"], "total s": hdu[1].header["EXPTIME"], "peak e/DIT": hdu[1].header["PEAKDIT"], "usable well e": hdu[1].header["WELLDEP"]} for arm, hdu in zip(("u", "v", "z"), hdul, strict=True)]))
++print(f"Setup {setup_s:.1f}s; source observe/readout {observe_s:.1f}/{readout_s:.1f}s; sky observe/readout {sky_observe_s:.1f}/{sky_readout_s:.1f}s.")
++
+# %% code cell f5679e68182a66d4
++fig, ax = plt.subplots(3, 1, figsize=(10, 18))
++for i, (hdu, hdu_sky) in enumerate(zip(hdul, hdul_sky)):
++    dat = hdu[1].data - hdu_sky[1].data
++    vmin, vmax = np.percentile(dat.clip(0), [5, 95])
++    im = ax[i].imshow(dat.clip(0), origin='lower', vmin=vmin, vmax=vmax)
++    plt.colorbar(im, ax=ax[i])
++ax[0].set_title('ZImager - u')
++ax[1].set_title('ZImager - middle')
++ax[2].set_title('ZImager - z')
++fig.savefig(OUTDIR / "zimager.png", bbox_inches="tight");
++
+# %% code cell 92ef1a1912e88547
++from IPython.display import HTML, display
++from astropy.stats import sigma_clip
++from astropy.table import Table
++from astropy.wcs import WCS
++from scopesim.optics.image_plane_utils import pix2val, val2pix
++
++stars = source.fields[0].field
++photometry = Table({'spec_type': stars['spec_types']})
++for arm, hdu, fov in zip(['u', 'v', 'z'], hdul, zs._last_fovs):
++    dat = hdu[1].data
++
++    # Follow the simulation's sky -> focal-plane mm -> detector-pixel transform.
++    x_fov, y_fov = val2pix(fov.header, stars['x'].quantity.to_value(u.deg), stars['y'].quantity.to_value(u.deg))
++    x_mm, y_mm = pix2val(fov.header, x_fov, y_fov, 'D')
++    x_det, y_det = WCS(hdu[1].header, key='D').world_to_pixel_values(x_mm, y_mm)
++    pixel_scale = np.sqrt(fov.pixel_area) * hdu[1].header['CDELT1D'] / fov.header['CDELT1D']
++    fwhm = zs['seeing_psf'].fwhm(fov.wavelength)
++    radius = (fwhm / pixel_scale).value
++    halfwidth = int(np.ceil(3 * radius))
++
++    fluxes = np.empty(len(stars))
++    flux_errors = np.empty(len(stars))
++    for j, (x, y) in enumerate(zip(x_det, y_det)):
++        ix, iy = int(round(x)), int(round(y))
++        cutout = dat[iy-halfwidth:iy+halfwidth+1, ix-halfwidth:ix+halfwidth+1]
++        yy, xx = np.mgrid[iy-halfwidth:iy+halfwidth+1, ix-halfwidth:ix+halfwidth+1]
++        r2 = (xx - x)**2 + (yy - y)**2
++        aperture = r2 <= radius**2
++        annulus = (r2 >= (2 * radius)**2) & (r2 <= (3 * radius)**2)
++        background_pixels = sigma_clip(cutout[annulus], sigma=3).compressed()
++        n_ap = aperture.sum()
++        fluxes[j] = cutout[aperture].sum() - n_ap * background_pixels.mean()
++
++        # The science-image annulus measures sky and detector noise for this exposure.
++        # Include uncertainty in the local background mean; source shot noise is neglected.
++        flux_errors[j] = background_pixels.std(ddof=1) * np.sqrt(n_ap + n_ap**2 / background_pixels.size)
++    photometry[f'S/N {arm}'] = np.maximum(fluxes / flux_errors, 0)
++    ab_flux = fluxes[-1]  # The last source is the flat AB calibrator.
++    photometry[f'AB5 {arm}'] = ab_mag - 2.5 * np.log10(5 * flux_errors / ab_flux)
++
++photometry = photometry[['spec_type', 'S/N u', 'S/N v', 'S/N z', 'AB5 u', 'AB5 v', 'AB5 z']]
++for name in photometry.colnames[1:]:
++    photometry[name].format = '.2f'
++print(f'AB5 calibrated from the flat AB={ab_mag} source; background-dominated noise.')
++display(HTML(''.join(photometry.pformat(html=True, show_dtype=False, show_unit=False))))
+--- review/xs-26-validation-reproducibility/validation/zimager/Integration.ipynb
++++ review/zi-29-zimager-example/validation/zimager/Integration.ipynb
+@@ -0,0 +1,73 @@
++
+# %% markdown cell fbaac857633d97ff
++# ZImager integration: spectroscopy regression
++
++The recorded `xshooter-spectroscopy.csv` predates the merge: ScopeSim `2780412e`, IRDB `8be3e2c9`. It contains full-frame checksums and integrated rates for a flat AB20 point source in both ZShooter detector modes and both X-shooter slit configurations. Atmospheric acquisition is omitted to hold the input fixed across revisions; the configured optical throughput, PSF, ADC and optical thermal emission remain active. These are optical rate images, before detector exposure and noise.
++
++Run in a fresh kernel against the integrated stack. Each configuration is constructed afresh. A matching SHA-256 means every detector-plane sample is identical, including the spectrum and its spatial distribution. Runtime measurements include local computation only.
++
+# %% code cell f8158ad995d63061
++from time import perf_counter
++import gc
++import hashlib
++import resource
++import numpy as np
++import pandas as pd
++import astropy.units as u
++from synphot import SourceSpectrum, ConstFlux1D
++import scopesim as sim
++from zs_scopesim_tools.helpers import configure_irdb_path, warning_prevent_sync_alt_ra_dec, disable_scopesim_progress_bars, disable_scopesim_top_level_catch
++
++from zs_scopesim_tools.paths import repo_root
++
++configure_irdb_path()
++disable_scopesim_top_level_catch()
++sim.utils.set_console_log_level("ERROR")
++LABEL = "zimager_xshooter"
++OUTPUT = repo_root() / "validation/zimager/data"
++OUTPUT.mkdir(parents=True, exist_ok=True)
++cases = [("ZS_SPEC", "ZShooter_v2", "SPEC"), ("ZS_ALT", "ZShooter_v2", "SPEC_ALTDETECT"), ("XS_faint", "XSHOOTER", "SPEC"), ("XS_high", "XSHOOTER", "SPEC")]
++rows = []
++for case, instrument, mode in cases:
++    start = perf_counter()
++    commands = sim.UserCommands(use_instrument=instrument, set_modes=[mode])
++    for key, value in {"!OBS.airmass": 1.1, "!OBS.seeing": .65, "!OBS.brightness": "dark", "!OBS.mjdobs": 60310.25, "!SIM.random.seed": 913}.items():
++        commands[key] = value
++    if instrument == "ZShooter_v2":
++        for key, value in {"!INST.vis_curr_slit": .7, "!INST.nir_curr_slit": .7, "!ATMO.ao_enabled": False, "!INST.include_diffuse_emissivity": False, "!SIM.spectral.spectral_bin_width": 1e-5}.items():
++            commands[key] = value
++    else:
++        slits = ("1.0", "0.9", "0.9") if case == "XS_faint" else ("0.8", "0.9", "0.6")
++        for arm, slit in zip(("uvb", "vis", "nir"), slits):
++            commands[f"!INST.{arm}_curr_slit"] = slit
++        for arm in ("uvb", "vis"):
++            commands[f"!DET.biny_{arm}"] = 2 if case == "XS_faint" else 1
++    warning_prevent_sync_alt_ra_dec(commands)
++    # Fix the input spectrum across revisions and avoid network-dependent atmosphere acquisition.
++    for document in commands.yaml_dicts:
++        if "effects" in document:
++            document["effects"] = [effect for effect in document["effects"] if effect["class"] not in ["TAPASTERCurve", "SkycalcTERCurve", "SkyBackgroundTERCurve", "PalaceAirglowEmission"]]
++    train = sim.OpticalTrain(commands)
++    setup_s = perf_counter() - start
++    source = sim.Source(x=[0], y=[0], ref=[0], weight=[1], spectra=[SourceSpectrum(ConstFlux1D, amplitude=20*u.ABmag)])
++    start = perf_counter()
++    with disable_scopesim_progress_bars():
++        train.observe(source, update=False)
++    observe_s = perf_counter() - start
++    for plane in train.image_planes:
++        data = plane.data
++        rows.append({"case": case, "plane": plane.id, "shape": str(data.shape), "sum_e_s": data.sum(dtype=np.float64), "peak_e_s": data.max(), "sha256": hashlib.sha256(data.tobytes()).hexdigest(), "setup_s": setup_s, "observe_s": observe_s})
++    print(case, f"setup {setup_s:.2f}s, observe {observe_s:.2f}s, process peak {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**30:.2f} GiB", flush=True)
++    del train, source, data, plane
++    gc.collect()
++pd.DataFrame(rows).to_csv(OUTPUT / f"{LABEL}-spectroscopy.csv", index=False)
++display(pd.DataFrame(rows)[["case", "plane", "sum_e_s", "peak_e_s", "observe_s"]])
++
+# %% code cell 842ced2f4f8c1a48
++baseline = pd.read_csv(OUTPUT / "xshooter-spectroscopy.csv", float_precision="round_trip").set_index(["case", "plane"])
++current = pd.DataFrame(rows).set_index(["case", "plane"])
++comparison = current[["sum_e_s", "peak_e_s"]].copy()
++comparison["integrated_relative_change"] = current["sum_e_s"] / baseline["sum_e_s"] - 1
++comparison["peak_relative_change"] = current["peak_e_s"] / baseline["peak_e_s"] - 1
++comparison["all_pixels_identical"] = current["sha256"] == baseline["sha256"]
++assert comparison["all_pixels_identical"].all()
++comparison.to_csv(OUTPUT / "spectroscopy-comparison.csv")
++display(comparison)
++print("All 18 full detector-plane arrays match the pre-merge xshooter baseline exactly.")

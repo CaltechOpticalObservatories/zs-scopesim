@@ -5,7 +5,7 @@ The two worked examples are [ZShooter](../notebooks/01_Kilonovae.ipynb) and
 continuum control before interpreting the 1.5-, 7.5- and 20-day kilonova scenes.
 The scenes include the host galaxy. Extracted scene flux divided by the input
 transient alone is therefore not a flux-conservation test; the previous BLUE
-excess is explained in the [host-light investigation](../../zshooter-drp/docs/source/kilonova-reduction-repair.md).
+excess is explained in the [host-light investigation](https://github.com/CaltechOpticalObservatories/zshooter-drp/blob/31ecacadcae6c34a9411cc4548ace0dd671e42b9/docs/source/kilonova-reduction-repair.md).
 
 This page retains the original reduction/ADC investigation: 18 ZShooter
 channel/epoch products and 18 X-shooter mode/arm/epoch products, plus flat-AB
@@ -67,7 +67,7 @@ profile samples; the separate spectral penalty is 1e-7. The earlier interpretati
 regularization had been disabled was incorrect. The revised uncertainty
 calculation uses first-order, local Jacobian propagation. It differentiates the fitted profile as well as the spectrum and
 combines overlapping swath responses before propagating detector variance.
-The [mathematical note](../../PyReduce-xshooter/docs/extraction_uncertainty.md)
+The [mathematical note](https://github.com/CaltechOpticalObservatories/PyReduce/blob/dd159530d64fefad908739c193f6c3493792d276/docs/extraction_uncertainty.md)
 gives the equations and numerical checks.
 
 Sparse spectral covariance is retained in FITS through flat/blaze correction,
@@ -91,7 +91,7 @@ Uncertainty in those calibration products needs separate calibration
 realizations. Regularization bias is also separate from random variance.
 
 The reduction changes and instrument orientation/order conventions are described
-in the [DRP implementation note](../../zshooter-drp/docs/source/xshooter-reduction.md).
+in the [DRP implementation note](https://github.com/CaltechOpticalObservatories/zshooter-drp/blob/31ecacadcae6c34a9411cc4548ace0dd671e42b9/docs/source/xshooter-reduction.md).
 The PyReduce checkout used here is `~/src/PyReduce-xshooter`, based on release
 0.9. The older, independently modified `~/src/PyReduce` checkout is untouched.
 

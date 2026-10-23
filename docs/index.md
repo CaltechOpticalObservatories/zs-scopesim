@@ -3,6 +3,12 @@
 This documentation covers the ZShooter simulator workspace: environment setup,
 science notebooks, reproducibility tools, and common troubleshooting.
 
+The [Caltech review series](review-series.md) lists the 29 thematic PRs, merge order, review aids and verification of the split.
+
+The [ZImager integration report](zimager-integration.md) describes the
+`zimager_xshooter` branches, the imaging notebook and the spectroscopy
+regression checks against the pre-merge stack.
+
 For the current instrument comparison, start with the
 [flat-AB comparison notebook](../notebooks/02_Flat_AB_Comparison.ipynb) and the
 [executed results report](xshooter-comparison-results.md). The
@@ -13,7 +19,7 @@ main, the preserved user rerun and the corrected execution. The
 [slit-illumination lamp notebook](../notebooks/03_Slit_Illumination_Lamps.ipynb)
 tests centered and quarter-slit-offset sources under natural seeing and AO.
 
-The [kilonova reduction repair](../../zshooter-drp/docs/source/kilonova-reduction-repair.md)
+The [kilonova reduction repair](https://github.com/CaltechOpticalObservatories/zshooter-drp/blob/31ecacadcae6c34a9411cc4548ace0dd671e42b9/docs/source/kilonova-reduction-repair.md)
 records the updated DRP calibrations, executed extraction checks, thermal-background
 correction to the standard, and the host-light explanation of the apparent BLUE flux excess.
 The [mirrored kilonova reductions](kilonova-mirrored-reduction.md) describe the
@@ -36,6 +42,7 @@ warnings, avalanche variance and the specifications needed for vendor discussion
 
 install
 notebooks
+zimager-integration
 zshooter-xdisp-geometry
 xshooter
 xshooter-comparison-results
@@ -46,5 +53,6 @@ detector-operating-points
 kilonova-mirrored-reduction
 notebook-runtime-checks
 reproducibility
+review-series
 troubleshooting
 ```
