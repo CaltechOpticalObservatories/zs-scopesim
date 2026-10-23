@@ -1,0 +1,406 @@
+--- review/xs-22-performance-trades/notebooks/03_Resolution_and_Sampling.ipynb
++++ review/xs-23-resolution-lamps/notebooks/03_Resolution_and_Sampling.ipynb
+@@ -0,0 +1,200 @@
++
+# %% markdown cell b11483cc73af364
++# ZShooter resolution and detector sampling
++
++Executed companion to [the resolution and sampling note](../docs/resolution-and-sampling.md). Run all cells to regenerate its tables and figures for the detector modes listed below.
++
++The optical prescription, slit, effective PSF, spectral projection and detector WCS come from the configured train. Detector type and pitch are read from its native detector headers; the mode names do not imply fixed detector specifications. We compare geometric full-slit sampling and a narrow line's measured FWHM as its position moves across one detector pixel.
++
++These are noiseless shape experiments: throughput, atmosphere and detector noise are not applied. The line has input $R_{\mathrm{FWHM}}=200{,}000$. We integrate the complete spatial cutout so extraction-width changes cannot cause the measured differences. Acceptance checks are 1% flux, 2% FWHM and 0.01 native pixel centroid under quadrature refinement; pixel-phase variation is measured separately.
++
+# %% code cell 8cf1731c78111dd0
++from time import perf_counter
++import sys
++import numpy as np
++import pandas as pd
++import matplotlib.pyplot as plt
++import astropy.units as u
++from astropy.wcs import WCS
++import scopesim as sim
++from zs_scopesim_tools.helpers import configure_irdb_path, set_scopesim_log_level
++from zs_scopesim_tools.paths import repo_root
++
++root = repo_root()
++if str(root) not in sys.path:
++    sys.path.insert(0, str(root))
++from validation.xshooter.resolution_sampling import isolated_profile
++
++configure_irdb_path()
++set_scopesim_log_level('error')
++output = root/'validation/xshooter/data/resolution_sampling'
++output.mkdir(exist_ok=True)
++DETECTOR_MODES = ('SPEC', 'SPEC_ALTDETECT')
++cases = [('natural .70', .70, False), ('natural .33', .33, False), ('AO .33', .33, True)]
++properties = {'!OBS.mjdobs': 60310.25, '!OBS.seeing': .65, '!OBS.airmass': 1.1}
++
+# %% markdown cell 3c050b0d6a46f391
++## Project configured slit edges and isolated lines
++
++Slit-edge separation and geometric resolving power use the trace's `slit_dispersion`; detector coordinates come from its native WCS. Geometry is sampled across every primary FSR, with detector coverage retained separately. Each line experiment uses the middle configured order, the existing PSF/slit projection helper, 17 pixel positions and a quadrature refinement at the midpoint. No geometry or detector values are cached between modes.
++
+# %% code cell eb14ba8c411550e2
++started = perf_counter()
++geometry_rows, phase_rows, profile_rows, checks, detector_rows, timings = [], [], [], [], [], []
++for mode in DETECTOR_MODES:
++    for name, slit, ao in cases:
++        setup_start = perf_counter()
++        commands = sim.UserCommands(use_instrument='ZShooter_v2', set_modes=[mode], properties=properties | {'!INST.vis_curr_slit': slit, '!INST.nir_curr_slit': slit})
++        for document in commands.yaml_dicts:
++            if 'effects' in document:
++                document['effects'] = [effect for effect in document['effects'] if effect['name'] not in ('atmo_transmission', 'continuum_emission', 'airglow_and_interline_continuum')]
++        train = sim.OpticalTrain(commands)
++        psf = train['seeing_psf']
++        psf.meta['enable_ao'] = ao
++        traces = train['trace_list_analytical']
++        setup_seconds = perf_counter()-setup_start
++        projection_start = perf_counter()
++        if name == 'natural .70':
++            for channel, spectrograph in traces._spectrographs.items():
++                for order_index, order in enumerate(spectrograph.orders):
++                    trace = traces.spectral_traces[f'{channel}_{order}']
++                    wave = spectrograph.central_wave(order) + np.linspace(-.5, .5, 101)*spectrograph.fsr(order)
++                    detector, = train.detector_managers[trace.meta['image_plane_id']]
++                    header = detector._native_header
++                    pixel_wcs = WCS(header, key='D')
++                    pitch_um = (abs(header['CDELT1D'])*u.mm).to_value(u.um)
++                    if order_index == 0:
++                        detector_rows.append((mode, channel, header['DETTYPE'], pitch_um, header['NAXIS1'], header['NAXIS2']))
++                    displacement = trace.slit_dispersion(wave.to_value(u.um))*slit/2
++                    xi = np.zeros(len(wave))
++                    xlo, _ = pixel_wcs.all_world2pix(trace.xilam2x(xi, wave.to_value(u.um)-displacement), trace.xilam2y(xi, wave.to_value(u.um)-displacement), 0)
++                    xhi, _ = pixel_wcs.all_world2pix(trace.xilam2x(xi, wave.to_value(u.um)+displacement), trace.xilam2y(xi, wave.to_value(u.um)+displacement), 0)
++                    x, y = pixel_wcs.all_world2pix(trace.xilam2x(xi, wave.to_value(u.um)), trace.xilam2y(xi, wave.to_value(u.um)), 0)
++                    covered = (x >= -.5) & (x <= header['NAXIS1']-.5) & (y >= -.5) & (y <= header['NAXIS2']-.5)
++                    width = abs(xhi-xlo)
++                    threshold = 2*slit/width
++                    narrow_shift = trace.slit_dispersion(wave.to_value(u.um))*threshold/2
++                    narrow_low, _ = pixel_wcs.all_world2pix(trace.xilam2x(xi, wave.to_value(u.um)-narrow_shift), trace.xilam2y(xi, wave.to_value(u.um)-narrow_shift), 0)
++                    narrow_high, _ = pixel_wcs.all_world2pix(trace.xilam2x(xi, wave.to_value(u.um)+narrow_shift), trace.xilam2y(xi, wave.to_value(u.um)+narrow_shift), 0)
++                    np.testing.assert_allclose(abs(narrow_high-narrow_low), 2, rtol=2e-6)
++                    geometric_r = wave.to_value(u.um)/(2*abs(displacement))
++                    for wavelength, pixel_width, narrow_slit, resolving_power, on_detector in zip(wave.to_value(u.um), width, threshold, geometric_r, covered, strict=True):
++                        geometry_rows.append((mode, channel, order, wavelength, pitch_um, pixel_width, narrow_slit, resolving_power, on_detector))
++        for channel, spectrograph in traces._spectrographs.items():
++            order = spectrograph.orders[len(spectrograph.orders)//2]
++            trace_id = f'{channel}_{order}'
++            original, = [fov for fov in train.fov_manager.fovs if fov.trace_id == trace_id]
++            center = spectrograph.central_wave(order).to_value(u.um)
++            fwhm_arcsec = psf.fwhm(np.array([center])*u.um)[0].to_value(u.arcsec)
++            for displacement in np.linspace(0, 1, 17):
++                result = isolated_profile(train, original, center, displacement)
++                actual, pixel_wave, phase, flux, centroid, rms, fwhm, offsets, counts = result
++                phase_rows.append((mode, name, channel, order, actual, displacement, phase, slit, fwhm_arcsec, psf.alpha, flux, actual/fwhm, fwhm/pixel_wave, rms/pixel_wave, (centroid-actual)/pixel_wave))
++                if displacement in (0., .25, .5, .75):
++                    normalized = counts/counts.max()
++                    profile_rows.extend((mode, name, channel, displacement, offset, count) for offset, count in zip(offsets, normalized, strict=True))
++                if displacement == .5:
++                    refined = isolated_profile(train, original, center, displacement, quadrature=16)
++                    checks.append((mode, name, channel, refined[3]/flux-1, refined[6]/fwhm-1, (refined[4]-centroid)/pixel_wave))
++            print(mode, name, channel, 'complete', flush=True)
++        timings.append((mode, name, setup_seconds, perf_counter()-projection_start))
++        del original, traces, psf, train
++
++geometry = pd.DataFrame(geometry_rows, columns=['mode', 'channel', 'order', 'wavelength_um', 'pitch_um', 'slit_070_width_pixel', 'two_pixel_slit_arcsec', 'R_geometric_070', 'on_detector'])
++phases = pd.DataFrame(phase_rows, columns=['mode', 'configuration', 'channel', 'order', 'wavelength_um', 'displacement_pixel', 'native_pixel_phase', 'slit_arcsec', 'psf_fwhm_arcsec', 'moffat_beta', 'flux', 'R_fwhm', 'fwhm_pixel', 'rms_pixel', 'centroid_error_pixel'])
++profiles = pd.DataFrame(profile_rows, columns=['mode', 'configuration', 'channel', 'displacement_pixel', 'offset_pixel', 'normalized_counts'])
++convergence = pd.DataFrame(checks, columns=['mode', 'configuration', 'channel', 'flux_fraction', 'fwhm_fraction', 'centroid_pixel'])
++detectors = pd.DataFrame(detector_rows, columns=['mode', 'channel', 'detector_type', 'pitch_um', 'nx', 'ny'])
++timing = pd.DataFrame(timings, columns=['mode', 'configuration', 'setup_seconds', 'projection_seconds'])
++elapsed = perf_counter()-started
++display(detectors)
++display(timing.round(2))
++print(f'{len(phases)} line projections plus {len(convergence)} quadrature checks: {elapsed:.1f} s')
++
+# %% code cell c43fd43423072e05
++assert np.isfinite(phases.select_dtypes(include='number')).all().all()
++assert convergence.flux_fraction.abs().max() < .01
++assert convergence.fwhm_fraction.abs().max() < .02
++assert convergence.centroid_pixel.abs().max() < .01
++phase_flux = phases.groupby(['mode', 'configuration', 'channel']).flux.agg(['min', 'max'])
++phase_flux['fractional_range'] = phase_flux['max']/phase_flux['min']-1
++assert phase_flux.fractional_range.max() < .01
++
++# At identical wavelengths the pitch changes sampling, not the physical slit image or geometric R.
++matched = geometry[geometry['mode'] == DETECTOR_MODES[0]].merge(geometry[geometry['mode'] == DETECTOR_MODES[1]], on=['channel', 'order', 'wavelength_um'], suffixes=('_base', '_alternate'), validate='one_to_one')
++physical_base = matched.slit_070_width_pixel_base*matched.pitch_um_base
++physical_alternate = matched.slit_070_width_pixel_alternate*matched.pitch_um_alternate
++# The trace fits span different detector coverage; compare within the 0.01-pixel geometry budget.
++assert (abs(physical_alternate-physical_base)/np.minimum(matched.pitch_um_base, matched.pitch_um_alternate)).max() < .01
++np.testing.assert_allclose(matched.R_geometric_070_base, matched.R_geometric_070_alternate, rtol=1e-5)
++print('Maximum physical slit-width difference [um]:', abs(physical_alternate-physical_base).max())
++print('Quadrature changes:', convergence[['flux_fraction', 'fwhm_fraction', 'centroid_pixel']].abs().max().to_dict())
++print('Maximum flux variation across pixel phase:', phase_flux.fractional_range.max())
++
++for table, filename in [(geometry, 'slit_sampling.csv'), (phases, 'pixel_phase.csv'), (profiles, 'profiles.csv'), (convergence, 'quadrature_check.csv'), (detectors, 'detectors.csv'), (timing, 'timing.csv')]:
++    table.to_csv(output/filename, index=False)
++display(geometry[geometry.on_detector].groupby(['mode', 'channel'], sort=False)[['slit_070_width_pixel', 'two_pixel_slit_arcsec', 'R_geometric_070']].agg(['min', 'max']).round(3))
++display(phases.groupby(['mode', 'configuration', 'channel'], sort=False)[['R_fwhm', 'fwhm_pixel']].agg(['min', 'max']).round(3))
++
+# %% markdown cell af04d451adec9813
++## Native detector measurements
++
++The figures retain the report's three views for each mode: geometric full-slit sampling, line FWHM versus pixel phase, and example sampled profiles. Joined native samples show the half-height estimator rather than a reconstructed optical LSF. The two-pixel slit width is an engineering sampling indicator, not a universal Nyquist limit. Larger pixels also admit more of the configured primary FSRs; the full order list is taken from IRDB without adding orders.
++
+# %% code cell 393e590c946e0802
++micron = r'$\mu$m'
++for mode in DETECTOR_MODES:
++    suffix = '' if mode == 'SPEC' else f'_{mode}'
++    mode_detectors = detectors[detectors['mode'] == mode].set_index('channel')
++    mode_geometry = geometry[(geometry['mode'] == mode) & geometry.on_detector]
++    fig, axes = plt.subplots(2, 1, figsize=(11, 7), sharex=True, layout='constrained')
++    for index, (channel, group) in enumerate(mode_geometry.groupby('channel', sort=False)):
++        for order_index, (_, order_data) in enumerate(group.groupby('order')):
++            label = f'{channel.upper()}: {mode_detectors.loc[channel, "pitch_um"]:g} {micron}' if order_index == 0 else None
++            axes[0].plot(order_data.wavelength_um, order_data.slit_070_width_pixel, color=f'C{index}', lw=.8, label=label)
++            axes[1].plot(order_data.wavelength_um, order_data.two_pixel_slit_arcsec, color=f'C{index}', lw=.8)
++    axes[0].set(ylabel='Projected .70 arcsec full slit [pixels]', title=f'{mode}: actual detector x projection; covered primary FSRs')
++    axes[0].legend(ncol=3)
++    axes[1].axhline(.33, color='.3', ls='--', lw=1, label='.33 arcsec slit')
++    axes[1].set(ylabel='Slit giving two detector x pixels [arcsec]', xlabel=r'Wavelength [$\mu$m]')
++    axes[1].legend()
++    for ax in axes:
++        ax.grid(alpha=.2)
++    assert len(axes[0].lines) == mode_geometry.groupby(['channel', 'order']).ngroups
++    fig.savefig(output/f'slit_sampling{suffix}.png', dpi=170)
++    plt.show()
++    plt.close(fig)
++
++    mode_phases = phases[phases['mode'] == mode]
++    fig, axes = plt.subplots(2, 3, figsize=(13, 7), layout='constrained')
++    for ax, (channel, group) in zip(axes.flat, mode_phases.groupby('channel', sort=False), strict=True):
++        for name, selected in group.groupby('configuration', sort=False):
++            ax.plot(selected.displacement_pixel, selected.R_fwhm/1000, '.-', ms=3, label=name)
++        detector = mode_detectors.loc[channel]
++        title = f'{channel.upper()}, order {group.order.iloc[0]}, {group.wavelength_um.iloc[0]:.3f} {micron}\n{detector.detector_type}, {detector.pitch_um:g} {micron} pixels'
++        ax.set(title=title, xlabel='Line displacement [native pixel]', ylabel=r'$R_{\mathrm{FWHM}}$ / 1000')
++        ax.grid(alpha=.2)
++        assert len(ax.lines) == len(cases)
++    axes.flat[0].legend(fontsize=8)
++    fig.suptitle(f'{mode}: same PSF, slit and optical configuration; only pixel phase changes')
++    fig.savefig(output/f'pixel_phase{suffix}.png', dpi=170)
++    plt.show()
++    plt.close(fig)
++
++    mode_profiles = profiles[profiles['mode'] == mode]
++    fig, axes = plt.subplots(2, 3, figsize=(13, 7), sharex=True, sharey=True, layout='constrained')
++    for row, channel in enumerate(('b', 'k')):
++        for column, (name, _, _) in enumerate(cases):
++            ax = axes[row, column]
++            selected = mode_profiles[(mode_profiles.channel == channel) & (mode_profiles.configuration == name)]
++            for displacement, group in selected.groupby('displacement_pixel'):
++                ax.plot(group.offset_pixel, group.normalized_counts, '.-', ms=4, lw=.8, label=f'{displacement:g} pixel')
++            ax.axhline(.5, color='.5', lw=.6)
++            title = f'{channel.upper()}: {name}; {mode_detectors.loc[channel, "pitch_um"]:g} {micron} pixels'
++            ax.set(title=title, xlim=(-4, 4), xlabel='Offset from incident line [native pixels]', ylabel='Peak-normalized integrated counts')
++            ax.grid(alpha=.2)
++            assert len(ax.lines) == 5
++    axes[0, 0].legend(fontsize=8)
++    fig.suptitle(f'{mode}: native samples joined to show the half-height width estimator')
++    fig.savefig(output/f'profiles{suffix}.png', dpi=170)
++    plt.show()
++    plt.close(fig)
++
+# %% markdown cell cc9ffd97f9b76a7b
++## Interpretation of the executed run
++
++The 2026-10-21 run used 15 micrometre pixels throughout `SPEC` and 18 micrometre H2RG pixels in the alternate YJ/H/K arms. Geometric slit resolving power is unchanged. At the representative NIR order centers, the alternate .33 arcsec AO profile spans approximately 1.4--2.0 pixels FWHM and its half-height estimate ranges from roughly 33,000 to 47,500 as pixel phase changes. This is greater sampling sensitivity, not extra optical resolving power. B/G/R match between modes in this noiseless experiment.
++
++The clean-kernel run of 612 projections plus 36 quadrature checks took 57 seconds including fresh train setup. Refinement stayed within 0.24% in flux, 0.101% in FWHM and 0.00024 native pixel in centroid. The [report](../docs/resolution-and-sampling.md) gives the geometric and physical interpretation, both detector-mode tables, and the distinction between two-pixel sampling and a Nyquist criterion. The plots here are native sampled profiles; a pixel-integrated LSF fit is still a separate measurement improvement.
+--- review/xs-22-performance-trades/notebooks/03_Slit_Illumination_Lamps.ipynb
++++ review/xs-23-resolution-lamps/notebooks/03_Slit_Illumination_Lamps.ipynb
+@@ -0,0 +1,186 @@
++
+# %% markdown cell e946abd3627cba80
++# Slit illumination and lamp centroid shifts
++
++Use the accepted ZShooter prescription with a 0.33 arcsec slit. Compare a centered point illumination with the same source displaced **+0.0825 arcsec across the slit**, under the configured natural-seeing and AO effective PSFs. The wavelength spectrum combines the repository's ThAr, Ne and Ar line lists, with their documented per-list normalization and intrinsic R=200000.
++
++These are illumination experiments: atmospheric absorption, sky emission and ADC displacement are disabled. Instrumental throughput and detector geometry remain configured. Optical background is measured and subtracted. Counts are rates with an arbitrary lamp normalization. The raw difference retains slit losses; the flux-normalized difference isolates redistribution.
++
++Isolated synthetic lines exercise the same configured PSF, slit and projection separately from real-lamp blends. Predicted shifts use the centroid of the transmitted Moffat illumination and the configured cross-slit dispersion. The effective PSF is the simulation input; this experiment does not add a separate instrumental PSF convolution.
++
+# %% code cell a96406b9b4aaca97
++from pathlib import Path
++from time import perf_counter
++import numpy as np
++import pandas as pd
++import matplotlib.pyplot as plt
++import astropy.units as u
++from scipy.integrate import quad
++from astropy.constants import c
++import scopesim as sim
++from scopesim.effects import SpectralTraceList
++from zs_scopesim_tools.sources import lamp_flat, _read_lamp_lines
++from zs_scopesim_tools.comparison import detector_rates, trace_pixel_grid, boxcar_sum, line_width, trace_line_profiles
++from zs_scopesim_tools.helpers import configure_irdb_path, warning_prevent_sync_alt_ra_dec, disable_scopesim_progress_bars, set_scopesim_log_level
++
++workspace = next(path for path in (Path.cwd(), *Path.cwd().parents) if (path/'env/zshooter-stack.toml').exists())
++irdb = Path(configure_irdb_path())
++output = workspace/'validation/xshooter/data/lamps'
++output.mkdir(parents=True, exist_ok=True)
++set_scopesim_log_level('error')
++lamp = lamp_flat(resolving_power=200000, wave_step=.01*u.AA).spectra[0]
++catalog = _read_lamp_lines(irdb/'ZShooter_v2/lamp_lines')
++catalog.sort('wave')
++properties = {'!OBS.airmass': 1.1, '!OBS.seeing': .65, '!OBS.mjdobs': 60310.25, '!INST.vis_curr_slit': .33, '!INST.nir_curr_slit': .33, '!INST.include_diffuse_emissivity': False}
++commands = sim.UserCommands(use_instrument='ZShooter_v2', properties=properties)
++warning_prevent_sync_alt_ra_dec(commands)
++for document in commands.yaml_dicts:
++    if 'effects' in document:
++        document['effects'] = [effect for effect in document['effects'] if effect['name'] not in ('atmo_transmission', 'continuum_emission', 'airglow_and_interline_continuum', 'adc_residuals')]
++train = sim.OpticalTrain(commands)
++traces, = train.optics_manager.get_all(SpectralTraceList)
++orders = {}
++for trace_id, trace in traces.spectral_traces.items():
++    index, axis, pixels, centers, edges = trace_pixel_grid(train, trace_id)
++    coordinates = train.trace_detector_coordinates(xi=np.array([-2., 2.])*u.arcsec, wavelengths={trace_id: edges.mean().reshape(1)})
++    spatial_axis = 'y' if axis == 'x' else 'x'
++    width = int(np.ceil(np.ptp(coordinates[f'detector_{spatial_axis}'].value)))
++    size = train.detector_managers[index][0].data.shape[0 if axis == 'x' else 1]
++    keep = np.flatnonzero((centers >= width/2) & (centers < size-width/2))
++    first, last = keep[0], keep[-1]
++    orders[trace_id] = {'index': index, 'axis': axis, 'pixels': pixels[first:last+1], 'centers': centers[first:last+1], 'edges': edges[first:last+2], 'widths': np.full(last-first+1, width)}
++timings, centroid_rows, image_paths = [], [], {}
++
+# %% code cell 74bd5041f121c0f1
++def illumination_centroid(psf, fov, eta):
++    beta = psf.alpha
++    wavelength = psf._sample_kernel_wavelengths(fov.waveset)
++    gamma = psf.fwhm(wavelength).to_value(u.arcsec)/(2*np.sqrt(2**(1/beta)-1))
++    # Along-slit marginal of the circular Moffat; the 4 arcsec extraction
++    # aperture contains its relevant core at these effective FWHMs.
++    profile = lambda position: np.mean((1+((position-eta)/gamma)**2)**(.5-beta)/gamma)
++    transmitted = quad(profile, -.165, .165, epsabs=1e-10)[0]
++    moment = quad(lambda position: position*profile(position), -.165, .165, epsabs=1e-10)[0]
++    return moment/transmitted
++
++def observe_lamp(eta, label):
++    target = None if eta is None else sim.Source(x=[0.], y=[eta], ref=[0], weight=[1.], spectra=[lamp])
++    for plane in train.image_planes:
++        plane.data.fill(0)
++    started = perf_counter()
++    with disable_scopesim_progress_bars():
++        train.observe(target, update=False)
++    timings.append((label, eta, perf_counter()-started))
++    print(label, eta, f'{timings[-1][2]:.1f} s', flush=True)
++    return detector_rates(train)
++
++synthetic_centers = {}
++for trace_id, data in orders.items():
++    channel, order = trace_id.rsplit('_', 1)
++    spectrograph = traces._spectrographs[channel]
++    center = spectrograph.central_wave(int(order)).to_value(u.um)
++    candidates = center + (np.array([.2, .5, .8])-.5)*spectrograph.fsr(int(order)).to_value(u.um)
++    synthetic_centers[trace_id] = candidates[(candidates > data['edges'][0].value*1.002) & (candidates < data['edges'][-1].value*.998)]
++
++line_wave = catalog['wave']/10000
++neighboring_distance = np.minimum(np.r_[np.inf, np.diff(line_wave)], np.r_[np.diff(line_wave), np.inf])
++for label, ao in [('natural', False), ('AO', True)]:
++    train['seeing_psf'].meta['enable_ao'] = ao
++    background = observe_lamp(None, label)
++    centered = [image-sky for image, sky in zip(observe_lamp(0., label), background)]
++    displaced = [image-sky for image, sky in zip(observe_lamp(.0825, label), background)]
++    image_paths[label] = []
++    for index, (first, second) in enumerate(zip(centered, displaced)):
++        paths = [output/f'{label}_{kind}_{index}.npy' for kind in ('centered', 'displaced')]
++        np.save(paths[0], first)
++        np.save(paths[1], second)
++        image_paths[label].append(paths)
++    lamp_profiles = {}
++    for trace_id, data in orders.items():
++        index = data['index']
++        lamp_profiles[trace_id] = [boxcar_sum(frame[index], data['axis'], data['pixels'], data['centers'], data['widths']) for frame in (centered, displaced)]
++    synthetic = [trace_line_profiles(train, orders, synthetic_centers, eta=eta) for eta in (0., .0825)]
++    for trace_id, data in orders.items():
++        trace = traces.spectral_traces[trace_id]
++        fov, = [fov for fov in train.fov_manager.fovs if fov.trace_id == trace_id]
++        trace._set_dispersion(trace.wave_min, trace.wave_max, pixsize=train.image_planes[data['index']].header['CDELT1D'])
++        wave = (data['edges'][1:]+data['edges'][:-1])/2
++        slit_delta = abs(trace.slit_dispersion(line_wave))*.33
++        isolated = (line_wave > wave[0].value*1.001) & (line_wave < wave[-1].value*.999) & (catalog['amplitude'] > .001) & (neighboring_distance > 5*slit_delta)
++        eta_center = illumination_centroid(train['seeing_psf'], fov, .0825)-illumination_centroid(train['seeing_psf'], fov, 0.)
++        for kind, centers in [('lamp', line_wave[isolated]), ('synthetic', synthetic_centers[trace_id])]:
++            profiles = lamp_profiles[trace_id] if kind == 'lamp' else [entry[trace_id] for entry in synthetic]
++            for center in centers:
++                window = abs(wave.value-center) < 3*abs(trace.slit_dispersion(center))*.33
++                centroids = [center*u.um+(profile[window]*(wave[window]-center*u.um)).sum(dtype=np.float64)/profile[window].sum(dtype=np.float64) for profile in profiles]
++                delta = (centroids[1]-centroids[0]).to_value(u.um)
++                predicted = trace.slit_dispersion(center)*eta_center
++                dispersion = abs(trace.dlam_per_pix(center))
++                centroid_rows.append((label, kind, trace_id, center, eta_center, delta/dispersion, predicted/dispersion, c.to_value(u.km/u.s)*delta/center, c.to_value(u.km/u.s)*predicted/center))
++centroids = pd.DataFrame(centroid_rows, columns=['psf', 'source', 'trace', 'wavelength_um', 'transmitted_eta_shift_arcsec', 'measured_shift_pixel', 'predicted_shift_pixel', 'measured_shift_km_s', 'predicted_shift_km_s'])
++centroids.to_csv(output/'centroid_shifts.csv', index=False)
++pd.DataFrame(timings, columns=['psf', 'source_eta_arcsec', 'observe_s']).to_csv(output/'timings.csv', index=False)
++display(centroids.groupby(['psf', 'source'])[['measured_shift_pixel', 'predicted_shift_pixel']].agg(['min', 'max']))
++
+# %% code cell 4dfad00eced3eb1f
++fig, axes = plt.subplots(3, 2, figsize=(13, 10), sharex=True, layout='constrained')
++for column, label in enumerate(('natural', 'AO')):
++    for source_kind, marker, alpha in [('lamp', '.', .35), ('synthetic', 'o', .9)]:
++        data = centroids[(centroids.psf == label) & (centroids.source == source_kind)].sort_values('wavelength_um')
++        axes[0, column].scatter(data.wavelength_um, data.measured_shift_pixel, s=8, marker=marker, alpha=alpha, label=source_kind)
++        axes[1, column].scatter(data.wavelength_um, data.measured_shift_km_s, s=8, marker=marker, alpha=alpha)
++        axes[2, column].scatter(data.wavelength_um, data.measured_shift_pixel-data.predicted_shift_pixel, s=8, marker=marker, alpha=alpha)
++    prediction = centroids[(centroids.psf == label) & (centroids.source == 'synthetic')].sort_values('wavelength_um')
++    for index, (_, order) in enumerate(prediction.groupby('trace')):
++        axes[0, column].plot(order.wavelength_um, order.predicted_shift_pixel, color='k', lw=.8, label='illumination prediction' if index == 0 else None)
++        axes[1, column].plot(order.wavelength_um, order.predicted_shift_km_s, color='k', lw=.8)
++    axes[0, column].set_title(f'{label}; 0.33 arcsec slit, +0.0825 arcsec displacement')
++    axes[0, column].legend(fontsize=8)
++    axes[2, column].axhline(0, color='.4')
++    axes[2, column].set_xlabel(r'Wavelength [$\mu$m]')
++for ax, label in zip(axes[:, 0], ('Centroid shift [native pixel]', 'Centroid shift [km/s]', 'Measured minus predicted [pixel]')):
++    ax.set_ylabel(label)
++for ax in axes.flat:
++    ax.grid(alpha=.2)
++fig.savefig(output/'centroid_shifts.png', dpi=160)
++plt.show()
++
++for index, channel in enumerate(('B', 'G', 'R', 'YJ', 'H', 'K')):
++    fig, axes = plt.subplots(2, 4, figsize=(15, 7), layout='constrained')
++    for row, label in enumerate(('natural', 'AO')):
++        first, second = [np.load(path, mmap_mode='r') for path in image_paths[label][index]]
++        yy, xx = np.unravel_index(np.argmax(first), first.shape)
++        region = (slice(max(0, yy-12), min(first.shape[0], yy+13)), slice(max(0, xx-18), min(first.shape[1], xx+19)))
++        a, b = first[region], second[region]
++        raw = b-a
++        normalized = b*(a.sum(dtype=np.float64)/b.sum(dtype=np.float64))-a
++        scale = max(a.max(), b.max())
++        for ax, image, title in zip(axes[row], (a, b, raw, normalized), ('Centered', 'Displaced', 'Raw difference', 'Flux-normalized difference')):
++            difference = 'difference' in title
++            limit = max(abs(image.min()), abs(image.max())) if difference else scale
++            rendered = ax.imshow(image, origin='lower', cmap='RdBu_r' if difference else 'magma', vmin=-limit if difference else 0, vmax=limit, interpolation='nearest')
++            fig.colorbar(rendered, ax=ax, fraction=.046, pad=.03, label='electron/s')
++            ax.set(title=f'{label}: {title}', xlabel='Pixel within cutout', ylabel='Pixel within cutout')
++    fig.suptitle(f'{channel}: identical detector cutout around a bright lamp feature')
++    fig.savefig(output/f'lamp_differences_{channel}.png', dpi=150)
++    plt.show()
++
+# %% code cell ffe678200e3ac977
++from matplotlib.colors import LogNorm
++
++for label in ('natural', 'AO'):
++    fig, axes = plt.subplots(2, 6, figsize=(18, 7), layout='constrained')
++    for index, channel in enumerate(('B', 'G', 'R', 'YJ', 'H', 'K')):
++        first, second = [np.load(path, mmap_mode='r') for path in image_paths[label][index]]
++        ny, nx = first.shape
++        # Area means retain every native pixel while making a full-frame overview legible.
++        displays = [image.reshape(ny//8, 8, nx//8, 8).mean(axis=(1, 3)) for image in (first, second)]
++        maximum = max(image.max() for image in displays)
++        for row, image in enumerate(displays):
++            rendered = axes[row, index].imshow(image, origin='lower', cmap=plt.colormaps['magma'].with_extremes(bad='black'), norm=LogNorm(vmin=maximum/10000, vmax=maximum), interpolation='nearest', extent=(-.5, nx-.5, -.5, ny-.5))
++            axes[row, index].set(title=f'{channel}: {"centered" if row == 0 else "+0.0825 arcsec"}', xlabel='Detector x [pixel]')
++        axes[0, index].set_ylabel('Detector y [pixel]')
++        axes[1, index].set_ylabel('Detector y [pixel]')
++        fig.colorbar(rendered, ax=axes[:, index], fraction=.04, pad=.02, label='electron/s')
++    fig.suptitle(f'{label}: lamp pair, 0.33 arcsec slit; 8x8 area means for display; common scale within each channel')
++    fig.savefig(output/f'lamp_frames_{label}.png', dpi=150)
++    plt.show()
++
+# %% markdown cell ae1b2c2a096166e0
++The CSV retains every selected line and both PSF cases. The lamp points pass an explicit nearest-neighbor separation criterion, but weak blends and real-list normalization can still affect them. Synthetic probes isolate numerical projection and detector sampling from those line-list effects. A centroid measured from native pixel centers has a pixel-phase response, especially when the line is narrow; compare the residuals with the [sampling convergence evidence](../validation/xshooter/data/line_convergence_errors.csv) rather than interpreting every deviation as an optical displacement.
++
++Full centered/displaced rate arrays are saved locally beside the figures. The plotting cutouts use identical pixel coordinates in each pair, and no image interpolation is applied.

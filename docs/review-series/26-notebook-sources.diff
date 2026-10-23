@@ -1,0 +1,469 @@
+--- review/xs-25-kilonova-comparison/dev_notebooks/psf_adc.ipynb
++++ review/xs-26-validation-reproducibility/dev_notebooks/psf_adc.ipynb
+@@ -1,5 +1,7 @@
+ 
+# %% markdown cell 88460e362f14432f
+ # Explore PSF Effects
++
++Run cells in order: the slit comparison depends on the PSF and ADC arrays constructed above it. A fresh ordered execution passes; the earlier saved `input_psf` NameError came from running that comparison before its defining cell.
+ 
+ Sampling:
+ 1. Density or total -> total in bin
+--- review/xs-25-kilonova-comparison/dev_notebooks/zshooter_science_validation.ipynb
++++ review/xs-26-validation-reproducibility/dev_notebooks/zshooter_science_validation.ipynb
+@@ -4,6 +4,8 @@
+ This developer validation notebook answers science and instrument-engineering questions directly: what is configured, what physical effects are included, what the dominant rates are, whether simple back-of-the-envelope scales agree, and what changes when common background/AO/source knobs are toggled.
+ 
+ The important knobs remain close to the calculations they control, and the code stays visible so a scientist can rerun the same reasoning with different source, slit, seeing, airmass, or background settings.
++
++Runtime check: the configuration and trace-resolution diagnostic below were rerun with the current simulator. The earlier image-plane-effects exception no longer occurs; all six channels and 125 orders are included. This check does not rerun the later observation experiments.
+ 
+# %% code cell df27b713c481b741
+ %matplotlib inline
+ from collections import OrderedDict
+--- review/xs-25-kilonova-comparison/validation/xshooter/Notebook_Runtime_Checks.ipynb
++++ review/xs-26-validation-reproducibility/validation/xshooter/Notebook_Runtime_Checks.ipynb
+@@ -0,0 +1,190 @@
++
+# %% code cell 49acd73514ab9814
++from pathlib import Path
++import ast
++import json
++import pandas as pd
++from IPython.core.inputtransformer2 import TransformerManager
++
++workspace = next(path for path in (Path.cwd(), *Path.cwd().parents) if (path/'env/zshooter-stack.toml').exists())
++notebooks = sorted(path for directory in ('notebooks', 'dev_notebooks', 'validation/xshooter') for path in (workspace/directory).glob('*.ipynb'))
++transform = TransformerManager()
++rows, inventory, logged_errors = [], [], []
++for path in notebooks:
++    notebook = json.loads(path.read_text())
++    code_cells = syntax_errors = saved_exceptions = 0
++    for cell in notebook['cells']:
++        if cell['cell_type'] != 'code':
++            continue
++        code_cells += 1
++        source = ''.join(cell['source'])
++        try:
++            ast.parse(transform.transform_cell(source), filename=f"{path.name}:{cell['id']}")
++        except SyntaxError as error:
++            syntax_errors += 1
++            rows.append((str(path.relative_to(workspace)), cell['id'], 'SyntaxError', str(error)))
++        for output in cell['outputs']:
++            if output['output_type'] == 'error':
++                saved_exceptions += 1
++                rows.append((str(path.relative_to(workspace)), cell['id'], output['ename'], output['evalue']))
++            if output['output_type'] == 'stream':
++                for line in ''.join(output['text']).splitlines():
++                    if 'Traceback (most recent call last)' in line or ' - ERROR:' in line:
++                        logged_errors.append((str(path.relative_to(workspace)), cell['id'], line))
++    inventory.append((str(path.relative_to(workspace)), code_cells, syntax_errors, saved_exceptions))
++errors = pd.DataFrame(rows, columns=['notebook', 'cell', 'exception', 'message'])
++inventory = pd.DataFrame(inventory, columns=['notebook', 'code_cells', 'syntax_errors', 'saved_exceptions'])
++logged_errors = pd.DataFrame(logged_errors, columns=['notebook', 'cell', 'message'])
++inventory.to_csv(workspace/'validation/xshooter/data/runtime/notebook_checks.csv', index=False)
++errors.to_csv(workspace/'validation/xshooter/data/runtime/remaining_errors.csv', index=False)
++logged_errors.to_csv(workspace/'validation/xshooter/data/runtime/logged_errors.csv', index=False)
++print(f'Inspected {len(notebooks)} notebooks; source syntax, saved exceptions and logged tracebacks/errors only.')
++display(inventory)
++display(errors)
++display(logged_errors)
++
+# %% markdown cell e62a50267417a956
++# Saved-frame runtime checks
++
++The initial audit of 22 tracked notebooks found five saved exceptions. The current audit above includes this validation notebook as well. See [the runtime assessment](../../docs/notebook-runtime-checks.md) for the fixes and the exact execution scope.
++
++The reductions below require the saved frames from both kilonova notebooks. They reuse the actual stochastic images, standard counts and measured calibration files. The two small archived swaths retain the exact inputs that exposed the BLUE and UVB failures. Raising the native limit repairs BLUE; UVB instead needs the same-equation continuation in PyReduce's uncertainty refinement. No random realization is replaced and no clipping or convergence threshold is relaxed.
++
++The faint-mode X-shooter NIR flux calibration still fails its continuum control. Successful runtime checks do not license its science fluxes; the primary notebook and report retain the failure.
++
++Final saved-file audit: all 23 notebooks (the original 22 plus this check) have zero syntax errors, saved exceptions and logged tracebacks/errors. Existing invalid-escape deprecation warnings are visible in the parser output.
++
+# %% code cell 30296ab495e71640
++import logging
++from time import perf_counter
++import numpy as np
++from astropy.io import fits
++from pyreduce.spectra import Spectra
++from scopesim.source.source_templates import ab_spectrum
++from synphot.units import convert_flux
++from zsdrp.ZSHOOTER import ZSHOOTER
++import zsdrp.pipe
++
++# Reuse the actual stochastic frames and their measured calibrations.
++scene_dir = workspace/'notebooks/01_Kilonovae_detectors/SPEC/kilonova_X-1.3_NS-0.7_dark_slit-0.7_ao-0_optimal_variance'
++reduced_dir = scene_dir/'reduced'
++instrument = ZSHOOTER()
++reference = ab_spectrum(mag=16)
++reference_wave = reference.waveset
++reference_flux = convert_flux(reference_wave, reference(reference_wave), 'FLAM')
++steps = ['bias', 'flat', 'trace', 'wavecal_master', 'science']
++logging.getLogger('pyreduce.trace_model').setLevel(logging.ERROR)
++files = {}
++for channel in instrument.config.channels:
++    groups = instrument.sort_files(str(scene_dir), target='', night='', channel=channel, steps=steps)
++    (_, group), = [entry for entry in groups if len(entry[1]['science'])]
++    files[channel] = {name: group[name] for name in steps}
++    if channel != 'YJ':
++        files[channel]['trace'] = files[channel]['flat']
++reduction_times = []
++print({channel: len(group['science']) for channel, group in files.items()})
++
+# %% code cell 309c8e38e2710030
++for phase in (20.,):
++    object_name = f'KN_{phase}D_SUB'
++    for channel, group in files.items():
++        science_file, = [path for path in group['science'] if fits.getheader(path)['OBJECT'] == object_name]
++        selected = {channel: {**group, 'science': [science_file]}}
++        start = perf_counter()
++        reduced = zsdrp.pipe.run_reduction(selected, channels=[channel], output_dir=reduced_dir, disable_steps=['mask'], print_params=False, disable_all_plots=True, reuse_cals=True, require_variance=True)
++        reduced[channel]['spectra']['STANDARD'] = Spectra.read(reduced_dir/f'standard_{channel}_extracted_electrons.fits', raw=True)
++        calibrated = zsdrp.pipe.run_flux_calibration_and_stitch(reduced, reference_wave=reference_wave, reference_flux=reference_flux, plot=False, output_dir=str(reduced_dir))
++        reduction_times.append((phase, channel, perf_counter()-start))
++        print(f'{object_name}, {channel}: {reduction_times[-1][2]:.1f} s', flush=True)
++        del reduced, calibrated
++reduction_table = pd.DataFrame(reduction_times, columns=['phase_day', 'arm', 'seconds'])
++reduction_table.to_csv(workspace/'validation/xshooter/data/runtime/zshooter_20day_reduction.csv', index=False)
++display(reduction_table)
++
+# %% code cell 99b91bec6a71dd24
++import scopesim as sim
++from zs_scopesim_tools.helpers import configure_irdb_path
++from zsdrp.XSHOOTER import XSHOOTER
++
++configure_irdb_path()
++xs_root = workspace/'notebooks/xshooter_kilonova_detectors'
++xs_settings = {
++    'faint': {'!INST.uvb_curr_slit': '1.0', '!INST.vis_curr_slit': '0.9', '!INST.nir_curr_slit': '0.9', '!DET.biny_uvb': 2, '!DET.biny_vis': 2},
++    'high': {'!INST.uvb_curr_slit': '0.8', '!INST.vis_curr_slit': '0.9', '!INST.nir_curr_slit': '0.6', '!DET.biny_uvb': 1, '!DET.biny_vis': 1},
++}
++xs_trains = {mode: sim.OpticalTrain(sim.UserCommands(use_instrument='XSHOOTER', set_modes=['SPEC'], properties=settings, ignore_effects=['skycalc_atmosphere'])) for mode, settings in xs_settings.items()}
++xs_files = {}
++for mode in xs_settings:
++    xs_files[mode] = {}
++    for arm in ('UVB', 'VIS', 'NIR'):
++        directory = xs_root/mode
++        cals = directory/'calibrations'
++        xs_files[mode][arm] = {'bias': [cals/f'bias_{arm}.fits'] if arm != 'NIR' else [], 'flat': [cals/f'flat_{arm}.fits'], 'trace': [cals/f'trace_{arm}.fits'], 'wavecal_master': [cals/f'arc_{arm}.fits'], 'science': [directory/'prepared'/f'kilonova_20d_{arm}.fits']}
++print({mode: {arm: group['science'][0].exists() for arm, group in arms.items()} for mode, arms in xs_files.items()})
++
+# %% code cell f7b837c5d3cdc656
++from pyreduce import cwrappers
++from pyreduce.extraction_uncertainty import slit_response
++
++convergence_rows = []
++for filename in ('zshooter_blue20_swath.npz', 'xshooter_uvb20_swath.npz'):
++    with np.load(workspace/'validation/xshooter/data/runtime'/filename) as archive:
++        inputs = dict(archive)
++    for name in ('osample', 'lambda_sf', 'lambda_sp', 'preset'):
++        inputs[name] = inputs[name].item()
++    previous = None
++    for limit in (4000, 8000, 16000):
++        start = perf_counter()
++        native = cwrappers.slitdec(inputs['image'], np.ones_like(inputs['image']), inputs['good'].astype(np.uint8), inputs['ycen'], inputs['slitcurve'], inputs['slitdeltas'], osample=inputs['osample'], lambda_sL=inputs['lambda_sf'], lambda_sP=inputs['lambda_sp'], maxiter=limit, kappa=0)
++        refined = slit_response(**(inputs | {'slit': native['slitfunction']}))
++        if previous is not None:
++            np.testing.assert_allclose(refined[0], previous[0], rtol=1e-9, atol=1e-9)
++            np.testing.assert_allclose(refined[2], previous[2], rtol=1e-8, atol=1e-9)
++        previous = refined
++        convergence_rows.append((filename, limit, native['info'][3], perf_counter()-start, np.sum(np.abs(refined[1]))/np.abs(refined[1].sum())))
++        print(convergence_rows[-1], flush=True)
++convergence = pd.DataFrame(convergence_rows, columns=['swath', 'iteration_limit', 'native_iterations', 'seconds', 'absolute_to_signed_profile_integral'])
++convergence.to_csv(workspace/'validation/xshooter/data/runtime/faint_swath_convergence.csv', index=False)
++display(convergence)
++
+# %% code cell 832782f73075e4ca
++xs_reduction_times = []
++for mode, arms in xs_files.items():
++    for arm, group in arms.items():
++        armdir = xs_root/mode/'reduced'/arm
++        start = perf_counter()
++        reduced = zsdrp.pipe.run_reduction({arm: group}, channels=[arm], output_dir=armdir, instrument=XSHOOTER(), trace_list=xs_trains[mode]['spectral_traces'], require_variance=True, reuse_cals=True, disable_steps=['mask'], print_params=False, disable_all_plots=True)
++        reduced[arm]['spectra']['STANDARD'] = Spectra.read(armdir/'standard_blazecal_counts.fits', raw=True)
++        calibrated = zsdrp.pipe.run_flux_calibration_and_stitch(reduced, reference_wave=reference_wave, reference_flux=reference_flux, plot=False, output_dir=str(armdir))
++        xs_reduction_times.append((mode, arm, perf_counter()-start))
++        print(f'{mode}, {arm}: {xs_reduction_times[-1][2]:.1f} s', flush=True)
++        del reduced, calibrated
++xs_reduction_table = pd.DataFrame(xs_reduction_times, columns=['mode', 'arm', 'seconds'])
++xs_reduction_table.to_csv(workspace/'validation/xshooter/data/runtime/xshooter_20day_reduction.csv', index=False)
++display(xs_reduction_table)
++
+# %% code cell 8bc6e734d95c5b32
++products = []
++for phase in (1.5, 7.5, 20.):
++    for arm in instrument.config.channels:
++        products.append(('ZShooter', 'SPEC', phase, arm, reduced_dir/f'spectra_KN_{phase}D_SUB_{arm}_fluxcal.fits'))
++    products.append(('ZShooter', 'SPEC', phase, 'stitched', reduced_dir/f'spectra_KN_{phase}D_SUB_stitched.fits'))
++    for mode in xs_settings:
++        for arm in ('UVB', 'VIS', 'NIR'):
++            products.append(('X-shooter', mode, phase, arm, xs_root/mode/'reduced'/arm/f'spectra_KILONOVA_{phase:g}D_{arm}_fluxcal.fits'))
++        products.append(('X-shooter', mode, phase, 'stitched', xs_root/mode/'reduced'/f'KILONOVA_{phase:g}D_stitched.fits'))
++product_rows = []
++for instrument_name, mode, phase, arm, path in products:
++    data = Spectra.read(path, raw=True)
++    retained = samples = 0
++    for spectrum in data.data:
++        valid = ~spectrum.mask
++        assert valid.any(), path
++        assert np.all(np.isfinite(spectrum.wave[valid])), path
++        assert np.all(np.isfinite(spectrum.spec[valid])), path
++        assert np.all(np.isfinite(spectrum.sig[valid])), path
++        assert np.all(spectrum.sig[valid] >= 0), path
++        assert spectrum.covariance.shape == (spectrum.spec.size, spectrum.spec.size), path
++        assert np.all(np.isfinite(spectrum.covariance.data)), path
++        # Both quantities are saved in the same flux units; only roundoff can differ.
++        np.testing.assert_allclose(spectrum.covariance.diagonal()[valid], spectrum.sig[valid]**2, rtol=1e-10, atol=0)
++        samples += spectrum.spec.size
++        retained += valid.sum()
++    product_rows.append((instrument_name, mode, phase, arm, samples, retained))
++    del data
++product_checks = pd.DataFrame(product_rows, columns=['instrument', 'mode', 'phase_day', 'arm', 'samples', 'retained_samples'])
++product_checks.to_csv(workspace/'validation/xshooter/data/runtime/science_product_checks.csv', index=False)
++print(f'{len(product_checks)} products have finite retained samples and consistent covariance diagonals.')
++display(product_checks)
+--- review/xs-25-kilonova-comparison/validation/xshooter/Performance.ipynb
++++ review/xs-26-validation-reproducibility/validation/xshooter/Performance.ipynb
+@@ -0,0 +1,108 @@
++
+# %% markdown cell fd3ade7897a66893
++# Full-frame performance measurements
++
++The primary source is a centered AB 20 flat-$f_
++u$ continuum. Every arm and the full configured wavelength range are included. Setup, observation and readout are timed separately. `profile=True` records Yappi wall-clock profiles, including profiler overhead; set it to `False` for interactive timings. For independent peak-memory measurements, restart this notebook's kernel between the ZShooter and X-shooter sections and rerun the imports.
++
++The saved CSV retains the earlier baseline and intermediate measurements. `shared_final` uses the adopted branches. The historical X-shooter process peak follows earlier ZShooter runs and is cumulative. Sky downloads affect setup time; the X-shooter section uses an optional local ESO cache with the displayed fixed query parameters. The [comparison notebook](../../notebooks/02_Flat_AB_Comparison.ipynb) separately times its common-sky observations.
++
+# %% code cell f26b43c96fd78613
++from pathlib import Path
++from time import perf_counter
++import resource
++import sys
++import numpy as np
++import pandas as pd
++import yappi
++import scopesim as sim
++from scopesim.source.source_templates import ab_spectrum
++from zs_scopesim_tools.helpers import configure_irdb_path, warning_prevent_sync_alt_ra_dec, disable_scopesim_progress_bars, set_scopesim_log_level
++
++workspace = next(path for path in (Path.cwd(), *Path.cwd().parents) if (path / 'env/zshooter-stack.toml').exists())
++irdb = Path(configure_irdb_path())
++set_scopesim_log_level('warning')
++output = workspace / 'validation/xshooter/data'
++measurements = pd.read_csv(output / 'full_frame_timings.csv').to_dict('records')
++profile = False
++source = sim.Source(x=[0.], y=[0.], ref=[0], weight=[1.], spectra=[ab_spectrum(mag=20)])
++print(sys.executable, sim.__version__, sim.__file__)
++
+# %% code cell c8f927097cd9f508
++instrument = 'ZShooter_v2'
++label = 'double_AO033_cache_audit'
++properties = {'!OBS.airmass': 1.1, '!OBS.seeing': .65, '!OBS.brightness': 'dark', '!OBS.mjdobs': 60310.25}
++properties.update({'!INST.vis_curr_slit': .33, '!INST.nir_curr_slit': .33, '!INST.include_diffuse_emissivity': False, '!ATMO.skycalc_timeout': 60.})
++for arm in ('blue', 'green', 'red', 'yj', 'h', 'k'):
++    properties[f'!OBS.dit_{arm}'] = 1800.
++    properties[f'!OBS.ndit_{arm}'] = 2
++started = perf_counter()
++cmds = sim.UserCommands(use_instrument=instrument, set_modes=['SPEC'], properties=properties)
++warning_prevent_sync_alt_ra_dec(cmds)
++train = sim.OpticalTrain(cmds)
++setup_s = perf_counter() - started
++started = perf_counter()
++train.update(migrate_cmds=True)
++update_s = perf_counter() - started
++train['seeing_psf'].meta['enable_ao'] = True
++print(f'{instrument}: setup {setup_s:.2f} s, explicit update {update_s:.2f} s')
++
+# %% code cell af626a75e3874a0d
++yappi.clear_stats()
++yappi.set_clock_type('wall')
++if profile:
++    yappi.start()
++started = perf_counter()
++with disable_scopesim_progress_bars(True):
++    for plane in train.image_planes:
++        plane.data.fill(0)
++    train.observe(source, update=False)
++observed = perf_counter()
++readouts = train.readout()
++finished = perf_counter()
++if profile:
++    yappi.stop()
++    stats = yappi.get_func_stats()
++    stats.sort('ttot', 'desc')
++    with (output / f'{label}_{instrument}_yappi.txt').open('w') as stream:
++        stats.print_all(out=stream, columns={0: ('name', 140), 1: ('ncall', 12), 2: ('tsub', 12), 3: ('ttot', 12)})
++measurements.append({'instrument': instrument, 'label': label, 'profiled': profile, 'setup_s': setup_s, 'update_s': update_s, 'observe_s': observed - started, 'readout_s': finished - observed, 'peak_process_gib': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**3})
++pd.DataFrame(measurements).to_csv(output / 'full_frame_timings.csv', index=False)
++print([(h[1].data.shape, np.isfinite(h[1].data).all()) for h in readouts])
++display(pd.DataFrame(measurements))
++
+# %% code cell 6e37bae91c42235
++instrument = 'XSHOOTER'
++label = 'double_faint_cache_audit'
++properties = {'!OBS.airmass': 1.1, '!OBS.seeing': .65, '!OBS.brightness': 'dark', '!OBS.mjdobs': 60310.25, '!ATMO.skycalc_timeout': 60.}
++properties.update({'!DET.biny_uvb': 2, '!DET.biny_vis': 2})
++for arm in ('uvb', 'vis', 'nir'):
++    properties[f'!OBS.dit_{arm}'] = 300. if arm == 'nir' else 1800.
++    properties[f'!OBS.ndit_{arm}'] = 12 if arm == 'nir' else 2
++started = perf_counter()
++cmds = sim.UserCommands(use_instrument=instrument, set_modes=['SPEC'], properties=properties)
++warning_prevent_sync_alt_ra_dec(cmds)
++train = sim.OpticalTrain(cmds)
++setup_s = perf_counter() - started
++started = perf_counter()
++train.update(migrate_cmds=True)
++update_s = perf_counter() - started
++print(f'{instrument}: setup {setup_s:.2f} s, explicit update {update_s:.2f} s')
++
+# %% code cell a21a973c38e91243
++yappi.clear_stats()
++yappi.set_clock_type('wall')
++if profile:
++    yappi.start()
++started = perf_counter()
++with disable_scopesim_progress_bars(True):
++    for plane in train.image_planes:
++        plane.data.fill(0)
++    train.observe(source, update=False)
++observed = perf_counter()
++readouts = train.readout()
++finished = perf_counter()
++if profile:
++    yappi.stop()
++    stats = yappi.get_func_stats()
++    stats.sort('ttot', 'desc')
++    with (output / f'{label}_{instrument}_yappi.txt').open('w') as stream:
++        stats.print_all(out=stream, columns={0: ('name', 140), 1: ('ncall', 12), 2: ('tsub', 12), 3: ('ttot', 12)})
++measurements.append({'instrument': instrument, 'label': label, 'profiled': profile, 'setup_s': setup_s, 'update_s': update_s, 'observe_s': observed - started, 'readout_s': finished - observed, 'peak_process_gib': resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**3})
++pd.DataFrame(measurements).to_csv(output / 'full_frame_timings.csv', index=False)
++print([(h[1].data.shape, np.isfinite(h[1].data).all()) for h in readouts])
++display(pd.DataFrame(measurements))
+--- review/xs-25-kilonova-comparison/validation/xshooter/Upstream_Adoption.ipynb
++++ review/xs-26-validation-reproducibility/validation/xshooter/Upstream_Adoption.ipynb
+@@ -0,0 +1,56 @@
++
+# %% markdown cell 2de5ce72237c4a04
++# Bounded observations after upstream adoption
++
++These observations exercise the adopted engine beyond X-shooter and ZShooter. Narrow wavelength intervals bound cube work while retaining optics, PSFs and native detector geometry. MICADO spectroscopy uses the full focal plane because the selected orders miss its default central detector window.
++
++Each case requires positive source flux, finite image planes and every populated science extension, plus INSTRUME, DIT, NDIT and EXPTIME metadata. Any logged readout error fails the run. The earlier HAWKI mode/header traceback was an actual failure: its missing default mode list is now repaired. Large rate arrays are saved locally; the compact results table is committed.
++
+# %% code cell c611df96e1c0e91f
++from pathlib import Path
++import sys
++import gc
++import pandas as pd
++import scopesim as sim
++from zs_scopesim_tools.helpers import configure_irdb_path, disable_scopesim_progress_bars, set_scopesim_log_level
++
++workspace = next(path for path in (Path.cwd(), *Path.cwd().parents) if (path / 'env/zshooter-stack.toml').exists())
++sys.path.insert(0, str(workspace / 'validation/xshooter'))
++from instrument_probe import observe_case
++irdb = Path(configure_irdb_path())
++output = workspace / 'validation/xshooter/cache/upstream_adopted'
++output.mkdir(parents=True, exist_ok=True)
++set_scopesim_log_level('warning')
++print(sim.__version__, sim.__file__)
++
+# %% code cell 2f75bfa3969a7fc5
++cases = [
++    ('MICADO_SCAO', 'MICADO', ['SCAO', 'IMG_4mas'], 2.17, 2.18, {'!OBS.filter_name_fw1': 'open', '!OBS.filter_name_fw2': 'Ks'}),
++    ('MICADO_MCAO', 'MICADO', ['MCAO', 'IMG_4mas'], 2.17, 2.18, {'!OBS.filter_name_fw1': 'open', '!OBS.filter_name_fw2': 'Ks'}),
++    ('MICADO_SPEC', 'MICADO', ['SCAO', 'SPEC'], 1.2, 1.202, {'!OBS.slit': 'Wide', '!OBS.filter_name_fw1': 'Spec_IJ', '!OBS.filter_name_fw2': 'open', '!DET.include_full': True, '!DET.include_window': False}),
++    ('METIS_img_lm', 'METIS', ['img_lm'], 3.79, 3.8, {}),
++    ('METIS_img_n', 'METIS', ['img_n'], 10.5, 10.51, {}),
++    ('METIS_lss_l', 'METIS', ['lss_l'], 3.79, 3.8, {}),
++    ('METIS_lss_n', 'METIS', ['lss_n'], 10.5, 10.51, {}),
++    ('METIS_lms', 'METIS', ['lms'], 3.498, 3.502, {'!OBS.wavelen': 3.5}),
++    ('HAWKI', 'HAWKI', [], 2.17, 2.18, {'!OBS.filter_name': 'Ks'}),
++]
++rows = []
++for case, instrument, modes, lower, upper, properties in cases:
++    with disable_scopesim_progress_bars():
++        results = observe_case(irdb, output / f'{case}.npz', instrument, modes, lower, upper, properties, check_readout=True)
++    for index, shape, background, source in results:
++        rows.append((case, index, shape[0], shape[1], background, source))
++    print(case, 'finite readout; source e/s', sum(row[-1] for row in results), flush=True)
++    gc.collect()
++results_table = pd.DataFrame(rows, columns=['instrument_mode', 'image_plane', 'rows', 'columns', 'background_e_s', 'source_e_s'])
++results_table.to_csv(workspace / 'validation/xshooter/data/adopted_upstream_observations.csv', index=False)
++display(results_table)
++
+# %% markdown cell 90cfdc3940850c1b
++## MOSAIC metadata check
++
++MOSAIC now supplies its instrument identity in IRDB, and its table output preserves the actual DIT, NDIT and accumulated exposure recorded by the detector integration. The same strict readout check passes below; neither missing metadata nor logged readout errors are ignored. The nine earlier cases, including HAWKI, remain in `data/adopted_upstream_observations.csv`; this case is saved separately in `data/adopted_mosaic_observation.csv`.
++
+# %% code cell 9003a4957d7808a8
++with disable_scopesim_progress_bars():
++    mosaic_results = observe_case(irdb, output/'MOSAIC_MOS.npz', 'MOSAIC', ['MOS-LR-R'], .75, .751, {}, check_readout=True)
++mosaic_rows = [('MOSAIC_MOS', index, shape[0], shape[1], background, source) for index, shape, background, source in mosaic_results]
++mosaic_table = pd.DataFrame(mosaic_rows, columns=['instrument_mode', 'image_plane', 'rows', 'columns', 'background_e_s', 'source_e_s'])
++mosaic_table.to_csv(workspace/'validation/xshooter/data/adopted_mosaic_observation.csv', index=False)
++display(mosaic_table)
+--- review/xs-25-kilonova-comparison/validation/xshooter/Upstream_Observations.ipynb
++++ review/xs-26-validation-reproducibility/validation/xshooter/Upstream_Observations.ipynb
+@@ -0,0 +1,53 @@
++
+# %% markdown cell 316fa9fed4db9e87
++# Bounded upstream observations
++
++These observations supplement the upstream test suite, whose MICADO spectroscopy tests are skipped for memory use. They use the real instrument configurations and a narrow wavelength interval. Electron-rate arrays before detector noise separate sky/background and a centered flat-spectrum point source. Compare the saved arrays between the clean upstream revision and the review port; these are numerical regression checks, not absolute instrument calibrations.
++
+# %% code cell 331460c1819e76c9
++import sys
++from pathlib import Path
++
++# Checkouts and the isolated upstream installation prepared as described in the validation notes.
++review = Path('/tmp/xshooter-review')
++engine = 'upstream-port'  # Run 'upstream-scopesim' first; restart the kernel when changing engine.
++sys.path[:0] = [str(review / engine), str(review / 'upstream-runtime'), str(Path.cwd())]
++from instrument_probe import observe_case
++from skycalc_ipy.core import ESOQueryBase
++import scopesim as sim
++
++ESOQueryBase.REQUEST_TIMEOUT = 120
++irdb = review / 'upstream-irdb'
++print(sim.__version__, sim.__file__)
++
+# %% code cell c478d9dce5be77eb
++results = {}
++for ao in ['SCAO', 'MCAO']:
++    name = 'MICADO_' + ao
++    results[name] = observe_case(irdb, review / f'{engine}_{name}.npz', 'MICADO', [ao, 'IMG_4mas'], 2.17, 2.18, {'!OBS.filter_name_fw1': 'open', '!OBS.filter_name_fw2': 'Ks'})
++    print(name, results[name])
++
+# %% code cell 4cec7f064c1a4583
++# At 1.201 um the orders lie outside the central detector window.
++# Use the native full array; the narrow wavelength interval bounds cube memory.
++name = 'MICADO_SPEC'
++results[name] = observe_case(irdb, review / f'{engine}_{name}.npz', 'MICADO', ['SCAO', 'SPEC'], 1.2, 1.202, {'!OBS.slit': 'Wide', '!OBS.filter_name_fw1': 'Spec_IJ', '!OBS.filter_name_fw2': 'open', '!DET.include_full': True, '!DET.include_window': False})
++print(name, results[name])
++
+# %% code cell e499c83365738b0c
++for mode, lower, upper in [('img_lm', 3.79, 3.8), ('img_n', 10.5, 10.51), ('lss_l', 3.79, 3.8), ('lss_n', 10.5, 10.51), ('lms', 3.498, 3.502)]:
++    name = 'METIS_' + mode
++    properties = {'!OBS.wavelen': 3.5} if mode == 'lms' else {}
++    results[name] = observe_case(irdb, review / f'{engine}_{name}.npz', 'METIS', [mode], lower, upper, properties)
++    print(name, results[name])
++
+# %% code cell d2cceb7acd3a187b
++name = 'MOSAIC_MOS'
++results[name] = observe_case(irdb, review / f'{engine}_{name}.npz', 'MOSAIC', ['MOS-LR-R'], .75, .751, {})
++print(name, results[name])
++name = 'HAWKI'
++results[name] = observe_case(irdb, review / f'{engine}_{name}.npz', 'HAWKI', [], 2.17, 2.18, {'!OBS.filter_name': 'Ks'})
++print(name, results[name])
++
+# %% markdown cell 4bdfae928bf019b3
++Compare both engine runs using the saved image planes. These are electrons per second before detector noise. The position and RMS-width differences are in image-plane pixels, not wavelength shifts or fitted resolving powers. An unchanged sum alone does not establish an unchanged spatial profile. See [the validation assessment](../../docs/xshooter-validation.md) for the interpretation and the scope of the port.
++
+# %% code cell 29b26e253d7cb925
++from compare_instruments import compare_instruments
++
++comparison = compare_instruments(review)
++assert set(comparison.instrument) == set(results)
++comparison.to_csv('data/upstream_observations.csv', index=False, float_format='%.8g')
++comparison.round(6)
