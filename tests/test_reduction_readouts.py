@@ -9,7 +9,7 @@ from zs_scopesim_tools.helpers import electron_readouts, combine_readouts, save_
 
 
 def readout(value, variance=None, exptime=300., ndit=1):
-    header = fits.Header({'BUNIT': 'electron', 'GAIN': 1., 'DIT': exptime/ndit, 'NDIT': ndit, 'EXPTIME': exptime, 'RON': 2., 'DARK': .01})
+    header = fits.Header({'ID': 0, 'BUNIT': 'electron', 'GAIN': 1., 'DIT': exptime/ndit, 'NDIT': ndit, 'EXPTIME': exptime, 'RON': 2., 'DARK': .01})
     hdul = fits.HDUList([fits.PrimaryHDU(header=header), fits.ImageHDU(np.full((2, 3), value), header=header)])
     if variance is not None:
         hdul.append(fits.ImageHDU(np.full((2, 3), variance), name='VARIANCE'))
@@ -89,6 +89,31 @@ def test_save_preserves_prepared_total_exposure_and_noise(tmp_path):
         assert saved[0].header['RON'] == pytest.approx(6.*np.sqrt(12))
         assert saved[0].header['DATE-OBS'] != '2026-09-01T00:00:00.000'
         np.testing.assert_array_equal(saved['VARIANCE'].data, 12.)
+
+
+def test_selected_detector_keeps_its_physical_channel(tmp_path):
+    science = readout(10., 12.)
+    science[1].header['ID'] = 5
+    path, = save_zshooter_readout([science], tmp_path, object_name='test')
+    assert path.name == 'test_0_K.fits.gz'
+    assert fits.getheader(path)['CHANNEL'] == 'K'
+    del science[1].header['ID']
+    with pytest.raises(KeyError):
+        save_zshooter_readout([science], tmp_path, object_name='missing_id')
+
+
+def test_arm_comparison_includes_exposure_and_common_physics():
+    from zs_scopesim_tools.helpers import zshooter_channel_configuration
+    original = fits.Header({'HIERARCH SIM CONFIG DET pixel_size_k': .018, 'HIERARCH SIM CONFIG DET pixel_size_yj': .018, 'HIERARCH SIM CONFIG OBS dit_yj': 300., 'HIERARCH SIM CONFIG INST nir_curr_slit': .7})
+    changed = original.copy()
+    changed['SIM CONFIG DET pixel_size_k'] = .010
+    assert zshooter_channel_configuration(original, 'YJ') == zshooter_channel_configuration(changed, 'YJ')
+    assert zshooter_channel_configuration(original, 'K') != zshooter_channel_configuration(changed, 'K')
+    changed['SIM CONFIG OBS dit_yj'] = 600.
+    assert zshooter_channel_configuration(original, 'YJ') != zshooter_channel_configuration(changed, 'YJ')
+    changed['SIM CONFIG OBS dit_yj'] = 300.
+    changed['SIM CONFIG INST nir_curr_slit'] = 1.
+    assert zshooter_channel_configuration(original, 'YJ') != zshooter_channel_configuration(changed, 'YJ')
 
 
 @pytest.mark.parametrize('suffix', ['.fits', '.fits.gz'])
