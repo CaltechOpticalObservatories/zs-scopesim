@@ -1,7 +1,10 @@
 """Boxcar forecasts and count-conserving spectral binning for instrument comparisons."""
 
+from pathlib import Path
+import pickle
 import numpy as np
 import astropy.units as u
+from astropy.table import Table
 from scipy import sparse
 from scipy.special import ndtr
 
@@ -10,6 +13,33 @@ from scopesim.effects import SelectorWheel, SpectralTraceList
 from scopesim.effects.electronic import ExposureIntegration, DarkCurrent, BasicReadoutNoise, OnChipBinning
 from scopesim.effects.electronic.pixels import BinnedImageBase
 from scopesim.utils import from_currsys
+
+
+def save_comparison_case(filename, result, include_images=False):
+    """Optionally save one completed case; native frames are excluded by default."""
+    saved = result.copy()
+    if not include_images:
+        saved['native_images'] = None
+    with Path(filename).open('wb') as stream:
+        pickle.dump(saved, stream, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def load_comparison_case(filename, configuration, model_paths):
+    """Load an explicit local save, rejecting changed settings or newer model inputs."""
+    filename = Path(filename)
+    with filename.open('rb') as stream:
+        result = pickle.load(stream)
+    if result['configuration'] != configuration:
+        raise ValueError(f'{filename}: saved simulation settings differ from the requested case.')
+    saved_time = filename.stat().st_mtime_ns
+    inputs = [Path(__file__)]
+    for root in model_paths:
+        root = Path(root)
+        root.stat()
+        inputs.extend(path for path in root.rglob('*') if path.suffix in ('.py', '.yaml', '.yml', '.fits', '.dat', '.ecsv', '.csv', '.txt'))
+    if any(path.stat().st_mtime_ns > saved_time for path in inputs):
+        raise ValueError(f'{filename}: simulation code or model inputs are newer than this save.')
+    return result
 
 
 def detector_rates(train):
@@ -216,6 +246,38 @@ def trace_line_profiles(train, extracted, centers, eta=0.):
     for trace_id, data in extracted.items():
         profiles[trace_id] = boxcar_sum(rates[data['index']], data['axis'], data['pixels'], data['centers'], data['widths'])
     return profiles
+
+
+def trace_resolution_reference(train, centers, spatial_aperture):
+    """Measure an optics-only reference through the real PSF, slit, traces and pixels.
+
+    No continuum, sky observation or stochastic readout is needed. The stated
+    spatial aperture defines this reference independently of science extraction.
+    """
+    traces, = train.optics_manager.get_all(SpectralTraceList)
+    orders = {}
+    for trace_id in centers:
+        index, axis, pixels, spatial, edges = trace_pixel_grid(train, trace_id)
+        wave = (edges[:-1]+edges[1:])/2
+        spatial_axis = 'y' if axis == 'x' else 'x'
+        aperture = train.trace_detector_coordinates(xi=np.array([-.5, .5])*spatial_aperture, wavelengths={trace_id: centers[trace_id]*u.um})
+        width = int(np.ceil(np.ptp(aperture[f'detector_{spatial_axis}'].to_value(u.pixel))))
+        size = train.detector_managers[index][0].data.shape[0 if axis == 'x' else 1]
+        valid = (spatial >= width/2) & (spatial < size-width/2)
+        orders[trace_id] = {'index': index, 'axis': axis, 'pixels': pixels[valid], 'centers': spatial[valid], 'widths': np.full(valid.sum(), width), 'wave': wave[valid]}
+    # Before an observation, the trace effect has not yet assigned the FOV plane.
+    for fov in train.fov_manager.fovs:
+        fov.image_plane_id = traces.spectral_traces[fov.trace_id].meta['image_plane_id']
+    profiles = trace_line_profiles(train, orders, centers)
+    rows = []
+    for trace_id, data in orders.items():
+        for center in centers[trace_id]:
+            near = abs(data['wave'].value/center-1) < .0015
+            centroid, sigma, fwhm = line_width(data['wave'][near], profiles[trace_id][near])
+            rows.append((trace_id, center, (centroid/fwhm).value))
+    reference = Table(rows=rows, names=['trace', 'wavelength_um', 'native_R'])
+    reference.sort('wavelength_um')
+    return reference
 
 
 def select_spectral_samples(signal, variance_background, reference_mag=20., excess_noise_factor=1.):

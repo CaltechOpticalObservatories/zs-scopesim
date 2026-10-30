@@ -5,6 +5,8 @@ science notebooks, reproducibility tools, and common troubleshooting.
 
 The [Caltech review series](review-series.md) lists the 29 thematic PRs, merge order, review aids and verification of the split.
 
+The [H4RG continuation](h4rg-development.md) records the follow-up branches, dependency pins, validation and how to continue development while the original review series is open.
+
 The [ZImager integration report](zimager-integration.md) describes the
 `zimager_xshooter` branches, the imaging notebook and the spectroscopy
 regression checks against the pre-merge stack.
@@ -54,5 +56,6 @@ kilonova-mirrored-reduction
 notebook-runtime-checks
 reproducibility
 review-series
+h4rg-development
 troubleshooting
 ```
