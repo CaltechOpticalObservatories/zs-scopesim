@@ -1,0 +1,1000 @@
+--- notebooks/02_Flat_AB_Comparison.ipynb (review base)
++++ notebooks/02_Flat_AB_Comparison.ipynb (H4RG follow-up)
+@@ -4,9 +4,16 @@
+ 
+ The technical source is a centered **AB 20 flat $f_\nu$ continuum**. All configurations use the same evaluated atmospheric transmission, continuum and PALACE airglow, with dark sky, airmass 1.1, seeing 0.65 arcsec and MJD 60310.25.
+ 
+-Both X-shooter modes are executed: faint continuum (1.0/0.9/0.9 arcsec, spectral CCD binning by two) and higher resolution (0.8/0.9/0.6 arcsec, unbinned). ZShooter is evaluated with natural seeing and a 0.70 arcsec slit, AO and a 0.33 arcsec slit, and a natural-seeing 0.33 arcsec control. Its selected Zemax prescription and explicit detector offsets are used unchanged.
++Available X-shooter modes are faint continuum (1.0/0.9/0.9 arcsec, spectral CCD binning by two) and higher resolution (0.8/0.9/0.6 arcsec, unbinned). ZShooter is evaluated with natural seeing and a 0.70 arcsec slit, AO and a 0.33 arcsec slit, and a natural-seeing 0.33 arcsec control. Its selected Zemax prescription and explicit detector offsets are used unchanged. `run_cases` selects the expensive renders; the default selection is ZShooter only.
+ 
+ Native detector pixels are extracted with transparent boxcars. Optical rates are reused for explicit exposure scenarios within each unchanged detector package. The figures distinguish instrumental throughput, extracted fraction, geometric slit resolution, simulated point-source resolution, and sensitivity with or without OH sample selection.
++
++# markdown cell
++### Working interactively
++
++Configuration and function-definition cells preserve `case_results` in memory. To add or redo a simulation, put just its name in `run_cases` and execute **Run selected simulations**. Then rerun the analysis cells for `analysis_cases`. Each figure has its own editable case selection and can be rerun independently. Hiding a curve never reruns a simulation.
++
++The XS-level target grid comes from a small optics-only line calibration, not a rendered XS science case. Set `forecast_resolutions` to select native, R=1000 and/or that common grid. X-shooter science cases can be added later on the same grid. Disk saves and covariance examples are opt-in; deleting saved intermediates has no effect on completed in-memory results.
+ 
+ # code cell
+ from pathlib import Path
+@@ -17,7 +24,6 @@
+ import pandas as pd
+ import matplotlib.pyplot as plt
+ import astropy.units as u
+-from astropy.io import fits
+ from astropy.table import Table
+ from scipy import sparse
+ from scipy.ndimage import median_filter
+@@ -26,8 +32,8 @@
+ from scopesim.effects import SelectorWheel, SpectralTraceList, SpectralQuantumEfficiency, SurfaceList, TERCurve
+ from scopesim.effects.electronic import ADConversion, ExposureOutput
+ from scopesim.utils import from_currsys
+-from zs_scopesim_tools.helpers import configure_irdb_path, warning_prevent_sync_alt_ra_dec, disable_scopesim_progress_bars, set_scopesim_log_level, save_readout_to_fits
+-from zs_scopesim_tools.comparison import detector_rates, detector_noise, trace_pixel_grid, boxcar_sum, choose_boxcar, limiting_abmag, gaussian_bin_matrix, line_width, select_spectral_samples, trace_line_profiles
++from zs_scopesim_tools.helpers import configure_irdb_path, warning_prevent_sync_alt_ra_dec, disable_scopesim_progress_bars, set_scopesim_log_level
++from zs_scopesim_tools.comparison import detector_rates, detector_noise, trace_pixel_grid, boxcar_sum, choose_boxcar, limiting_abmag, gaussian_bin_matrix, line_width, select_spectral_samples, trace_line_profiles, trace_resolution_reference, save_comparison_case, load_comparison_case
+ 
+ workspace = next(path for path in (Path.cwd(), *Path.cwd().parents) if (path / 'env/zshooter-stack.toml').exists())
+ irdb = Path(configure_irdb_path())
+@@ -43,15 +49,16 @@
+ flat_ab = ab_spectrum(mag=AB_MAG)
+ source = sim.Source(x=[0.], y=[0.], ref=[0], weight=[1.], spectra=[flat_ab])
+ properties = {'!OBS.airmass': AIRMASS, '!OBS.seeing': SEEING, '!OBS.brightness': 'dark', '!OBS.mjdobs': 60310.25, '!SIM.random.seed': 62419, '!OBS.dit': 1200., '!OBS.ndit': 1}
++XS_HIGH_SETTINGS = {'!INST.uvb_curr_slit': '0.8', '!INST.vis_curr_slit': '0.9', '!INST.nir_curr_slit': '0.6', '!DET.biny_uvb': 1, '!DET.biny_vis': 1}
+ cases = [
+-    ('ZS natural .70', 'ZShooter_v2', {'!INST.vis_curr_slit': .7, '!INST.nir_curr_slit': .7}, False),
+-    ('ZS AO .33', 'ZShooter_v2', {'!INST.vis_curr_slit': .33, '!INST.nir_curr_slit': .33}, True),
+-    ('ZS natural .33', 'ZShooter_v2', {'!INST.vis_curr_slit': .33, '!INST.nir_curr_slit': .33}, False),
+-    ('ZS alt natural .70', 'ZShooter_v2', {'!INST.vis_curr_slit': .7, '!INST.nir_curr_slit': .7}, False),
+-    ('ZS alt AO .33', 'ZShooter_v2', {'!INST.vis_curr_slit': .33, '!INST.nir_curr_slit': .33}, True),
+-    ('ZS alt natural .33', 'ZShooter_v2', {'!INST.vis_curr_slit': .33, '!INST.nir_curr_slit': .33}, False),
+-    ('XS faint', 'XSHOOTER', {'!INST.uvb_curr_slit': '1.0', '!INST.vis_curr_slit': '0.9', '!INST.nir_curr_slit': '0.9', '!DET.biny_uvb': 2, '!DET.biny_vis': 2}, False),
+-    ('XS high', 'XSHOOTER', {'!INST.uvb_curr_slit': '0.8', '!INST.vis_curr_slit': '0.9', '!INST.nir_curr_slit': '0.6', '!DET.biny_uvb': 1, '!DET.biny_vis': 1}, False),
++    ('ZS natural .70', 'ZShooter_v2', 'SPEC', {'!INST.vis_curr_slit': .7, '!INST.nir_curr_slit': .7}, False),
++    ('ZS AO .33', 'ZShooter_v2', 'SPEC', {'!INST.vis_curr_slit': .33, '!INST.nir_curr_slit': .33}, True),
++    ('ZS natural .33', 'ZShooter_v2', 'SPEC', {'!INST.vis_curr_slit': .33, '!INST.nir_curr_slit': .33}, False),
++    ('ZS alt natural .70', 'ZShooter_v2', 'SPEC_ALTDETECT4K', {'!INST.vis_curr_slit': .7, '!INST.nir_curr_slit': .7}, False),
++    ('ZS alt AO .33', 'ZShooter_v2', 'SPEC_ALTDETECT4K', {'!INST.vis_curr_slit': .33, '!INST.nir_curr_slit': .33}, True),
++    ('ZS alt natural .33', 'ZShooter_v2', 'SPEC_ALTDETECT4K', {'!INST.vis_curr_slit': .33, '!INST.nir_curr_slit': .33}, False),
++    ('XS faint', 'XSHOOTER', 'SPEC', {'!INST.uvb_curr_slit': '1.0', '!INST.vis_curr_slit': '0.9', '!INST.nir_curr_slit': '0.9', '!DET.biny_uvb': 2, '!DET.biny_vis': 2}, False),
++    ('XS high', 'XSHOOTER', 'SPEC', XS_HIGH_SETTINGS, False),
+ ]
+ 
+ # Explicit (DIT seconds, independent integrations), ordered B/G/R/YJ/H/K or UVB/VIS/NIR.
+@@ -59,25 +66,25 @@
+ EXPOSURES = {
+     'SPEC': {300: [(300, 1)]*3 + [(100, 3), (30, 10), (60, 5)],
+              3600: [(1200, 3)]*3 + [(100, 36), (30, 120), (60, 60)]},
+-    'SPEC_ALTDETECT': {300: [(300, 1)]*3 + [(300, 1), (75, 4), (150, 2)],
+-                       3600: [(1200, 3)]*3 + [(300, 12), (90, 40), (150, 24)]},
++    # 'SPEC_ALTDETECT': {300: [(300, 1)]*3 + [(300, 1), (75, 4), (150, 2)],
++    #                    3600: [(1200, 3)]*3 + [(300, 12), (90, 40), (150, 24)]},
++    'SPEC_ALTDETECT4K': {300: [(300, 1)]*3 + [(300, 1), (75, 4), (150, 2)],
++                   3600: [(1200, 3)]*3 + [(300, 12), (90, 40), (150, 24)]},
+     'XS faint': {300: [(300, 1)]*3, 3600: [(1200, 3), (1200, 3), (300, 12)]},
+     'XS high': {300: [(300, 1)]*3, 3600: [(1200, 3), (1200, 3), (450, 8)]},
+ }
+ 
+ atmosphere_names = ('atmo_transmission', 'continuum_emission', 'airglow_and_interline_continuum')
+-colors = dict(zip([case[0] for case in cases], ['C0', 'C2', 'C4', 'C6', 'C8', 'C9', 'C1', 'C3']))
++colors = {'ZS natural .70': 'C0', 'ZS AO .33': 'C2', 'ZS natural .33': 'C4', 'ZS alt natural .70': 'C6', 'ZS alt AO .33': 'C8', 'ZS alt natural .33': 'C9', 'XS faint': 'C1', 'XS high': 'C3'}
+ # These are the parameters of the ESO model that generated the configured traces.
+ xs_blaze_constant = {}
+ for arm in ('uvb', 'vis', 'nir'):
+     parameters = Table.read(irdb / f'XSHOOTER/calibration/model_{arm}.fits', hdu=1)
+     params = dict(zip(np.char.strip(parameters['Parameter_Name']), parameters['Best_Guess']))
+     xs_blaze_constant[arm.upper()] = 2*np.sin(np.deg2rad(-params['nug'])) / params['sg'] * 1000
+-extracted, line_profiles, native_images = {}, {}, {}
+-timings, line_rows, throughput_rows, noise_rows, saturation_rows, aperture_rows, residual_rows = [], [], [], [], [], [], []
+-
+-# markdown cell
+-The exposure settings follow the revised `SPEC_ALTDETECT` YJ H2RG comparison (300 s x 12 for one hour; 300 s x 1 for five minutes). The saved outputs carried forward in the 2026-10-20 settings update used the preceding YJ LmAPD configuration; that update did not include a full rerun. Rerunning regenerates results from the selected IRDB package.
++
++# markdown cell
++The alternate cases currently select `SPEC_ALTDETECT4K`. DIT and independent integration counts are explicit in `EXPOSURES`; changing a display label does not select a detector package. Saved figures and tables describe the most recently analyzed cases.
+ 
+ # markdown cell
+ ## Rates, explicit exposures and extraction
+@@ -89,7 +96,17 @@
+ Each detector package is simulated with its physical QE and geometry, and its boxcar widths are selected using its own expected variance. Instrumental throughput excludes atmospheric absorption; extracted source signal includes the common atmosphere and finite slit/boxcar losses.
+ 
+ # code cell
+-def observe_rates(train, target, name, kind):
++# Rerunning configuration and function definitions leaves completed cases intact.
++if 'case_results' not in globals():
++    case_results = {}
++
++# Only these cases are rendered when the run cell is executed.
++run_cases = ['ZS natural .70', 'ZS AO .33', 'ZS natural .33', 'ZS alt natural .70', 'ZS alt AO .33', 'ZS alt natural .33']
++# Retain full native source-rate frames in RAM only for requested illustrations.
++image_cases = ['ZS natural .70', 'ZS alt natural .70']
++
++# code cell
++def observe_rates(train, target, name, kind, timings):
+     for plane in train.image_planes:
+         plane.data.fill(0)
+     start = perf_counter()
+@@ -100,17 +117,16 @@
+     print(f'{name}: {kind} {elapsed:.1f} s', flush=True)
+     return detector_rates(train)
+ 
+-def exposure_settings(name, arms, seconds):
+-    mode = 'SPEC_ALTDETECT' if name.startswith('ZS alt') else 'SPEC' if name.startswith('ZS') else name
+-    dit, count = np.array(EXPOSURES[mode][seconds]).T
++def exposure_settings(exposure_key, arms, seconds):
++    dit, count = np.array(EXPOSURES[exposure_key][seconds]).T
+     assert np.all(dit*count == seconds)
+-    settings = {'dit': EXPOSURES[mode][seconds][0][0], 'ndit': 1}
+-    for arm, (duration, count) in zip(arms, EXPOSURES[mode][seconds], strict=True):
++    settings = {'dit': EXPOSURES[exposure_key][seconds][0][0], 'ndit': 1}
++    for arm, (duration, count) in zip(arms, EXPOSURES[exposure_key][seconds], strict=True):
+         settings[f'dit_{arm}'] = duration
+         settings[f'ndit_{arm}'] = 1
+-    return settings, dit, np.array(EXPOSURES[mode][seconds])[:, 1]
+-
+-def extracted_orders(train, name, signal_rates, sky_rates, noises):
++    return settings, dit, np.array(EXPOSURES[exposure_key][seconds])[:, 1]
++
++def extracted_orders(train, name, signal_rates, sky_rates, noises, aperture_rows):
+     orders = {}
+     trace_list, = train.optics_manager.get_all(SpectralTraceList)
+     for trace_id, trace in trace_list.spectral_traces.items():
+@@ -133,37 +149,50 @@
+         aperture_rows.append((name, trace_id, widths.min(), widths.max(), signal.sum(), sky.sum()))
+     return orders
+ 
++def case_configuration(name):
++    _, instrument, detector_mode, settings, ao = next(case for case in cases if case[0] == name)
++    exposure_key = detector_mode if instrument == 'ZShooter_v2' else name
++    return {'instrument': instrument, 'detector_mode': detector_mode, 'properties': properties | settings, 'ao': ao, 'ab_mag': AB_MAG, 'exposures': deepcopy(EXPOSURES[exposure_key])}
++
++# code cell
++# Evaluate the common atmosphere without requiring any particular science case.
++atmosphere_config = properties | {'!INST.vis_curr_slit': .7, '!INST.nir_curr_slit': .7, '!INST.include_diffuse_emissivity': False, '!ATMO.skycalc_timeout': 60.}
++atmosphere_commands = sim.UserCommands(use_instrument='ZShooter_v2', set_modes=['SPEC'], properties=atmosphere_config)
++warning_prevent_sync_alt_ra_dec(atmosphere_commands)
++atmosphere_train = sim.OpticalTrain(atmosphere_commands)
++common_atmosphere = [deepcopy(atmosphere_train[effect]) for effect in atmosphere_names]
++del atmosphere_train
++
+ # code cell
+ from zs_scopesim_tools.validation import build_transmission_sanity_data, evaluate_trace_detector_qe
+ 
+-for name, instrument, settings, ao in cases:
++def simulate_case(name, keep_images=False):
++    _, instrument, detector_mode, settings, ao = next(case for case in cases if case[0] == name)
++    case_start = perf_counter()
++    timings, noise_rows, throughput_rows, saturation_rows, residual_rows, aperture_rows = [], [], [], [], [], []
+     start = perf_counter()
+     config = properties | settings
+     if instrument == 'ZShooter_v2':
+         config.update({'!INST.include_diffuse_emissivity': False, '!ATMO.skycalc_timeout': 60.})
+-    detector_mode = 'SPEC_ALTDETECT' if name.startswith('ZS alt') else 'SPEC'
+     commands = sim.UserCommands(use_instrument=instrument, set_modes=[detector_mode], properties=config, ignore_effects=['skycalc_atmosphere'] if instrument == 'XSHOOTER' else [])
+     warning_prevent_sync_alt_ra_dec(commands)
+-    if name != 'ZS natural .70':
+-        for document in commands.yaml_dicts:
+-            if 'effects' in document:
+-                document['effects'] = [effect for effect in document['effects'] if effect['name'] not in atmosphere_names]
++    for document in commands.yaml_dicts:
++        if 'effects' in document:
++            document['effects'] = [effect for effect in document['effects'] if effect['name'] not in atmosphere_names]
+     train = sim.OpticalTrain(commands)
+     if instrument == 'ZShooter_v2':
+         train['seeing_psf'].meta['enable_ao'] = ao
+-    if name == 'ZS natural .70':
+-        common_atmosphere = [deepcopy(train[effect]) for effect in atmosphere_names]
+-    else:
+-        for effect in common_atmosphere:
+-            train.optics_manager.add_effect(deepcopy(effect))
++    for effect in common_atmosphere:
++        train.optics_manager.add_effect(deepcopy(effect))
+     timings.append((name, 'setup', perf_counter()-start))
+     arms = ('blue', 'green', 'red', 'yj', 'h', 'k') if instrument == 'ZShooter_v2' else ('uvb', 'vis', 'nir')
+     trace_list, = train.optics_manager.get_all(SpectralTraceList)
+-    total_rates = observe_rates(train, source, name, 'source + sky')
++    exposure_key = detector_mode if instrument == 'ZShooter_v2' else name
++    total_rates = observe_rates(train, source, name, 'source + sky', timings)
+     noises = {}
+     star_readouts = {}
+     for seconds in (300, 3600):
+-        read_settings, dits, nexp = exposure_settings(name, arms, seconds)
++        read_settings, dits, nexp = exposure_settings(exposure_key, arms, seconds)
+         start = perf_counter()
+         readouts = train.readout(roid=0, **read_settings)
+         timings.append((name, f'readout {seconds}s case', perf_counter()-start))
+@@ -181,22 +210,19 @@
+                 import warnings
+                 warnings.warn(f'{name} {arms[index]}: peak {peak:.0f} e exceeds {well:.0f} e per integration; DIT/NDIT unchanged.')
+             if seconds == 3600:
+-                filename = output / f'{name.replace(" ", "_")}_star_{index}.fits.gz'
+-                save_readout_to_fits(readout, filename)
+-                star_readouts[index] = filename
+-    sky_rates = observe_rates(train, None, name, 'sky')
+-    read_settings, dits, nexp = exposure_settings(name, arms, 3600)
++                star_readouts[index] = readout[1].data.copy()
++    sky_rates = observe_rates(train, None, name, 'sky', timings)
++    read_settings, dits, nexp = exposure_settings(exposure_key, arms, 3600)
+     sky_readouts = train.readout(roid=1, **read_settings)
+     signal_rates = [total-sky for total, sky in zip(total_rates, sky_rates)]
++    # Ignore numerical deficits below 0.01 electron per pixel over the longest forecast exposure.
++    longest_exposure = max(EXPOSURES[exposure_key])
+     for signal in signal_rates:
+-        assert signal.min() >= -1e-6*signal.max(), 'Independent observations changed the background.'
+-    orders = extracted_orders(train, name, signal_rates, sky_rates, noises[3600])
+-    extracted[name] = orders
+-    native_images[name] = []
+-    for index, signal in enumerate(signal_rates):
+-        filename = output / f'{name.replace(" ", "_")}_source_rate_{index}.npy'
+-        np.save(filename, signal)
+-        native_images[name].append(filename)
++        assert signal.min()*longest_exposure >= -.01, 'Source-minus-sky deficit exceeds 0.01 e/pixel over the longest exposure.'
++    start = perf_counter()
++    orders = extracted_orders(train, name, signal_rates, sky_rates, noises[3600], aperture_rows)
++    timings.append((name, 'boxcar extraction', perf_counter()-start))
++    start = perf_counter()
+     if instrument == 'ZShooter_v2':
+         response = build_transmission_sanity_data(train, np.linspace(300, 2500, 50001)*u.nm, component_metadata={'telescope_reflection': {'throughput_group': 'telescope', 'emission_phase': 'pre_disperser'}, 'ir_blocking_filter_selector': {'throughput_group': 'ir_blocking_filter'}})
+     else:
+@@ -244,10 +270,12 @@
+         candidates = center + (np.array([.2, .5, .8])-.5)*fsr
+         probe_centers[trace_id] = candidates[(candidates > data['edges'][0].value*1.002) & (candidates < data['edges'][-1].value*.998)]
+         assert len(probe_centers[trace_id]), (name, trace_id, 'No isolated probe inside detector coverage.')
++    timings.append((name, 'throughput', perf_counter()-start))
++    start = perf_counter()
+     # A single-integration stochastic check uses the native gain/averaging effects.
+     for index, sky_readout in enumerate(sky_readouts):
+         residuals = []
+-        difference = fits.getdata(star_readouts[index], 1)-sky_readout[1].data
++        difference = star_readouts[index]-sky_readout[1].data
+         detector, = train.detector_managers[index]
+         for effect in train.optics_manager.detector_effects:
+             selected = effect.get_effect(detector.det_id) if isinstance(effect, SelectorWheel) else effect
+@@ -261,15 +289,58 @@
+                 variance = data['excess_noise_factor']*(signal + 2*data['sky_rate']*dit) + 2*data['widths']*(dark+readvar)
+                 residuals.extend((observed-signal)/np.sqrt(variance))
+         residual_rows.append((name, arms[index], len(residuals), np.mean(residuals), np.std(residuals)))
++    timings.append((name, 'noise check', perf_counter()-start))
+     start = perf_counter()
+     profiles = trace_line_profiles(train, orders, probe_centers)
+-    line_profiles[name] = profiles
+     timings.append((name, 'isolated line grid', perf_counter()-start))
+     for trace_id, centers in probe_centers.items():
+         orders[trace_id]['probe_centers'] = centers
+-    print(f'{name}: extracted {len(orders)} orders; line probes {timings[-1][2]:.1f} s', flush=True)
+-    del train, total_rates, sky_rates, signal_rates, readouts, sky_readouts, difference
++    elapsed = perf_counter()-case_start
++    result = {'configuration': case_configuration(name), 'orders': orders, 'line_profiles': profiles, 'native_images': signal_rates if keep_images else None, 'timings': timings, 'elapsed_s': elapsed, 'noise_rows': noise_rows, 'throughput_rows': throughput_rows, 'saturation_rows': saturation_rows, 'residual_rows': residual_rows, 'aperture_rows': aperture_rows}
++    print(f'{name}: {len(orders)} orders; complete case {elapsed:.1f} s', flush=True)
++    return result
++
++# markdown cell
++### Run selected simulations
++
++Execute this cell only when you want to render the names in `run_cases`. Each completed case replaces only its own entry in `case_results`; a later failure leaves the other results available. No simulation images are written to disk.
++
++# code cell
++for name in run_cases:
++    case_results[name] = simulate_case(name, keep_images=name in image_cases)
+     gc.collect()
++
++# markdown cell
++### Optional saved results
++
++Leave these lists empty for an entirely in-memory workflow. Loads are explicit: missing files fail, and the helpers reject changed physical settings or newer model/code inputs. Saves contain extracted spectra, line profiles and diagnostics; set `save_images=True` only if you also want the retained native images. Loading a save without images is sufficient for every figure except native frames.
++
++# code cell
++load_cases, save_cases = [], []
++save_images = False
++for name in load_cases:
++    configuration = case_configuration(name)
++    model_paths = [irdb/'ZShooter_v2', irdb/configuration['instrument'], irdb/'VLT', irdb/'Paranal', Path(sim.__file__).parent]
++    case_results[name] = load_comparison_case(output/f'{name.replace(" ", "_")}_case.pkl', configuration, model_paths)
++for name in save_cases:
++    save_comparison_case(output/f'{name.replace(" ", "_")}_case.pkl', case_results[name], include_images=save_images)
++
++# markdown cell
++### Analyze completed cases
++
++Edit `analysis_cases` to choose the available results to analyze. The default includes completed ZShooter cases. To include X-shooter too, use `[case[0] for case in cases if case[0] in case_results]`. These cells use in-memory spectra and profiles; they do not read native image files or rerun simulations.
++
++# code cell
++# Edit this selection independently of run_cases; only already-completed results are analyzed.
++analysis_cases = [name for name, instrument, mode, settings, ao in cases if instrument == 'ZShooter_v2' and name in case_results]
++extracted = {name: case_results[name]['orders'] for name in analysis_cases}
++line_profiles = {name: case_results[name]['line_profiles'] for name in analysis_cases}
++timings = [row for name in analysis_cases for row in case_results[name]['timings']]
++noise_rows = [row for name in analysis_cases for row in case_results[name]['noise_rows']]
++throughput_rows = [row for name in analysis_cases for row in case_results[name]['throughput_rows']]
++saturation_rows = [row for name in analysis_cases for row in case_results[name]['saturation_rows']]
++residual_rows = [row for name in analysis_cases for row in case_results[name]['residual_rows']]
++aperture_rows = [row for name in analysis_cases for row in case_results[name]['aperture_rows']]
+ 
+ timing_table = pd.DataFrame(timings, columns=['configuration', 'stage', 'seconds'])
+ noise_table = pd.DataFrame(noise_rows, columns=['configuration', 'detector_mode', 'on_source_s', 'arm', 'dit_s', 'independent_exposures', 'dark_e_per_integration_pixel', 'effective_read_noise_e'])
+@@ -303,8 +374,10 @@
+ line_table = pd.DataFrame(line_rows, columns=['configuration', 'trace', 'fsr_fraction', 'wavelength_um', 'centroid_um', 'sigma_um', 'fwhm_um', 'native_R', 'geometric_R'])
+ line_table.to_csv(output/'line_widths.csv', index=False)
+ 
++# code cell
++plot_cases = list(extracted)
+ fig, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=True, layout='constrained')
+-for name in extracted:
++for name in plot_cases:
+     data = line_table[line_table.configuration == name]
+     for fraction, marker in ((.2, '<'), (.5, 'o'), (.8, '>')):
+         selected = data[np.isclose(data.fsr_fraction, fraction)]
+@@ -321,11 +394,17 @@
+ 
+ # code cell
+ native_parts = []
++for name, orders in extracted.items():
++    for trace_id, data in orders.items():
++        native_parts.append(pd.DataFrame({'configuration': name, 'trace': trace_id, 'wavelength_um': data['wave'].value, 'bin_width_um': np.diff(data['edges']).to_value(u.um), 'boxcar_width_pixel': data['widths'], 'source_e_s': data['source_rate'], 'sky_e_s': data['sky_rate']}))
++pd.concat(native_parts, ignore_index=True).to_csv(output/'native_spectra.csv.gz', index=False)
++
++# code cell
++plot_cases = list(extracted)
+ fig, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=True, layout='constrained')
+-for name in extracted:
++for name in plot_cases:
+     for index, (trace_id, data) in enumerate(extracted[name].items()):
+         bin_width = np.diff(data['edges']).to_value(u.um)
+-        native_parts.append(pd.DataFrame({'configuration': name, 'trace': trace_id, 'wavelength_um': data['wave'].value, 'bin_width_um': bin_width, 'boxcar_width_pixel': data['widths'], 'source_e_s': data['source_rate'], 'sky_e_s': data['sky_rate']}))
+         for ax, key in zip(axes, ('source_rate', 'sky_rate')):
+             ax.plot(data['wave'].value, data[key]/bin_width, color=colors[name], lw=.5, label=name if index == 0 else None)
+ axes[0].set(ylabel=r'Source [e$^{-}$ s$^{-1}$ $\mu$m$^{-1}$]', title='Native extracted flat AB spectra; atmospheric transmission included')
+@@ -334,7 +413,6 @@
+     ax.set_yscale('log')
+     ax.grid(alpha=.2)
+     ax.legend(fontsize=8, ncol=2)
+-pd.concat(native_parts, ignore_index=True).to_csv(output/'native_spectra.csv.gz', index=False)
+ fig.savefig(output/'native_spectra.png', dpi=160)
+ plt.show()
+ 
+@@ -343,9 +421,9 @@
+ 
+ The R=1000 spectra use Gaussian redistribution in log wavelength and eight output samples per FWHM. The added kernel variance accounts for the measured native line variance and finite output-bin width. Resolution-element variance is calculated as $(AW)^2V$, where $W$ redistributes native counts and $A$ sums the output samples. This includes the covariance between those samples; summing only their individual variances would be wrong.
+ 
+-The higher-resolution comparison retains X-shooter's unbinned native spectrum and degrades ZShooter to its measured native width as a function of wavelength. Native-bin forecasts use finite wavelength-bin overlaps. Achieved widths are checked with the simulated lines below.
+-
+-`SPEC_ALTDETECT` is an editable engineering comparison package. Its current overrides select untapered CCDs in B/G/R and 18 um H2RGs in YJ/H/K. Its native rates, extraction footprints, cadence, QE and effective noise come from that configured train. The current LmAPDs use physical QE and F=1.2 photon variance; the other detectors use F=1.
++The higher-resolution comparison uses an independent target measured through the configured X-shooter high-mode optics, using a spatial aperture of three seeing FWHM. This small line calibration needs no continuum, sky render or stochastic readout. ZShooter is degraded to that wavelength-dependent target; an optional XS high science spectrum is placed on the same grid using native-bin overlaps. The reference and the previous optimized-boxcar XS high widths agree within 2% for the current configuration. Achieved ZShooter widths are checked with its simulated lines below.
++
++`SPEC_ALTDETECT4K` is an editable engineering comparison package. Its current overrides select untapered CCDs in B/G/R, 18 um H2RGs in YJ/H and a 10 um H4RG in K. Its native rates, extraction footprints, cadence, QE and effective noise come from that configured train. The current LmAPDs use physical QE and F=1.2 photon variance; the other detectors use F=1.
+ 
+ # markdown cell
+ All-sample spectra and sensitivity are the technical comparison. OH-selected intervals use the same ranking and selection rule for both instruments and report retained source flux. Their irregular wavelength response is shown separately.
+@@ -353,17 +431,30 @@
+ Sensitivity figures include the common atmosphere. Throughput figures exclude it. Light curves show every calculated sample; heavier median curves are display smoothing only, with their window stated in the caption. The CSV data and line-width measurements remain unsmoothed.
+ 
+ # code cell
+-from zs_scopesim_tools.comparison import overlap_bin_matrix
+-
+-start = perf_counter()
+-xs_reference = line_table[(line_table.configuration == 'XS high') & np.isclose(line_table.fsr_fraction, .5)].sort_values('wavelength_um')
+-dense_wave = np.geomspace(.3, 2.5, 100001)
+-xs_R = np.interp(dense_wave, xs_reference.wavelength_um, xs_reference.native_R)
+-xs_phase = np.r_[0, np.cumsum((xs_R[:-1]+xs_R[1:])/2*np.diff(np.log(dense_wave)))] * SAMPLES_PER_FWHM
+-count = int(xs_phase[-1])//SAMPLES_PER_FWHM*SAMPLES_PER_FWHM
+-matched_edges = np.exp(np.interp(np.arange(count+1), xs_phase, np.log(dense_wave)))*u.um
++forecast_resolutions = ('native', 'R1000', 'XS high matched')
++if 'XS high matched' in forecast_resolutions:
++    # The wavelength-dependent target is an optics-only calibration, independent of run_cases.
++    reference_commands = sim.UserCommands(use_instrument='XSHOOTER', set_modes=['SPEC'], properties=properties | XS_HIGH_SETTINGS, ignore_effects=['skycalc_atmosphere'])
++    warning_prevent_sync_alt_ra_dec(reference_commands)
++    reference_train = sim.OpticalTrain(reference_commands)
++    reference_traces, = reference_train.optics_manager.get_all(SpectralTraceList)
++    reference_centers = {trace_id: np.array([xs_blaze_constant[trace_id.rsplit('_', 1)[0]]/int(trace_id.rsplit('_', 1)[1])]) for trace_id in reference_traces.spectral_traces}
++    xs_reference = trace_resolution_reference(reference_train, reference_centers, 3*SEEING*u.arcsec).to_pandas()
++    del reference_train
++
++    dense_wave = np.geomspace(.3, 2.5, 100001)
++    xs_R = np.interp(dense_wave, xs_reference.wavelength_um, xs_reference.native_R)
++    xs_phase = np.r_[0, np.cumsum((xs_R[:-1]+xs_R[1:])/2*np.diff(np.log(dense_wave)))] * SAMPLES_PER_FWHM
++    count = int(xs_phase[-1])//SAMPLES_PER_FWHM*SAMPLES_PER_FWHM
++    matched_edges = np.exp(np.interp(np.arange(count+1), xs_phase, np.log(dense_wave)))*u.um
+ count = int(np.log(2.5/.3)*TARGET_R*SAMPLES_PER_FWHM)//SAMPLES_PER_FWHM*SAMPLES_PER_FWHM
+ common_edges = .3*np.exp(np.arange(count+1)/(TARGET_R*SAMPLES_PER_FWHM))*u.um
++
++# code cell
++from zs_scopesim_tools.comparison import overlap_bin_matrix
++
++start = perf_counter()
++save_covariances = False
+ forecast_parts, width_checks, oh_parts = [], [], []
+ 
+ for name, orders in extracted.items():
+@@ -374,8 +465,12 @@
+         native_R = np.interp(wave.value, measurements[:, 0], measurements[:, 0]/measurements[:, 2])
+         phase = np.r_[0, np.cumsum((native_R[:-1]+native_R[1:])/2*np.diff(np.log(wave.value)))]
+         native_edges = np.exp(np.interp(np.arange(int(phase[-1])+1), phase, np.log(wave.value)))*u.um
+-        resolutions = [('native', native_edges, 1), ('R1000', common_edges, SAMPLES_PER_FWHM)]
+-        if name != 'XS faint':
++        resolutions = []
++        if 'native' in forecast_resolutions:
++            resolutions.append(('native', native_edges, 1))
++        if 'R1000' in forecast_resolutions:
++            resolutions.append(('R1000', common_edges, SAMPLES_PER_FWHM))
++        if 'XS high matched' in forecast_resolutions and name != 'XS faint':
+             resolutions.append(('XS high matched', matched_edges, SAMPLES_PER_FWHM))
+         for resolution, edges, samples in resolutions:
+             if resolution == 'native' or (resolution == 'XS high matched' and name == 'XS high'):
+@@ -407,7 +502,7 @@
+                 width_checks.append((name, trace_id, resolution, center, requested, (measured_center/fwhm).value))
+             for seconds in (300, 3600):
+                 dit, dark, readvar, nexp = data['noises'][seconds]
+-                detector_case = 'alternate' if name.startswith('ZS alt') else 'current'
++                detector_case = 'current' if case_results[name]['configuration']['detector_mode'] == 'SPEC' else 'alternate'
+                 factor = data['excess_noise_factor']
+                 dark_total, read_total = dark*nexp, readvar*nexp
+                 source_native = data['source_rate']*seconds
+@@ -421,10 +516,10 @@
+                 keep = complete & (signal > 0) & (variance_background > 0)
+                 limit = limiting_abmag(signal[keep], source_variance[keep], variance_background[keep], AB_MAG)
+                 amplitude = 10**((AB_MAG-limit)/2.5)
+-                forecast_parts.append(pd.DataFrame({'configuration': name.replace('ZS alt', 'ZS'), 'trace': trace_id, 'resolution': resolution, 'on_source_s': seconds, 'detector': detector_case, 'element': np.flatnonzero(keep), 'wavelength_um': output_wave.value[keep], 'limiting_AB_5sigma': limit, 'source_e_AB20': signal[keep], 'source_variance_at_limit_e2': source_variance[keep]*amplitude, 'sky_variance_e2': sky_variance[keep], 'dark_variance_e2': dark_variance[keep], 'read_variance_e2': read_variance[keep]}))
++                forecast_parts.append(pd.DataFrame({'configuration': name, 'trace': trace_id, 'resolution': resolution, 'on_source_s': seconds, 'detector': detector_case, 'element': np.flatnonzero(keep), 'wavelength_um': output_wave.value[keep], 'limiting_AB_5sigma': limit, 'source_e_AB20': signal[keep], 'source_variance_at_limit_e2': source_variance[keep]*amplitude, 'sky_variance_e2': sky_variance[keep], 'dark_variance_e2': dark_variance[keep], 'read_variance_e2': read_variance[keep]}))
+                 if resolution == 'R1000' and seconds == 3600:
+                     # Save one complete covariance example per configuration.
+-                    if trace_id == next(iter(orders)):
++                    if save_covariances and trace_id == next(iter(orders)):
+                         covariance = operator.multiply(factor*(source_native+2*sky_native)+2*data['widths']*(dark_total+read_total)) @ operator.T
+                         sparse.save_npz(output/f'{name.replace(" ", "_")}_covariance_example.npz', covariance)
+                     for element in np.flatnonzero(complete):
+@@ -447,8 +542,36 @@
+ display(common_lines.groupby(['configuration', 'resolution'])[['target_R', 'achieved_R']].agg(['min', 'max']))
+ 
+ # code cell
++comparison_pairs = [('ZS natural .70', 'ZS alt natural .70'), ('ZS AO .33', 'ZS alt AO .33'), ('ZS natural .33', 'ZS alt natural .33')]
++comparison_pairs = [(current, alternate) for current, alternate in comparison_pairs if current in extracted and alternate in extracted]
++join_keys = ['trace', 'resolution', 'on_source_s']
++quantities = ['limiting_AB_5sigma', 'source_variance_at_limit_e2', 'sky_variance_e2', 'dark_variance_e2', 'read_variance_e2']
++trade_parts = []
++for current_name, alternate_name in comparison_pairs:
++    current = forecasts[forecasts.configuration == current_name]
++    alternate = forecasts[forecasts.configuration == alternate_name]
++    for key, group in current.groupby(join_keys, sort=False):
++        other = alternate
++        for column, value in zip(join_keys, key, strict=True):
++            other = other[other[column] == value]
++        other = other.sort_values('wavelength_um')
++        shared = group[(group.wavelength_um >= other.wavelength_um.min()) & (group.wavelength_um <= other.wavelength_um.max())].copy()
++        if shared.empty:
++            continue
++        for quantity in quantities:
++            shared[quantity+'_current'] = shared[quantity]
++            shared[quantity+'_alternate'] = np.interp(shared.wavelength_um, other.wavelength_um, other[quantity])
++        shared['wavelength_um_current'] = shared.wavelength_um
++        trade_parts.append(shared)
++if trade_parts:
++    trade = pd.concat(trade_parts, ignore_index=True)
++    trade['gain_mag'] = trade.limiting_AB_5sigma_current-trade.limiting_AB_5sigma_alternate
++    trade.to_csv(output/'detector_trade.csv.gz', index=False)
++
++# code cell
++plot_cases = [name for name in ('ZS natural .70', 'ZS alt natural .70', 'XS faint', 'XS high') if name in extracted]
+ fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True, layout='constrained')
+-for name in ('ZS natural .70', 'XS faint', 'XS high'):
++for name in plot_cases:
+     for trace_id, data in extracted[name].items():
+         label = name if trace_id == next(iter(extracted[name])) else None
+         axes[0].plot(data['wave'].value, data['instrument_efficiency'], color=colors[name], lw=.6, alpha=.35)
+@@ -466,6 +589,8 @@
+ fig.savefig(output/'instrumental_throughput.png', dpi=160)
+ plt.show()
+ 
++# code cell
++plot_cases = list(extracted)
+ common_forecasts = forecasts[forecasts.resolution != 'native']
+ keys = ['configuration', 'resolution', 'on_source_s', 'detector', 'element']
+ best = common_forecasts.loc[common_forecasts.groupby(keys).limiting_AB_5sigma.idxmax()].copy()
+@@ -473,10 +598,10 @@
+ for row, seconds in enumerate((300, 3600)):
+     for column, resolution in enumerate(('R1000', 'XS high matched')):
+         ax = axes[row, column]
+-        for name in extracted:
++        for name in plot_cases:
+             if resolution == 'XS high matched' and name == 'XS faint':
+                 continue
+-            data = best[(best.configuration == name) & (best.resolution == resolution) & (best.on_source_s == seconds) & (best.detector == 'current')].sort_values('element')
++            data = best[(best.configuration == name) & (best.resolution == resolution) & (best.on_source_s == seconds)].sort_values('element')
+             for group, segment in data.groupby((data.element.diff() > 1).cumsum()):
+                 ax.plot(segment.wavelength_um, segment.limiting_AB_5sigma, color=colors[name], lw=.4, alpha=.2)
+                 ax.plot(segment.wavelength_um, median_filter(segment.limiting_AB_5sigma, size=9, mode='nearest'), color=colors[name], lw=1.2, label=name if group == 0 else None)
+@@ -490,70 +615,61 @@
+ plt.show()
+ 
+ # code cell
+-fig, axes = plt.subplots(3, 3, figsize=(13, 11), layout='constrained')
+-for row, name in enumerate(('ZS natural .70', 'XS faint', 'XS high')):
+-    detectors = (0, 2, 4) if name.startswith('ZS') else (0, 1, 2)
+-    for ax, index in zip(axes[row], detectors):
+-        source_image = np.load(native_images[name][index], mmap_mode='r')
+-        scale = np.percentile(source_image[source_image > 0], 75)
+-        ax.imshow(np.arcsinh(source_image/scale), origin='lower', cmap='magma', aspect='equal', interpolation='nearest')
+-        ax.set(title=f'{name}, detector {index}', xlabel='Readout x pixel', ylabel='Readout y pixel')
+-fig.savefig(output/'native_frames.png', dpi=150)
+-plt.show()
+-
+-# The ratio is an input diagnostic; limiting magnitude includes sky, dark and effective read noise.
+-fig, axes = plt.subplots(2, 2, figsize=(13, 8), sharex=True, layout='constrained')
+-join_keys = ['configuration', 'trace', 'resolution', 'on_source_s']
+-current = forecasts[forecasts.configuration.str.startswith('ZS') & (forecasts.detector == 'current')]
+-alternate = forecasts[forecasts.configuration.str.startswith('ZS') & (forecasts.detector == 'alternate')]
+-# Each detector has its own native grid. Interpolate only this comparison plot
+-# within each order's shared wavelength coverage; forecasts remain unresampled.
+-trade_parts = []
+-quantities = ['limiting_AB_5sigma', 'source_variance_at_limit_e2', 'sky_variance_e2', 'dark_variance_e2', 'read_variance_e2']
+-for key, group in current.groupby(join_keys, sort=False):
+-    other = alternate
+-    for column, value in zip(join_keys, key, strict=True):
+-        other = other[other[column] == value]
+-    other = other.sort_values('wavelength_um')
+-    shared = group[(group.wavelength_um >= other.wavelength_um.min()) & (group.wavelength_um <= other.wavelength_um.max())].copy()
+-    for quantity in quantities:
+-        shared[quantity+'_current'] = shared[quantity]
+-        shared[quantity+'_alternate'] = np.interp(shared.wavelength_um, other.wavelength_um, other[quantity])
+-    shared['wavelength_um_current'] = shared.wavelength_um
+-    trade_parts.append(shared)
+-trade = pd.concat(trade_parts, ignore_index=True)
+-trade['gain_mag'] = trade.limiting_AB_5sigma_current-trade.limiting_AB_5sigma_alternate
+-trade.to_csv(output/'detector_trade.csv.gz', index=False)
+-for row, seconds in enumerate((300, 3600)):
+-    for column, resolution in enumerate(('native', 'R1000')):
+-        ax = axes[row, column]
+-        for name in ('ZS natural .70', 'ZS AO .33', 'ZS natural .33'):
+-            data = trade[(trade.configuration == name) & (trade.on_source_s == seconds) & (trade.resolution == resolution)]
+-            for index, (trace_id, segment) in enumerate(data.groupby('trace', sort=False)):
+-                segment = segment.sort_values('wavelength_um_current')
+-                ax.plot(segment.wavelength_um_current, segment.gain_mag, color=colors[name], alpha=.15, lw=.4)
+-                ax.plot(segment.wavelength_um_current, median_filter(segment.gain_mag, size=9, mode='nearest'), color=colors[name], lw=.8, label=name if index == 0 else None)
+-        ax.axhline(0, color='.4', ls=':')
+-        ax.set(title=f'{seconds/60:g} min; {resolution}', ylabel=r'Current minus alternate $\Delta m_5$')
+-        ax.grid(alpha=.2)
+-        ax.legend(fontsize=8)
+-for ax in axes[-1]:
+-    ax.set_xlabel(r'Wavelength [$\mu$m]')
+-fig.suptitle('SPEC versus SPEC_ALTDETECT; positive favors SPEC')
+-fig.savefig(output/'detector_trade.png', dpi=160)
+-plt.show()
+-
+-fig, ax = plt.subplots(figsize=(11, 3), layout='constrained')
+-for trace_id, data in extracted['ZS natural .70'].items():
+-    other = extracted['ZS alt natural .70'][trace_id]
+-    shared = (data['wave'] >= other['wave'][0]) & (data['wave'] <= other['wave'][-1])
+-    wave = data['wave'][shared].value
+-    ratio = np.interp(wave, other['wave'].value, other['detector_qe']) / data['detector_qe'][shared]
+-    ax.plot(wave, ratio, color='C0', lw=.6)
+-ax.axhline(1, color='.5', ls=':')
+-ax.set(xlabel=r'Wavelength [$\mu$m]', ylabel='Alternate / current physical QE', title='Detector QE at native samples: input to the noise-inclusive comparisons above')
+-fig.savefig(output/'detector_qe_ratio.png', dpi=160)
+-plt.show()
++# Retain these cases in image_cases before rendering them; optional compact saves omit frames.
++frame_detectors = {name: detectors for name, detectors in [('ZS natural .70', (0, 1, 2)), ('ZS alt natural .70', (3, 4, 5))] if name in extracted}
++if frame_detectors:
++    fig, axes = plt.subplots(len(frame_detectors), 3, figsize=(13, 4*len(frame_detectors)), squeeze=False, layout='constrained')
++    for row, (name, detectors) in enumerate(frame_detectors.items()):
++        for ax, index in zip(axes[row], detectors, strict=True):
++            source_image = case_results[name]['native_images'][index]
++            scale = np.percentile(source_image[source_image > 0], 75)
++            ax.imshow(np.arcsinh(source_image/scale), origin='lower', cmap='magma', aspect='equal', interpolation='nearest')
++            ax.set(title=f'{name}, detector {index}', xlabel='Readout x pixel', ylabel='Readout y pixel')
++    fig.savefig(output/'native_frames.png', dpi=150)
++    plt.show()
++
++# code cell
++plot_cases = [name for name, alternate in comparison_pairs]
++if trade_parts:
++    fig, axes = plt.subplots(2, 2, figsize=(13, 8), sharex=True, layout='constrained')
++    for row, seconds in enumerate((300, 3600)):
++        for column, resolution in enumerate(('native', 'R1000')):
++            ax = axes[row, column]
++            for name in plot_cases:
++                data = trade[(trade.configuration == name) & (trade.on_source_s == seconds) & (trade.resolution == resolution)]
++                for index, (trace_id, segment) in enumerate(data.groupby('trace', sort=False)):
++                    segment = segment.sort_values('wavelength_um_current')
++                    ax.plot(segment.wavelength_um_current, segment.gain_mag, color=colors[name], alpha=.15, lw=.4)
++                    ax.plot(segment.wavelength_um_current, median_filter(segment.gain_mag, size=9, mode='nearest'), color=colors[name], lw=.8, label=name if index == 0 else None)
++            ax.axhline(0, color='.4', ls=':')
++            ax.set(title=f'{seconds/60:g} min; {resolution}', ylabel=r'Current minus alternate $\Delta m_5$')
++            ax.grid(alpha=.2)
++            ax.legend(fontsize=8)
++    for ax in axes[-1]:
++        ax.set_xlabel(r'Wavelength [$\mu$m]')
++    fig.suptitle('SPEC versus SPEC_ALTDETECT4K; positive favors SPEC')
++    fig.savefig(output/'detector_trade.png', dpi=160)
++    plt.show()
++
++# code cell
++# The ratio is an input diagnostic; sensitivity also includes sky, dark and read noise.
++qe_pairs = [(current, alternate) for current, alternate in [('ZS natural .70', 'ZS alt natural .70')] if current in extracted and alternate in extracted]
++if qe_pairs:
++    fig, ax = plt.subplots(figsize=(11, 3), layout='constrained')
++    for name, alternate_name in qe_pairs:
++        for trace_index, (trace_id, data) in enumerate(extracted[name].items()):
++            if trace_id not in extracted[alternate_name]:
++                continue
++            other = extracted[alternate_name][trace_id]
++            shared = (data['wave'] >= other['wave'][0]) & (data['wave'] <= other['wave'][-1])
++            wave = data['wave'][shared].value
++            ratio = np.interp(wave, other['wave'].value, other['detector_qe']) / data['detector_qe'][shared]
++            ax.plot(wave, ratio, color=colors[name], lw=.6, label=f'{alternate_name} / {name}' if trace_index == 0 else None)
++    ax.axhline(1, color='.5', ls=':')
++    ax.set(xlabel=r'Wavelength [$\mu$m]', ylabel='Alternate / current physical QE', title='Detector QE at native samples: input to the noise-inclusive comparisons above')
++    ax.legend(fontsize=8)
++    fig.savefig(output/'detector_qe_ratio.png', dpi=160)
++    plt.show()
+ 
+ # markdown cell
+ ## OH selection and detector noise budgets
+@@ -563,8 +679,9 @@
+ Detector-budget panels show fractions of total variance **at the limiting magnitude**, where source Poisson noise must be included. QE alone cannot predict the detector trade, particularly in short exposures or after changing the slit and extraction footprint.
+ 
+ # code cell
++plot_cases = list(extracted)
+ fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True, layout='constrained')
+-for name in extracted:
++for name in plot_cases:
+     data = oh_table[oh_table.configuration == name]
+     axes[0].scatter(data.wavelength_um, data.selected_m5-data.all_sample_m5, s=2, alpha=.3, color=colors[name], label=name)
+     axes[1].scatter(data.wavelength_um, data.retained_source_fraction, s=2, alpha=.3, color=colors[name])
+@@ -574,28 +691,33 @@
+ fig.savefig(output/'oh_selection.png', dpi=150)
+ plt.show()
+ 
++# code cell
++budget_cases = [('ZS natural .70', 'ZS alt natural .70'), ('ZS AO .33', 'ZS alt AO .33'), ('ZS natural .33', 'ZS alt natural .33')]
++budget_cases = [pair for pair in budget_cases if any(name in extracted for name in pair)]
+ variance_columns = ['source_variance_at_limit_e2', 'sky_variance_e2', 'dark_variance_e2', 'read_variance_e2']
+-fig, axes = plt.subplots(3, 4, figsize=(16, 10), sharex=True, sharey=True, layout='constrained')
+-for row, name in enumerate(('ZS natural .70', 'ZS AO .33', 'ZS natural .33')):
+-    for column, (seconds, resolution) in enumerate(((300, 'native'), (300, 'R1000'), (3600, 'native'), (3600, 'R1000'))):
+-        ax = axes[row, column]
+-        selected = trade[(trade.configuration == name) & (trade.on_source_s == seconds) & (trade.resolution == resolution)]
+-        for detector_case, style in (('current', '-'), ('alternate', '--')):
+-            columns = [quantity+'_'+detector_case for quantity in variance_columns]
+-            for trace_index, (_, segment) in enumerate(selected.groupby('trace', sort=False)):
+-                total = segment[columns].sum(axis=1)
+-                for color, quantity, label in zip(('C0', 'C1', 'C2', 'C3'), columns, ('source', 'sky', 'dark', 'read')):
+-                    fraction = segment[quantity]/total
+-                    ax.plot(segment.wavelength_um_current, median_filter(fraction, size=9, mode='nearest'), style, color=color, lw=.7, label=f'{label}, {detector_case}' if row == column == trace_index == 0 else None)
+-        ax.set(title=f'{name}\n{seconds/60:g} min, {resolution}', ylim=(0, 1))
+-        ax.grid(alpha=.2)
+-axes[0, 0].legend(fontsize=6, ncol=2)
+-for ax in axes[-1]:
+-    ax.set_xlabel(r'Wavelength [$\mu$m]')
+-for ax in axes[:, 0]:
+-    ax.set_ylabel('Fraction of variance at limiting magnitude')
+-fig.savefig(output/'detector_noise_budget.png', dpi=150)
+-plt.show()
++if budget_cases:
++    fig, axes = plt.subplots(len(budget_cases), 4, figsize=(16, 3.3*len(budget_cases)), sharex=True, sharey=True, squeeze=False, layout='constrained')
++    for row, pair in enumerate(budget_cases):
++        for column, (seconds, resolution) in enumerate(((300, 'native'), (300, 'R1000'), (3600, 'native'), (3600, 'R1000'))):
++            ax = axes[row, column]
++            for name, style, detector_case in zip(pair, ('-', '--'), ('current', 'alternate'), strict=True):
++                if name not in extracted:
++                    continue
++                selected = forecasts[(forecasts.configuration == name) & (forecasts.on_source_s == seconds) & (forecasts.resolution == resolution)]
++                for trace_index, (_, segment) in enumerate(selected.groupby('trace', sort=False)):
++                    total = segment[variance_columns].sum(axis=1)
++                    for color, quantity, label in zip(('C0', 'C1', 'C2', 'C3'), variance_columns, ('source', 'sky', 'dark', 'read'), strict=True):
++                        fraction = segment[quantity]/total
++                        ax.plot(segment.wavelength_um, median_filter(fraction, size=9, mode='nearest'), style, color=color, lw=.7, label=f'{label}, {detector_case}' if row == column == trace_index == 0 else None)
++            ax.set(title=f'{pair[0]}\n{seconds/60:g} min, {resolution}', ylim=(0, 1))
++            ax.grid(alpha=.2)
++    axes[0, 0].legend(fontsize=6, ncol=2)
++    for ax in axes[-1]:
++        ax.set_xlabel(r'Wavelength [$\mu$m]')
++    for ax in axes[:, 0]:
++        ax.set_ylabel('Fraction of variance at limiting magnitude')
++    fig.savefig(output/'detector_noise_budget.png', dpi=150)
++    plt.show()
+ 
+ # markdown cell
+ ## Science context
+@@ -612,6 +734,7 @@
+ The following table compares requested and measured degraded line FWHM. It is the check on what the delivered spectral resolution actually is; plot smoothing is absent from this measurement.
+ 
+ # code cell
++plot_cases = list(extracted)
+ display(residual_table)
+ assert (abs(residual_table.mean_standardized_residual)*np.sqrt(residual_table.samples) < 4).all()
+ assert (abs(residual_table.std_standardized_residual-1) < .025).all()
+@@ -622,7 +745,7 @@
+ assert common_lines.fractional_width_error.abs().max() < .02
+ display(common_lines.groupby(['configuration', 'resolution']).fractional_width_error.agg(['min', 'max']))
+ fig, ax = plt.subplots(figsize=(11, 4), layout='constrained')
+-for (name, resolution), segment in common_lines.groupby(['configuration', 'resolution']):
++for (name, resolution), segment in common_lines[common_lines.configuration.isin(plot_cases)].groupby(['configuration', 'resolution']):
+     ax.scatter(segment.wavelength_um, 100*segment.fractional_width_error, s=9, color=colors[name], marker='o' if resolution == 'R1000' else 'x', label=f'{name}, {resolution}')
+ ax.axhline(0, color='.5')
+ ax.set(xlabel=r'Wavelength [$\mu$m]', ylabel='Measured width relative to requested [%]', title='Simulated line verification after spectral matching')
+--- notebooks/01_Kilonovae.ipynb (review base)
++++ notebooks/01_Kilonovae_ALTDET.ipynb (H4RG follow-up)
+@@ -113,6 +113,8 @@
+   - The scopesim OpticalTrain object
+ 
+ # code cell
++from zs_scopesim_tools.helpers import zshooter_commands
++
+ @timed
+ def update_params_and_observe(object_name: str,
+                               imagetype: str,
+@@ -132,7 +134,9 @@
+                               pupil_angle: Optional[float]=None,
+                               ao_on: bool=False,
+                               diffuse_emissivity_on: bool=False,
+-                              params: Optional[dict]=None
++                              params: Optional[dict]=None,
++                              detector_mode=None,
++                              image_plane_ids=None
+                               ) -> tuple[list, sim.optics.OpticalTrain]:
+     """
+     :param object_name: Name of the Source object
+@@ -160,43 +164,20 @@
+     """
+     if imagetype not in ["BIAS", "DOMEFLAT", "TRACE", "ARCS", "SKY", "SCIENCE", "RAW_OBJECT", "STANDARD_RAW"]:
+         raise ValueError(f"Imagetype {imagetype} is incorrect! Choose from BIAS, DOMEFLAT, TRACE, ARCS, SKY, SCIENCE.")
+-    # load ZShooter_v2 irdb model config
+-    config = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=[DETECTOR_MODE])
+-    # update with passed params
+-    config["!OBS.airmass"] = airmass if airmass else config["!OBS.airmass"]
+-    config["!OBS.seeing"] = seeing if seeing else config["!OBS.seeing"]
+-    config["!OBS.brightness"] = brightness if brightness else config["!OBS.brightness"]
+-    config["!OBS.pupil_angle"] = pupil_angle if pupil_angle else config["!OBS.pupil_angle"]
+-    config["!INST.vis_curr_slit"] = vis_slit if vis_slit else config["!INST.vis_curr_slit"]
+-    config["!INST.nir_curr_slit"] = nir_slit if nir_slit else config["!INST.nir_curr_slit"]
+-    config["!INST.pixel_scale"] = pixel_scale if pixel_scale else config["!INST.pixel_scale"]
+-    config["!INST.include_diffuse_emissivity"] = diffuse_emissivity_on
+-    config["!ATMO.ao_enabled"] = ao_on
+-
+-    dits = [0.]*6 if exptimes is None else [exptimes]*6 if not isinstance(exptimes, list) else exptimes
+-    ndits = ndit if isinstance(ndit, list) else [ndit]*6
+-    config["!OBS.dit"], config["!OBS.ndit"] = dits[0], ndits[0]
+-    for dit, count, arm in zip(dits, ndits, ("blue", "green", "red", "yj", "h", "k"), strict=True):
+-        config[f"!OBS.dit_{arm}"] = dit
+-        config[f"!OBS.ndit_{arm}"] = count
+-
+-    if params is not None and isinstance(params, dict):
+-        params = {key:val for key, val in params.items() if key in config}
+-        # USE THIS TO UPDATE THE CONFIG WITH NEW PROPERTIES, IT IS NOT A NORMAL DICT
+-        config.update_alias(config, params)
+-    # make sure airmass, ra, dec are in sync if all are provided
+-    warning_prevent_sync_alt_ra_dec(config)
++    mode = DETECTOR_MODE if detector_mode is None else detector_mode
++    config = zshooter_commands(mode, exptimes, ndit, airmass=airmass, seeing=seeing, brightness=brightness, vis_slit=vis_slit, nir_slit=nir_slit, pixel_scale=pixel_scale, pupil_angle=pupil_angle, ao_on=ao_on, diffuse_emissivity_on=diffuse_emissivity_on, params=params)
+ 
+     if output_dir is not None:
+         output_dir = Path(output_dir)
+ 
+     # call simulate(), it inits optical train, runs observe() and readout()
+     print(f'Simulating {object_name}')
+-    zs, raw = simulate(config, source=source, disable_effects=disable_effects, disable_backgrounds=disable_backgrounds, hide_progress_bars=True)
++    zs, raw = simulate(config, source=source, disable_effects=disable_effects, disable_backgrounds=disable_backgrounds, hide_progress_bars=True, image_plane_ids=image_plane_ids)
+     hdul = electron_readouts(zs, raw)
+-    for arm, readout in zip(("BLUE", "GREEN", "RED", "YJ", "H", "K"), hdul, strict=True):
++    for readout in hdul:
+         h = readout[1].header
+-        exposure_rows.append((object_name, DETECTOR_MODE, arm, h["DIT"], h["NDIT"], h["EXPTIME"], h["PEAKDIT"], h["WELLDEP"], h["EXNOISE"], h["RON"], h["DARK"]))
++        arm = ("BLUE", "GREEN", "RED", "YJ", "H", "K")[h["ID"]]
++        exposure_rows.append((object_name, mode, arm, h["DIT"], h["NDIT"], h["EXPTIME"], h["PEAKDIT"], h["WELLDEP"], h["EXNOISE"], h["RON"], h["DARK"]))
+     print(f"Peak electrons per integration: {[round(readout[1].header['PEAKDIT']) for readout in hdul]}")
+     # ScopeSim draws the accumulated photons and NDIT independent effective read noises.
+     if output_dir is not None:
+@@ -284,7 +265,7 @@
+ nir_slit = 0.7
+ ao_on = False
+ diffuse_emissivity_on = False
+-params = {"!OBS.mjdobs": 60310.25, "!SIM.spectral.spectral_bin_width": 1e-5} # in um, (== 0.1 Angstrom, use 0.05 Angstrom for smaller slit widths)
++params = {"!SIM.spectral.spectral_bin_width": 1e-5} # in um, (== 0.1 Angstrom, use 0.05 Angstrom for smaller slit widths)
+ 
+ args = {'airmass':airmass, 'seeing':seeing, 'brightness':brightness, 'vis_slit':vis_slit, 'nir_slit':nir_slit,
+         'ao_on': ao_on, 'diffuse_emissivity_on': diffuse_emissivity_on, 'params': params}
+@@ -821,3 +802,204 @@
+ plt.show()
+ 
+ # code cell
++
++# code cell
++import time
++from pyreduce.spectra import Spectra
++from zsdrp.steps import splice
++from zsdrp.utils import save_spectra_to_ascii
++from zs_scopesim_tools.helpers import add_cmds_to_readout_header, zshooter_channel_configuration
++
++comparison_dir = make_local_output_dir(dirname="01_Kilonovae_ALTDET")
++reuse_raw = True  # Existing frames use these unchanged sources; set False after editing a source.
++instrument = ZSHOOTER()
++channels = list(instrument.config.channels)
++baseline_mode = DETECTOR_MODE
++detector_reduced_dirs = {baseline_mode: REDUCED_DIR}
++channel_products = {baseline_mode: {channel: REDUCED_DIR for channel in channels}}
++detector_native_gaps = {baseline_mode: native_gap}
++baseline_orders = {}
++for channel in channels:
++    with np.load(REDUCED_DIR / f"wavecal_{channel}.npz") as calibration:
++        baseline_orders[channel] = set(calibration["orders"])
++reference = source_templates.ab_spectrum(mag=16)
++reference_wave = reference.waveset
++reference_flux = convert_flux(reference_wave, reference(reference_wave), "FLAM")
++disabled_calibration_effects = ["atmo_transmission", "continuum_emission", "airglow_and_interline_continuum", "seeing_psf", "adc_residuals"]
++sources = {"FLAT_AB": sim_tp.misc.point_source(sed=source_templates.ab_spectrum(mag=20))}
++sources.update({f"KN_{phase}d": source for phase, source in KNs.items()})
++object_names = ["FLAT_AB_SUB", *[f"KN_{phase}D_SUB" for phase in KNs]]
++mode_configurations, reduction_times = {}, []
++baseline_header = add_cmds_to_readout_header(fits.HDUList([fits.PrimaryHDU()]), science_train.cmds, science_train)[0].header
++baseline_header = fits.Header.fromstring(baseline_header.tostring())
++mode_configurations[baseline_mode] = {}
++for i, channel in enumerate(channels):
++    calibration_dits = tuple(CALIBRATION_DITS[baseline_mode][kind][i] for kind in ("arcs", "flat", "standard"))
++    mode_configurations[baseline_mode][channel] = (zshooter_channel_configuration(baseline_header, channel), calibration_dits)
++
++for mode in ("SPEC_ALTDETECT", "SPEC_ALTDETECT4K"):
++    mode_started = time.perf_counter()
++    directory = comparison_dir / mode / output_dir.name
++    reduced_dir = directory / "reduced"
++    reduced_dir.mkdir(parents=True, exist_ok=True)
++    dits, counts = map(list, zip(*SCIENCE_EXPOSURES["SPEC_ALTDETECT"]))
++    calibration_dits = CALIBRATION_DITS["SPEC_ALTDETECT"]
++    model = sim.OpticalTrain(zshooter_commands(mode, dits, counts, **args))
++    header = add_cmds_to_readout_header(fits.HDUList([fits.PrimaryHDU()]), model.cmds, model)[0].header
++    header = fits.Header.fromstring(header.tostring())
++    packages = {package for config in model.cmds.yaml_dicts if "packages" in config for package in config["packages"]}
++    package_root = Path(model.cmds["!SIM.file.local_packages_path"])
++    model_inputs = [path for package in packages for path in (package_root/package).rglob("*") if path.suffix in (".yaml", ".dat", ".txt", ".fits", ".ecsv", ".csv")]
++    model_modified = max(path.stat().st_mtime for path in model_inputs)
++    configurations, products, gaps, selected_ids = {}, {}, {}, []
++    for i, channel in enumerate(channels):
++        cal_dits = tuple(calibration_dits[kind][i] for kind in ("arcs", "flat", "standard"))
++        configurations[channel] = (zshooter_channel_configuration(header, channel), cal_dits)
++        owners = [previous for previous in mode_configurations if mode_configurations[previous][channel] == configurations[channel]]
++        if owners:
++            owner = owners[0]
++            products[channel] = channel_products[owner][channel]
++            gaps[channel] = detector_native_gaps[owner][channel]
++            print(f"{mode} {channel}: reusing identical {owner} observation and extraction", flush=True)
++        else:
++            products[channel] = reduced_dir
++            selected_ids.append(i)
++
++    observations = [
++        ("bias", "BIAS", None, [0.]*6, [1]*6, disabled_calibration_effects, None),
++        ("arcs", "ARCS", lamp_flat(), calibration_dits["arcs"], [1]*6, disabled_calibration_effects, None),
++        ("domeflat", "DOMEFLAT", sim_tp.calibration.flat_field(temperature=3000*u.K, amplitude=8*u.ABmag, filter_curve="V", extend=60), calibration_dits["flat"], [1]*6, disabled_calibration_effects, None),
++        ("trace", "TRACE", sim_tp.calibration.flat_field(temperature=3000*u.K, amplitude=8*u.ABmag, filter_curve="V", extend=2), calibration_dits["flat"], [1]*6, disabled_calibration_effects, None),
++        ("standard_raw", "STANDARD_RAW", sim_tp.misc.point_source(sed=reference), calibration_dits["standard"], [1]*6, None, ["sky"]),
++        ("standard_background", "SKY", None, calibration_dits["standard"], [1]*6, None, ["sky"]),
++    ]
++    for name, source in sources.items():
++        observations.extend([(name, "RAW_OBJECT", source, dits, counts, None, None), (f"{name}_sky", "SKY", None, dits, counts, None, None)])
++    for name, imagetype, source, exposure, integrations, disabled, backgrounds in observations:
++        needed = []
++        for i in selected_ids:
++            channel = channels[i]
++            path = directory / f"{name}_0_{channel}.fits.gz"
++            if not reuse_raw or not path.exists():
++                needed.append(i)
++                continue
++            if path.stat().st_mtime < model_modified:
++                raise ValueError(f"{path.name}: instrument data changed since simulation; set reuse_raw=False")
++            expected_header = header.copy()
++            arm = channel.lower()
++            expected_header[f"SIM CONFIG OBS dit_{arm}"] = exposure[i]
++            expected_header[f"SIM CONFIG OBS ndit_{arm}"] = integrations[i]
++            saved_header = fits.getheader(path)
++            expected = zshooter_channel_configuration(expected_header, channel)
++            saved = zshooter_channel_configuration(saved_header, channel)
++            differences = [key for key in expected.keys() | saved.keys() if key not in expected or key not in saved or expected[key] != saved[key]]
++            if differences:
++                raise ValueError(f"{path.name}: saved settings changed: {differences}; set reuse_raw=False to simulate again")
++            assert saved_header["OBJECT"] == name.upper() and saved_header["IMAGETYPE"] == imagetype
++        if needed:
++            readouts, observed = update_params_and_observe(object_name=name, imagetype=imagetype, source=source, exptimes=exposure, ndit=integrations, output_dir=directory, disable_effects=disabled, disable_backgrounds=backgrounds, detector_mode=mode, image_plane_ids=needed, **args)
++            del readouts, observed
++    for name in ["standard", *sources]:
++        source_name, sky_name = ("standard_raw", "standard_background") if name == "standard" else (name, f"{name}_sky")
++        subtracted_name = name if name == "standard" else f"{name}_SUB"
++        for i in selected_ids:
++            channel = channels[i]
++            with fits.open(directory / f"{source_name}_0_{channel}.fits.gz", memmap=False) as on, fits.open(directory / f"{sky_name}_0_{channel}.fits.gz", memmap=False) as off:
++                subtracted = combine_readouts([[on], [off]], [1, -1], source_indices=[0])
++                save_zshooter_readout(subtracted, directory, object_name=subtracted_name, imagetype="SCIENCE", extra_headers={"SUBTRACTED": True})
++            del subtracted
++    print(f"{mode}: raw frames ready in {time.perf_counter()-mode_started:.1f} s", flush=True)
++
++    for i in selected_ids:
++        channel = channels[i]
++        started = time.perf_counter()
++        steps = ["bias", "flat", "trace", "wavecal_master", "science"]
++        groups = instrument.sort_files(str(directory), target="", night="", channel=channel, steps=steps)
++        (_, group), = [entry for entry in groups if len(entry[1]["science"])]
++        science = [path for path in group["science"] if fits.getheader(path)["OBJECT"] in ["STANDARD", *object_names]]
++        print(f"Extracting {mode} {channel}: standard, flat-AB and all three epochs", flush=True)
++        reduced = zsdrp.pipe.run_reduction({channel: {**group, "science": science}}, channels=[channel], output_dir=reduced_dir, disable_steps=["mask"], print_params=False, disable_all_plots=True, reuse_cals=False, require_variance=True, trace_list=model["trace_list_analytical"])
++        traces = [trace for trace in reduced[channel]["traces"] if not trace.invalid]
++        retained = {trace.m for trace in traces}
++        assert baseline_orders[channel] <= retained, f"{mode} {channel}: missing SPEC orders {sorted(baseline_orders[channel]-retained)}"
++        for spectra in reduced[channel]["spectra"].values():
++            for spectrum in spectra.data:
++                np.testing.assert_allclose(spectrum.sig**2, spectrum.covariance.diagonal(), rtol=1e-10, atol=1e-20)
++        native_steps = np.concatenate([np.diff(wave[trace.column_range[0]:trace.column_range[1]]) for wave, trace in zip(reduced[channel]["wave_img"], traces, strict=True)])
++        gaps[channel] = np.max(np.abs(native_steps))*u.AA
++        reduced[channel]["spectra"]["STANDARD"].save(reduced_dir / f"standard_{channel}_extracted_electrons.fits.gz")
++        # Calibrate all epochs together using the same unmodified standard.
++        calibrated = zsdrp.pipe.run_flux_calibration_and_stitch(reduced, reference_wave=reference_wave, reference_flux=reference_flux, plot=False, output_dir=str(reduced_dir))
++        elapsed = time.perf_counter()-started
++        reduction_times.append((mode, channel, len(traces), elapsed))
++        print(f"{mode} {channel}: {len(traces)} orders, {elapsed:.1f} s", flush=True)
++        del reduced, calibrated
++
++    for name in object_names:
++        spectra = [Spectra.read(products[channel] / f"spectra_{name}_{channel}_fluxcal.fits.gz", raw=True) for channel in channels]
++        stitched_header = spectra[0].header.copy()
++        stitched_header.update({key: header[key] for key in header if key.startswith("SIM CONFIG ")})
++        stitched_header["DETMODE"] = mode
++        pieces = Spectra(header=stitched_header, data=[item.data[0] for item in spectra])
++        stitched = splice(pieces, simple=True)
++        stitched.save(reduced_dir / f"spectra_{name}_stitched.fits.gz")
++        save_spectra_to_ascii(stitched, reduced_dir / f"spectra_{name}_stitched.txt")
++        del spectra, pieces, stitched
++    mode_configurations[mode] = configurations
++    channel_products[mode] = products
++    detector_reduced_dirs[mode] = reduced_dir
++    detector_native_gaps[mode] = gaps
++    print(f"{mode} complete: {time.perf_counter()-mode_started:.1f} s", flush=True)
++    del model
++pd.DataFrame(reduction_times, columns=["mode", "channel", "orders", "seconds"])
++
++# code cell
++fig, ax = plt.subplots(2,1, figsize=(20,8))
++ax[0].grid(True)
++ax[1].grid(True)
++ax[0].tick_params(axis='y', labelsize=12)
++ax[1].tick_params(axis='y', labelsize=12)
++ax[1].tick_params(axis='x', labelsize=16)
++ax[0].set_ylabel(r'Flux (erg/s/cm$^2/\AA$)', fontsize=18)
++ax[1].set_ylabel('SNR', fontsize=18)
++ax[1].set_xlabel(r'Wavelength ($\AA$)', fontsize=18)
++
++for i,obj in enumerate(["KN_1.5D", "KN_7.5D", "KN_20.0D"]):
++    objname = f"{obj}_SUB" # set pattern string prefix
++    flname = sorted(REDUCED_DIR.glob(f'*{objname.upper()}*stitched.txt'))[0] # set pattern string ACCURATELY here
++    with open(flname, 'r', encoding='utf-8') as f:
++        tbl = pd.read_csv(f, sep='\t', comment='# ', engine='python')
++        wave = tbl['wavelength']
++        spec = tbl['flux']
++        sig = tbl['eflux']
++        snr = spec/sig
++        good = np.isfinite(snr)
++        print(f"{objname}: mean SNR = {np.mean(snr[good]):.2f}, "
++              f"median SNR = {np.median(snr[good]):.2f}")
++
++        # Break display lines at gaps larger than every configured native wavelength step.
++        gap = max(native_gap.values()).to_value(u.AA)
++        for part in np.split(np.arange(len(wave)), np.flatnonzero(np.diff(wave) > gap) + 1):
++            ax[0].plot(wave[part], spec[part], alpha=0.2, color=f"C{i}", zorder=2)
++            ax[0].plot(wave[part], median_filter(spec[part], 51), label=obj if part[0] == 0 else None, color=f"C{i}", zorder=5)
++            ax[1].plot(wave[part], snr[part], alpha=0.2, color=f"C{i}", zorder=2)
++            ax[1].plot(wave[part], median_filter(snr[part], 51), color=f"C{i}", zorder=5)
++
++for mode, color, label, order in [("SPEC_ALTDETECT", "C3", "H2RG", 4), ("SPEC_ALTDETECT4K", "C4", "HxRG", 3)]:
++    gap = max(detector_native_gaps[mode].values()).to_value(u.AA)
++    for i, obj in enumerate(["KN_1.5D", "KN_7.5D", "KN_20.0D"]):
++        tbl = pd.read_csv(detector_reduced_dirs[mode] / f"spectra_{obj}_SUB_stitched.txt", sep="\t", comment="# ", engine="python")
++        wave, spec, sig = tbl["wavelength"], tbl["flux"], tbl["eflux"]
++        snr = spec/sig
++        for part in np.split(np.arange(len(wave)), np.flatnonzero(np.diff(wave) > gap) + 1):
++            ax[0].plot(wave[part], median_filter(spec[part], 51), color=color, label=label if i == 0 and part[0] == 0 else None, zorder=order)
++            ax[1].plot(wave[part], median_filter(snr[part], 51), color=color, zorder=order)
++
++ax[0].set_title('Exptime = 3600 s', fontsize=24)
++ax[0].set_xlim(3070, 25000)
++ax[1].set_xlim(3070, 25000)
++ax[0].set_ylim(-0.01e-15, 0.2e-15)
++ax[1].set_ylim(-10, 100)
++ax[0].legend(ncol=5)
++fig.savefig(comparison_dir / "kilonova_epochs.png", dpi=160)
++plt.show()
