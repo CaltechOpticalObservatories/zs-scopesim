@@ -1,0 +1,2357 @@
+--- review/xs-21-scientific-helpers/notebooks/zshooter_performance.ipynb
++++ review/xs-22-performance-trades/notebooks/zshooter_performance.ipynb
+@@ -73,16 +73,27 @@
+ irdb_path = configure_irdb_path(fallback_irdb_path="/Users/jibailey/src/irdb")
+ set_scopesim_log_level(level="warning")
+ zshooter_dir = instrument_package_dir("ZShooter_v2")
+-output_dir = make_local_output_dir(dirname="zshooter_performance")
++output_dir = make_local_output_dir(dirname="zshooter_performance_detectors")
++DETECTOR_MODE = "SPEC"
++COMPARISON_DETECTOR_MODE = "SPEC_ALTDETECT"  # Editable IRDB package; detector properties come from its YAML.
++# Explicit (DIT seconds, independent integrations), ordered B/G/R/YJ/H/K.
++# These settings include the full OH sky even in the no-OH diagnostic plots.
++EXPOSURES = {
++    "SPEC": {"1 hour": [(1200, 3)]*3 + [(100, 36), (30, 120), (60, 60)],
++             "5 minutes": [(300, 1)]*3 + [(100, 3), (30, 10), (60, 5)]},
++    "SPEC_ALTDETECT": {"1 hour": [(1200, 3)]*3 + [(300, 12), (90, 40), (150, 24)],
++                       "5 minutes": [(300, 1)]*3 + [(300, 1), (75, 4), (150, 2)]},
++}
+ hide_scopesim_progress = True
+ disable_scopesim_top_level_catch()
+ 
+-def set_channel_exposure(cmds, *, dit, ndit):
+-    cmds["!OBS.dit"] = dit
+-    cmds["!OBS.ndit"] = ndit
+-    for channel in ("blue", "green", "red", "yj", "h", "k"):
++def set_channel_exposure(cmds, exposure="1 hour"):
++    settings = EXPOSURES[from_currsys("!DET.detector_mode", cmds)][exposure]
++    cmds["!OBS.dit"], cmds["!OBS.ndit"] = settings[0]
++    for channel, (dit, ndit) in zip(("blue", "green", "red", "yj", "h", "k"), settings, strict=True):
+         cmds[f"!OBS.dit_{channel}"] = dit
+         cmds[f"!OBS.ndit_{channel}"] = ndit
++
+ 
+ component_metadata = {"telescope_reflection": {"throughput_group": "telescope", "emission_phase": "pre_disperser"},
+                       "ir_blocking_filter_selector": {"throughput_group": "ir_blocking_filter"},
+@@ -124,7 +135,7 @@
+     code_revision = subprocess.run(["git", "-C", str(pathlib.Path.cwd()), "describe", "--always", "--dirty"], check=True, capture_output=True, text=True).stdout.strip()
+     irdb_revision = subprocess.run(["git", "-C", str(irdb_path), "describe", "--always", "--dirty"], check=True, capture_output=True, text=True).stdout.strip()
+     run_card = Table(rows=[
+-        {"quantity": "instrument", "value": "ZShooter_v2 SPEC", "why_it_matters": "loads the release IRDB model"},
++        {"quantity": "instrument", "value": f"ZShooter_v2 {DETECTOR_MODE}", "why_it_matters": "loads the release IRDB model"},
+         {"quantity": "zs-scopesim revision", "value": code_revision, "why_it_matters": "identifies the notebook and package implementation"},
+         {"quantity": "ScopeSim version", "value": importlib.metadata.version("ScopeSim"), "why_it_matters": "identifies the simulation engine"},
+         {"quantity": "IRDB revision", "value": irdb_revision, "why_it_matters": "identifies the configured instrument data"},
+@@ -138,19 +149,21 @@
+         {"quantity": "VIS slit [arcsec]", "value": cmd_value("!INST.vis_curr_slit"), "why_it_matters": "source throughput and resolution"},
+         {"quantity": "NIR slit [arcsec]", "value": cmd_value("!INST.nir_curr_slit"), "why_it_matters": "source throughput and resolution"},
+         {"quantity": "spectral resolving power guardrail", "value": cmd_value("!SIM.spectral.spectral_resolution"), "why_it_matters": "internal spectral work grid / sky sampling guardrail"},
+-        {"quantity": "DIT x NDIT", "value": f"{cmd_value('!OBS.dit_green')} x {cmd_value('!OBS.ndit_green')}", "why_it_matters": "per-channel detector exposure; total is DIT*NDIT"},
++        {"quantity": "DIT x NDIT", "value": ", ".join(f"{arm.upper()}: {cmd_value(f'!OBS.dit_{arm}'):g}x{cmd_value(f'!OBS.ndit_{arm}')}" for arm in ("blue", "green", "red", "yj", "h", "k")), "why_it_matters": "explicit independent integrations per arm"},
+         {"quantity": "pupil angle [deg]", "value": cmd_value("!OBS.pupil_angle"), "why_it_matters": "source-pair orientation used below"},
+     ])
+     display_frame(run_card, rename={"why_it_matters": "why it matters"})
+     return run_card
+ 
+# %% code cell 211f7490535dd414
+-cmd = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=["SPEC"])
++cmd = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=[DETECTOR_MODE])
++cmd = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=[DETECTOR_MODE])
+ cmd["!ATMO.skycalc_timeout"] = 60.0 #seconds
+ cmd["!OBS.airmass"] = 1.1
+ cmd["!OBS.seeing"] = 0.65
+ cmd["!OBS.brightness"] = "dark"
++cmd["!OBS.mjdobs"] = 60310.25
+ cmd["!OBS.pupil_angle"] = 0.0
+-set_channel_exposure(cmd, dit=1800, ndit=2)
++set_channel_exposure(cmd)
+ cmd["!INST.vis_curr_slit"] = 0.7 # 0.33
+ cmd["!INST.nir_curr_slit"] = 0.7 # 0.33
+ cmd["!INST.include_diffuse_emissivity"] = False
+@@ -165,10 +178,10 @@
+ 
+ This detector-facing diagnostic samples the loaded spectral traces on the active image planes. The table gives compact channel ranges; the first map shows local resolving power from the trace geometry and detector pixel scale, while the second map shows the corresponding spectral-element sampling width. Blank pixels are off trace. The plotted samples are kept only where the sampled slit footprint is fully on detector; the trace catalog below is the check for the total loaded order count. Detector rotation is part of the trace geometry being checked; `detector_pad` is legacy metadata and is not applied to the optical trace geometry.
+ 
+# %% code cell a55b6247
+-set_channel_exposure(zs.cmds, dit=1800, ndit=2)
++set_channel_exposure(zs.cmds)
+ zs.cmds["!INST.vis_curr_slit"] = 0.33
+ zs.cmds["!INST.nir_curr_slit"] = 0.33
+-zs.update()
++zs.update(migrate_cmds=True)
+ show_run();
+ 
+ trace_resolution = trace_resolution_diagnostic_table(zs)
+@@ -177,12 +190,11 @@
+ fig, axes = plot_resolving_power_echellogram(trace_resolution, trace_width_fraction= (.4, .4,.4, .3, .3, .3), max_display_samples_per_trace=128)
+ fig.suptitle('0.33" slit Echellogram')
+ display_and_save_figure(fig, "resolving_power_033_slit")
+-
+# %% code cell 9de5e6b878be8e54
+-set_channel_exposure(zs.cmds, dit=1800, ndit=2)
++
+# %% code cell 38ba78232aade192
++set_channel_exposure(zs.cmds)
+ zs.cmds["!INST.vis_curr_slit"] = 0.70
+ zs.cmds["!INST.nir_curr_slit"] = 0.70
+-zs.update()
+-
+# %% code cell 38ba78232aade192
++zs.update(migrate_cmds=True)
+ show_run();
+ trace_resolution = trace_resolution_diagnostic_table(zs)
+ trace_resolution_summary = trace_resolution_summary_table(trace_resolution)
+@@ -1012,13 +1024,32 @@
+     logging.getLogger("astar.scopesim").setLevel(logging.WARNING)
+     effect_names = list(disabled_effects or [])
+     with disable_background(disabled_background, train=train), temporarily_disable_effects(train, effect_names), disable_scopesim_progress_bars(hide_scopesim_progress):
+-        if source is None:
+-            train.observe()
+-        else:
+-            train.observe(source)
+-        hdul = train.readout()
++        for plane in train.image_planes:
++            plane.data.fill(0)
++        train.observe(source, update=False)
++        exposure = {key: train.cmds[f'!OBS.{key}'] for key in ('dit', 'ndit')}
++        for arm in ('blue', 'green', 'red', 'yj', 'h', 'k'):
++            exposure[f'dit_{arm}'] = train.cmds[f'!OBS.dit_{arm}']
++            exposure[f'ndit_{arm}'] = train.cmds[f'!OBS.ndit_{arm}']
++        hdul = train.readout(**exposure)
+     logging.getLogger("astar.scopesim").setLevel(logging.WARNING)
+     return hdul
++
++
++def readout_optical_rates(background_rates, source_rates=None, source_scale=1., *, train=None):
++    train = zs if train is None else train
++    # Rates are before dark current, integration and stochastic detector effects.
++    for plane, background in zip(train.image_planes, background_rates, strict=True):
++        plane.data[:] = background
++    if source_rates is not None:
++        for plane, signal in zip(train.image_planes, source_rates, strict=True):
++            plane.data += source_scale*signal
++    exposure = {key: train.cmds[f'!OBS.{key}'] for key in ('dit', 'ndit')}
++    for arm in ('blue', 'green', 'red', 'yj', 'h', 'k'):
++        exposure[f'dit_{arm}'] = train.cmds[f'!OBS.dit_{arm}']
++        exposure[f'ndit_{arm}'] = train.cmds[f'!OBS.ndit_{arm}']
++    with temporarily_disable_effects(train, READOUT_RANDOM_NOISE_EFFECTS):
++        return train.readout(**exposure)
+ 
+# %% code cell 13c38eeccb2b04eb
+ readout_titles = ["B", "G", "R", "YJ", "H", "K"]
+ readout_scale_groups = [["B", "G", "R"], ["YJ", "H", "K"]]
+@@ -1041,7 +1072,11 @@
+ 
+# %% code cell cb89aab9c94118bf
+ readouts["full_background"] = observe_readout(None, None)
+ readouts["source_no_sky_lines"] = observe_readout(source_to_observe, ["sky_lines"])
++wide_total_rates = [plane.data.copy() for plane in zs.image_planes]
+ readouts["background_no_sky_lines"] = observe_readout(None, ["sky_lines"])
++wide_background_rates = [plane.data.copy() for plane in zs.image_planes]
++wide_source_rates = [total-background for total, background in zip(wide_total_rates, wide_background_rates, strict=True)]
++del wide_total_rates
+ 
+ source_minus_background = readout_delta_summary_table(readouts["source_full_background"], readouts["full_background"], titles=readout_titles)
+ 
+# %% code cell b89c0d370d46d895
+@@ -1094,6 +1129,7 @@
+         "read_noise_e_rms": read_rms,
+         "detector_variance_e2_pix": detector_variance,
+         "mean_detector_signal_e_pix": dark,
++        "excess_noise_factor": row["excess_noise_factor"],
+     }
+ 
+ 
+@@ -1126,8 +1162,8 @@
+         background_image = readout_image(background_hdu)
+         signal = source_image - background_image
+         background = background_image - terms["bias_e_pix"] - terms["mean_detector_signal_e_pix"]
+-        one_exposure_fixed_variance = background + terms["detector_variance_e2_pix"]
+-        variance = signal + 2.0 * one_exposure_fixed_variance
++        one_exposure_fixed_variance = terms["excess_noise_factor"] * background + terms["detector_variance_e2_pix"]
++        variance = terms["excess_noise_factor"] * signal + 2.0 * one_exposure_fixed_variance
+         snr = signal / np.sqrt(variance)
+         signal_images.append(signal)
+         background_images.append(background)
+@@ -1139,7 +1175,8 @@
+     display_rows = []
+     for row in summary_table:
+         channel = str(row["channel"])
+-        spectral_fwhm = float(row["spectral_fwhm_pix"])
++        # Representative width for this coarse per-channel footprint summary.
++        spectral_fwhm = float(row["spectral_fwhm_median_pix"])
+         spatial_min = float(row["spatial_fwhm_min_pix"])
+         spatial_median = float(row["spatial_fwhm_median_pix"])
+         spatial_max = float(row["spatial_fwhm_max_pix"])
+@@ -1590,12 +1627,9 @@
+ 
+ 
+ def trace_sample_detector_coordinates(train, trace_samples):
+-    """Map every native wavelength at the source position rendered on the slit grid."""
++    """Map native wavelengths at the continuously rendered, centered point source."""
+     trace_values = np.asarray(trace_samples["trace_id"], dtype=str)
+     rows = []
+-
+-    sub_pixel_enabled = bool(from_currsys("!SIM.sub_pixel.flag", train.cmds))
+-    from scopesim.optics import image_plane_utils as imp_utils
+ 
+     for trace_id in sorted(set(trace_values), key=trace_id_sort_key):
+         order_samples = trace_samples[trace_values == trace_id]
+@@ -1603,19 +1637,8 @@
+         order_samples = order_samples[np.argsort(order_samples["sample_index"])]
+         wave_grid_nm = np.asarray(order_samples["wave_nm"], dtype=float)
+ 
+-        trace_fovs = [fov for fov in train.fov_manager.fovs if str(fov.trace_id) == trace_id]
+-        assert len(trace_fovs) == 1, (trace_id, len(trace_fovs))
+-        fov = trace_fovs[0]
+-
+-        source_xpix, _ = imp_utils.val2pix(fov.header, 0.0, 0.0)
+-        dxi_arcsec = (fov.header["CDELT1"] * u.Unit(fov.header["CUNIT1"])).to_value(u.arcsec)
+-
+-        rendered_source_xpix = source_xpix if sub_pixel_enabled else int(source_xpix)
+-        rendered_xi = fov.meta["xi_min"].to(u.arcsec) + rendered_source_xpix * dxi_arcsec * u.arcsec
+-
+-        mapped = train.trace_detector_coordinates(xi=rendered_xi, wavelengths={trace_id: wave_grid_nm * u.nm})
+-
+-        # Only one xi was requested, so do not filter for xi == 0.
++        mapped = train.trace_detector_coordinates(xi=0 * u.arcsec, wavelengths={trace_id: wave_grid_nm * u.nm})
++
+         mapped_wave_nm = mapped["wavelength"].to_value(u.nm)
+         mapped_order = np.argsort(mapped_wave_nm)
+         mapped_wave_nm = mapped_wave_nm[mapped_order]
+@@ -1707,6 +1730,7 @@
+             "signal": signal,
+             "sky": sky,
+             "detector_variance_e2_pix": terms["detector_variance_e2_pix"],
++            "excess_noise_factor": terms["excess_noise_factor"],
+         }
+     return products
+ 
+@@ -1724,8 +1748,8 @@
+     signal_e = np.sum(signal_pixels)
+     sky_e = np.sum(sky_pixels)
+     n_pix = rectangle["n_pix"]
+-    source_var_e = signal_e
+-    sky_var_e = 2 * sky_e
++    source_var_e = products["excess_noise_factor"] * signal_e
++    sky_var_e = 2 * products["excess_noise_factor"] * sky_e
+     detector_var_e = 2 * n_pix * products["detector_variance_e2_pix"]
+     fixed_variance_e = sky_var_e + detector_var_e
+     snr_at_input = signal_e / np.sqrt(source_var_e + fixed_variance_e)
+@@ -2461,10 +2485,11 @@
+ 
+ 
+ def reduce_zero_point_case(label, *, source_hdul, background_hdul, detector_table, trace_samples,
+-                           input_abmag, bin_factors, slit_arcsec, ao_enabled, integration, dit, ndit,
+-                           aperture_calibration=None):
+-
+-    samples, apertures = trace_zero_point_samples_table(zs, source_hdul, background_hdul, detector_table, trace_samples, readout_titles, input_abmag=input_abmag, case_label=label, bin_factors=bin_factors, aperture_calibration=aperture_calibration, return_apertures=True)
++                           input_abmag, bin_factors, slit_arcsec, ao_enabled, integration,
++                           aperture_calibration=None, train=None):
++    train = zs if train is None else train
++
++    samples, apertures = trace_zero_point_samples_table(train, source_hdul, background_hdul, detector_table, trace_samples, readout_titles, input_abmag=input_abmag, case_label=label, bin_factors=bin_factors, aperture_calibration=aperture_calibration, return_apertures=True)
+ 
+     full_bins = samples["native_count"] == samples["bin_factor"]
+     finite = full_bins & np.isfinite(samples["m5_ab"])
+@@ -2472,7 +2497,7 @@
+ 
+     best_zp_table = best_zero_point_order_table(samples[selected])
+ 
+-    return {"label": label, "integration": integration, "dit": dit, "ndit": ndit, "slit_arcsec": slit_arcsec, "ao_enabled": ao_enabled, "input_abmag": input_abmag,
++    return {"label": label, "integration": integration, "detector_budget": detector_table, "slit_arcsec": slit_arcsec, "ao_enabled": ao_enabled, "input_abmag": input_abmag,
+             "samples_raw": samples, "samples_complete": samples[finite], "samples_selected": samples[selected], "order_best": best_zp_table, "apertures": apertures,
+             }
+ 
+@@ -2480,65 +2505,74 @@
+ paper_case_results = {}
+ 
+ # Existing .70", one-hour, natural-seeing readouts.
+-paper_case_results[("1 hour", 0.70, False)] = reduce_zero_point_case('1 hour, 0.70" slit', source_hdul=readouts["source_no_sky_lines"], background_hdul=readouts["background_no_sky_lines"], detector_table=detector_budget, trace_samples=trace_resolution, input_abmag=20.0, bin_factors=(1, 2, 18), slit_arcsec=0.70, ao_enabled=False, integration="1 hour", dit=1800, ndit=2, aperture_calibration=zero_point_trace_apertures)
+-
+-# .33", one hour. The background is common to natural seeing and AO.
+-set_channel_exposure(zs.cmds, dit=1800, ndit=2)
++paper_case_results[("1 hour", 0.70, False)] = reduce_zero_point_case('1 hour, 0.70" slit', source_hdul=readouts["source_no_sky_lines"], background_hdul=readouts["background_no_sky_lines"], detector_table=detector_budget, trace_samples=trace_resolution, input_abmag=20.0, bin_factors=(1, 2, 18), slit_arcsec=0.70, ao_enabled=False, integration="1 hour", aperture_calibration=zero_point_trace_apertures)
++
++# .33", one hour. Render each background on the matching PSF integration grid.
++set_channel_exposure(zs.cmds)
+ zs.cmds["!INST.vis_curr_slit"] = 0.33
+ zs.cmds["!INST.nir_curr_slit"] = 0.33
+-zs.update()
++zs.update(migrate_cmds=True)
+ set_train_ao_state(zs, False)
+ narrow_detector_budget_1h = detector_background_budget_table(zs)
+ narrow_background_1h = observe_readout(None, ["sky_lines"])
++narrow_background_rates = [plane.data.copy() for plane in zs.image_planes]
+ narrow_trace_noao_1h = trace_resolution_diagnostic_table(zs)
+ narrow_source_noao_1h = observe_readout(flat_ab_point_center, ["sky_lines"])
+-paper_case_results[("1 hour", 0.33, False)] = reduce_zero_point_case('1 hour, 0.33" slit, natural', source_hdul=narrow_source_noao_1h, background_hdul=narrow_background_1h, detector_table=narrow_detector_budget_1h, trace_samples=narrow_trace_noao_1h, input_abmag=20.0, bin_factors=(1, 18, 40), slit_arcsec=0.33, ao_enabled=False, integration="1 hour", dit=1800, ndit=2)
++narrow_natural_rates = [plane.data-background for plane, background in zip(zs.image_planes, narrow_background_rates, strict=True)]
++paper_case_results[("1 hour", 0.33, False)] = reduce_zero_point_case('1 hour, 0.33" slit, natural', source_hdul=narrow_source_noao_1h, background_hdul=narrow_background_1h, detector_table=narrow_detector_budget_1h, trace_samples=narrow_trace_noao_1h, input_abmag=20.0, bin_factors=(1, 18, 40), slit_arcsec=0.33, ao_enabled=False, integration="1 hour")
+ 
+ set_train_ao_state(zs, True)
+ narrow_trace_ao_1h = trace_resolution_diagnostic_table(zs)
++narrow_background_ao_1h = observe_readout(None, ["sky_lines"])
++narrow_background_ao_rates = [plane.data.copy() for plane in zs.image_planes]
+ narrow_source_ao_1h = observe_readout(flat_ab_point_center, ["sky_lines"])
+-paper_case_results[("1 hour", 0.33, True)] = reduce_zero_point_case('1 hour, 0.33" slit, AO', source_hdul=narrow_source_ao_1h, background_hdul=narrow_background_1h, detector_table=narrow_detector_budget_1h, trace_samples=narrow_trace_ao_1h, input_abmag=20.0, bin_factors=(1, 2, 4, 18, 38, 40), slit_arcsec=0.33, ao_enabled=True, integration="1 hour", dit=1800, ndit=2)
+-del narrow_background_1h, narrow_source_noao_1h, narrow_source_ao_1h
+-
+-# .70", five minutes, natural seeing.
+-set_channel_exposure(zs.cmds, dit=300, ndit=1)
++narrow_ao_rates = [plane.data-background for plane, background in zip(zs.image_planes, narrow_background_ao_rates, strict=True)]
++paper_case_results[("1 hour", 0.33, True)] = reduce_zero_point_case('1 hour, 0.33" slit, AO', source_hdul=narrow_source_ao_1h, background_hdul=narrow_background_ao_1h, detector_table=narrow_detector_budget_1h, trace_samples=narrow_trace_ao_1h, input_abmag=20.0, bin_factors=(1, 2, 4, 18, 38, 40), slit_arcsec=0.33, ao_enabled=True, integration="1 hour")
++del narrow_background_1h, narrow_background_ao_1h, narrow_source_noao_1h, narrow_source_ao_1h
++
++# .70", five minutes, natural seeing. Reuse the same optical electron rates.
++five_minute_source_scale = 10**(.4*(20.-17.))
++set_channel_exposure(zs.cmds, "5 minutes")
+ zs.cmds["!INST.vis_curr_slit"] = 0.70
+ zs.cmds["!INST.nir_curr_slit"] = 0.70
+-zs.update()
++zs.update(migrate_cmds=True)
+ set_train_ao_state(zs, False)
+ wide_detector_budget_5m = detector_background_budget_table(zs)
+-wide_background_5m = observe_readout(None, ["sky_lines"])
++wide_background_5m = readout_optical_rates(wide_background_rates)
+ wide_trace_5m = trace_resolution_diagnostic_table(zs)
+-wide_source_5m = observe_readout(flat_ab_point_center_5min, ["sky_lines"])
+-paper_case_results[("5 minutes", 0.70, False)] = reduce_zero_point_case('5 minutes, 0.70" slit', source_hdul=wide_source_5m, background_hdul=wide_background_5m, detector_table=wide_detector_budget_5m, trace_samples=wide_trace_5m, input_abmag=17.0, bin_factors=(1, 2, 18), slit_arcsec=0.70, ao_enabled=False, integration="5 minutes", dit=300, ndit=1)
++wide_source_5m = readout_optical_rates(wide_background_rates, wide_source_rates, five_minute_source_scale)
++paper_case_results[("5 minutes", 0.70, False)] = reduce_zero_point_case('5 minutes, 0.70" slit', source_hdul=wide_source_5m, background_hdul=wide_background_5m, detector_table=wide_detector_budget_5m, trace_samples=wide_trace_5m, input_abmag=17.0, bin_factors=(1, 2, 18), slit_arcsec=0.70, ao_enabled=False, integration="5 minutes")
+ del wide_background_5m, wide_source_5m
+ 
+-# .33", five minutes. The background is common to natural seeing and AO.
++# .33", five minutes. Reuse rates with the matching natural-seeing or AO grid.
+ zs.cmds["!INST.vis_curr_slit"] = 0.33
+ zs.cmds["!INST.nir_curr_slit"] = 0.33
+-zs.update()
++zs.update(migrate_cmds=True)
+ set_train_ao_state(zs, False)
+ narrow_detector_budget_5m = detector_background_budget_table(zs)
+-narrow_background_5m = observe_readout(None, ["sky_lines"])
++narrow_background_5m = readout_optical_rates(narrow_background_rates)
+ narrow_trace_noao_5m = trace_resolution_diagnostic_table(zs)
+-narrow_source_noao_5m = observe_readout(flat_ab_point_center_5min, ["sky_lines"])
+-paper_case_results[("5 minutes", 0.33, False)] = reduce_zero_point_case('5 minutes, 0.33" slit, natural', source_hdul=narrow_source_noao_5m, background_hdul=narrow_background_5m, detector_table=narrow_detector_budget_5m, trace_samples=narrow_trace_noao_5m, input_abmag=17.0, bin_factors=(1, 18, 40), slit_arcsec=0.33, ao_enabled=False, integration="5 minutes", dit=300, ndit=1)
++narrow_source_noao_5m = readout_optical_rates(narrow_background_rates, narrow_natural_rates, five_minute_source_scale)
++paper_case_results[("5 minutes", 0.33, False)] = reduce_zero_point_case('5 minutes, 0.33" slit, natural', source_hdul=narrow_source_noao_5m, background_hdul=narrow_background_5m, detector_table=narrow_detector_budget_5m, trace_samples=narrow_trace_noao_5m, input_abmag=17.0, bin_factors=(1, 18, 40), slit_arcsec=0.33, ao_enabled=False, integration="5 minutes")
+ 
+ set_train_ao_state(zs, True)
+ narrow_trace_ao_5m = trace_resolution_diagnostic_table(zs)
+-narrow_source_ao_5m = observe_readout(flat_ab_point_center_5min, ["sky_lines"])
+-paper_case_results[("5 minutes", 0.33, True)] = reduce_zero_point_case('5 minutes, 0.33" slit, AO', source_hdul=narrow_source_ao_5m, background_hdul=narrow_background_5m, detector_table=narrow_detector_budget_5m, trace_samples=narrow_trace_ao_5m, input_abmag=17.0, bin_factors=(1, 2, 4, 18, 38, 40), slit_arcsec=0.33, ao_enabled=True, integration="5 minutes", dit=300, ndit=1)
+-del narrow_background_5m, narrow_source_noao_5m, narrow_source_ao_5m
++narrow_background_ao_5m = readout_optical_rates(narrow_background_ao_rates)
++narrow_source_ao_5m = readout_optical_rates(narrow_background_ao_rates, narrow_ao_rates, five_minute_source_scale)
++paper_case_results[("5 minutes", 0.33, True)] = reduce_zero_point_case('5 minutes, 0.33" slit, AO', source_hdul=narrow_source_ao_5m, background_hdul=narrow_background_ao_5m, detector_table=narrow_detector_budget_5m, trace_samples=narrow_trace_ao_5m, input_abmag=17.0, bin_factors=(1, 2, 4, 18, 38, 40), slit_arcsec=0.33, ao_enabled=True, integration="5 minutes")
++del narrow_background_5m, narrow_background_ao_5m, narrow_source_noao_5m, narrow_source_ao_5m
++del narrow_background_rates, narrow_background_ao_rates, narrow_natural_rates, narrow_ao_rates
++print("Five-minute forecasts reuse optical rates; detector exposure and dark current are read out anew.")
+ 
+ for key, result in paper_case_results.items():
+     print(f"{result['label']}: retained {len(result['samples_selected']):,}/" f"{len(result['samples_complete']):,} samples")
+ 
+ # Leave the notebook in its baseline state.
+-set_channel_exposure(zs.cmds, dit=1800, ndit=2)
++set_channel_exposure(zs.cmds)
+ zs.cmds["!INST.vis_curr_slit"] = 0.70
+ zs.cmds["!INST.nir_curr_slit"] = 0.70
+ set_train_ao_state(zs, False)
+-zs.update()
++zs.update(migrate_cmds=True)
+ trace_resolution = trace_resolution_diagnostic_table(zs)
+ trace_resolution_summary = trace_resolution_summary_table(trace_resolution)
+ detector_budget = detector_background_budget_table(zs)
+@@ -2551,10 +2585,10 @@
+ AO_LIMITING_BIN_FACTOR = 38
+ 
+ ao_limiting_case = paper_case_results[AO_LIMITING_CASE_KEY]
+-set_channel_exposure(zs.cmds, dit=1800, ndit=2)
++set_channel_exposure(zs.cmds)
+ zs.cmds["!INST.vis_curr_slit"] = 0.33
+ zs.cmds["!INST.nir_curr_slit"] = 0.33
+-zs.update()
++zs.update(migrate_cmds=True)
+ set_train_ao_state(zs, True)
+ 
+ ao_detector_budget_1h = detector_background_budget_table(zs)
+@@ -2569,11 +2603,11 @@
+ # del ao_simulation_background_1h, ao_simulation_source_1h, ao_detector_budget_1h
+ 
+ # Restore the baseline train and its derived diagnostics.
+-set_channel_exposure(zs.cmds, dit=1800, ndit=2)
++set_channel_exposure(zs.cmds)
+ zs.cmds["!INST.vis_curr_slit"] = 0.70
+ zs.cmds["!INST.nir_curr_slit"] = 0.70
+ set_train_ao_state(zs, False)
+-zs.update()
++zs.update(migrate_cmds=True)
+ trace_resolution = trace_resolution_diagnostic_table(zs)
+ trace_resolution_summary = trace_resolution_summary_table(trace_resolution)
+ detector_budget = detector_background_budget_table(zs)
+@@ -2648,7 +2682,7 @@
+ limiting_magnitude_curve_inventory["observing mode"] = np.where(limiting_magnitude_curve_inventory["observing mode"], "AO", "natural seeing")
+ display_frame(limiting_magnitude_curve_inventory, formats={"slit [as]": "{:.2f}", "median R": "{:.0f}"})
+ 
+# %% markdown cell limiting-sky-variants
+-## Limiting magnitude with simulated sky and disabled airglow
++ ## Limiting magnitude with simulated sky and disabled airglow
+ 
+ These three one-hour diagnostics use the same wavelength samples and detector rectangles within each pair. The baseline **Simulation** retains the configured airglow lines and interline continuum. **OH/airglow disabled** is a hypothetical change to that configured background component; it is not a pixel-selection algorithm.
+ 
+@@ -2832,14 +2866,14 @@
+         "order_rolling_median_bins": 5,
+     },
+ ]
+-fig, ax = plot_limiting_magnitude_curves(limiting_magnitude_curves, selected_ao_natural_plot_specs, title="One-hour limiting magnitude", dynamic_range_mag=PLOT_DYNAMIC_RANGE_MAG, minimum_limiting_magnitude_ab=clip_zp_below, ylim=(21, 25))
++fig, ax = plot_limiting_magnitude_curves(limiting_magnitude_curves, selected_ao_natural_plot_specs, title="One-hour limiting magnitude", dynamic_range_mag=PLOT_DYNAMIC_RANGE_MAG, minimum_limiting_magnitude_ab=clip_zp_below, ylim=(20, 26))
+ display_and_save_figure(fig, "selected_ao_natural_comparison")
+ 
+# %% markdown cell native-element-selection-diagnostic
+ ## Native-element selection diagnostic
+ 
+ This optional two-panel diagnostic uses the returned native-selection table. It is separate from the principal limiting-magnitude result.
+ 
+# %% code cell native-element-selection-diagnostic-code
+-SHOW_NATIVE_SELECTION_DIAGNOSTIC = False
++SHOW_NATIVE_SELECTION_DIAGNOSTIC = True
+ SPECTRAL_SELECTION_DIAGNOSTIC_CHANNEL = "H"
+ SPECTRAL_SELECTION_DIAGNOSTIC_TRACE_ID = None
+ 
+@@ -2959,7 +2993,7 @@
+                 "order_rolling_median_bins": 5,
+     },
+ ]
+-fig, ax = plot_limiting_magnitude_curves(limiting_magnitude_curves, one_hour_plot_specs, title="AO and slit sensitivity (1 hour, no OH lines)", dynamic_range_mag=PLOT_DYNAMIC_RANGE_MAG, ylim=(19, 25.5))
++fig, ax = plot_limiting_magnitude_curves(limiting_magnitude_curves, one_hour_plot_specs, title="AO and slit sensitivity (1 hour, no OH lines)", dynamic_range_mag=PLOT_DYNAMIC_RANGE_MAG, ylim=(19, 26))
+ display_and_save_figure(fig, "ao_slit_sensitivity")
+ 
+# %% markdown cell paper-limiting-magnitude-summary
+ ## Paper limiting-magnitude summary
+@@ -2994,7 +3028,7 @@
+     selected_orders = order_best[order_best["bin_factor"] == bin_factor]
+     row = {
+         "integration": integration,
+-        "DITxNDIT": f"{result['dit']}x{result['ndit']}",
++        "DITxNDIT": ", ".join(f"{row['channel']}: {row['dit_s']:g}x{row['ndit']}" for row in result["detector_budget"]),
+         "slit": f'{slit:.2f}"',
+         "AO": "AO" if ao_enabled else "Natural",
+         "bin": bin_factor,
+@@ -3238,330 +3272,92 @@
+     values = ", ".join(f"{channel}={control[channel]:+.3f}" for channel in readout_titles)
+     print(f"{control['setup']}: {values}")
+ 
+# %% code cell 83a23129825b6a9f
+-from scopesim.effects import SpectralQuantumEfficiency, TaperedQuantumEfficiency
+-
+-qe_selectors = [effect for effect in zs.optics_manager.all_effects if effect_name(effect) == "detector_qe_selector"]
+-standard_ccd_selector = [effect for effect in qe_selectors if not effect.include][0]
+-active_qe_selector = [effect for effect in qe_selectors if effect.include][0]
+-h2rg_qe = SpectralQuantumEfficiency(filename="detector_specs/H2RG_TER.dat", cmds=zs.cmds)
+-
+-assert all(not isinstance(effect, TaperedQuantumEfficiency) for detector_id in range(3) for effect in [standard_ccd_selector.wheel_effects[detector_id]])
+-
+-# User-editable paper assumptions. Dark current is kept in e-/hour/pixel here.
+-conventional_detector_assumptions = {
+-    "CCD": {"read_noise_e": 2.5, "dark_current_e_hr_pix": 0.01},
+-    "H2RG": {"read_noise_e": 6.0, "dark_current_e_hr_pix": 23.0},
+-}
+-
+-
+-def qe_at_selected_samples(effect, samples, rows, *, detector_position=False):
+-    qe = np.empty(np.count_nonzero(rows))
+-    selected_indices = np.flatnonzero(rows)
+-    selected_trace_ids = np.asarray(samples["trace_id"][rows], dtype=str)
+-    selected_bin_factors = np.asarray(samples["bin_factor"][rows], dtype=int)
+-
+-    for trace_id, bin_factor in sorted(set(zip(selected_trace_ids, selected_bin_factors, strict=True))):
+-        group = (selected_trace_ids == trace_id) & (selected_bin_factors == bin_factor)
+-        group_indices = selected_indices[group]
+-        wavelength_order = np.argsort(np.asarray(samples["wave_nm"][group_indices], dtype=float))
+-        sorted_indices = group_indices[wavelength_order]
+-        kwargs = {}
+-        if detector_position:
+-            kwargs = {
+-                "detector_x": np.asarray(samples["detector_x_pix"][sorted_indices], dtype=float),
+-                "detector_y": np.asarray(samples["detector_y_pix"][sorted_indices], dtype=float),
+-            }
+-        group_qe = effect.throughput_at(np.asarray(samples["wave_nm"][sorted_indices], dtype=float) * u.nm, **kwargs)
+-        qe[np.flatnonzero(group)[wavelength_order]] = group_qe
+-    return qe
+-
+-
+-def conventional_detector_samples(result):
+-    native = result["samples_raw"][result["samples_raw"]["bin_factor"] == 1].copy()
+-    current_qe = np.empty(len(native))
+-    conventional_qe = np.empty(len(native))
+-
+-    for detector_id, channel in enumerate(readout_titles):
+-        rows = np.asarray(native["channel"], dtype=str) == channel
+-        current_qe[rows] = qe_at_selected_samples(active_qe_selector.wheel_effects[detector_id], native, rows, detector_position=detector_id < 3)
+-        conventional_effect = standard_ccd_selector.wheel_effects[detector_id] if detector_id < 3 else h2rg_qe
+-        conventional_qe[rows] = qe_at_selected_samples(conventional_effect, native, rows)
+-
+-    qe_ratio = conventional_qe / current_qe
+-    conventional_signal = np.asarray(native["signal_e"], dtype=float) * qe_ratio
+-    conventional_sky = np.asarray(native["background_e"], dtype=float) * qe_ratio
+-    n_pix = np.asarray(native["n_pix"], dtype=float)
+-    detector_name = np.where(np.isin(np.asarray(native["channel"], dtype=str), ["B", "G", "R"]), "CCD", "H2RG")
+-    read_noise = np.array([conventional_detector_assumptions[name]["read_noise_e"] for name in detector_name])
+-    dark_current = np.array([conventional_detector_assumptions[name]["dark_current_e_hr_pix"] / 3600 for name in detector_name])
+-    conventional_detector_variance = 2 * n_pix * (dark_current * result["dit"] * result["ndit"] + read_noise**2 * result["ndit"])
+-    conventional_sky_variance = 2 * conventional_sky
+-    conventional_fixed_variance = conventional_sky_variance + conventional_detector_variance
+-    conventional_native = native.copy()
+-    conventional_native["signal_e"] = conventional_signal
+-    conventional_native["source_var_e"] = conventional_signal
+-    conventional_native["background_e"] = conventional_sky
+-    conventional_native["background_var_e"] = conventional_sky_variance
+-    conventional_native["detector_var_e"] = conventional_detector_variance
+-    conventional_native["fixed_variance_e"] = conventional_fixed_variance
+-    bin_factors = sorted(set(result["samples_raw"]["bin_factor"]))
+-    conventional = aggregate_native_extraction_ledger(conventional_native, bin_factors)
+-    conventional_lookup = {(str(row["channel"]), str(row["trace_id"]), int(row["bin_factor"]), int(row["native_start_index"])): row for row in conventional}
+-
+-    samples = result["samples_selected"].copy()
+-    current_qe_binned, conventional_qe_binned = [], []
+-    conventional_signal_binned, conventional_sky_var_binned = [], []
+-    conventional_detector_var_binned, conventional_m5 = [], []
+-    native_channels = np.asarray(native["channel"], dtype=str)
+-    native_traces = np.asarray(native["trace_id"], dtype=str)
+-    qe_cumulative = {}
+-    for channel in sorted(set(native_channels)):
+-        for trace_id in sorted(set(native_traces[native_channels == channel]), key=trace_id_sort_key):
+-            indices = np.flatnonzero((native_channels == channel) & (native_traces == trace_id))
+-            indices = indices[np.argsort(native["sample_index"][indices])]
+-            assert np.array_equal(native["sample_index"][indices], np.arange(len(indices)))
+-            qe_cumulative[(channel, trace_id)] = (np.r_[0.0, np.cumsum(current_qe[indices])], np.r_[0.0, np.cumsum(conventional_qe[indices])])
+-    for sample in samples:
+-        key = (str(sample["channel"]), str(sample["trace_id"]), int(sample["bin_factor"]), int(sample["native_start_index"]))
+-        row = conventional_lookup[key]
+-        start, stop = int(sample["native_start_index"]), int(sample["native_stop_index"])
+-        current_cumulative, conventional_cumulative = qe_cumulative[key[:2]]
+-        current_qe_binned.append((current_cumulative[stop] - current_cumulative[start]) / (stop - start))
+-        conventional_qe_binned.append((conventional_cumulative[stop] - conventional_cumulative[start]) / (stop - start))
+-        conventional_signal_binned.append(row["signal_e"])
+-        conventional_sky_var_binned.append(row["background_var_e"])
+-        conventional_detector_var_binned.append(row["detector_var_e"])
+-        conventional_m5.append(row["m5_ab"])
+-
+-    samples["current_qe"] = current_qe_binned
+-    samples["conventional_qe"] = conventional_qe_binned
+-    samples["conventional_signal_e"] = conventional_signal_binned
+-    samples["conventional_sky_var_e"] = conventional_sky_var_binned
+-    samples["conventional_detector_var_e"] = conventional_detector_var_binned
+-    samples["conventional_m5_ab"] = conventional_m5
+-    samples["conventional_delta_m5"] = conventional_m5 - np.asarray(samples["m5_ab"], dtype=float)
+-    return samples
+-
+-
+-for result in paper_case_results.values():
+-    result["detector_samples"] = conventional_detector_samples(result)
+-
+-detector_assumption_rows = [{"detector": name, "read noise [e-/read]": values["read_noise_e"], "dark current [e-/hour/pix]": values["dark_current_e_hr_pix"],} for name, values in conventional_detector_assumptions.items()]
+-print("Conventional B/G/R QE uses the inactive SpectralQuantumEfficiency curves, not tapered QE.")
+-display_frame(detector_assumption_rows,
+-    formats={
+-        "read noise [e-/read]": "{:.1f}",
+-        "dark current [e-/hour/pix]": "{:.2f}",
+-    }
+-)
+-
+-paired_impact_rows = []
+-for integration, slit, ao_enabled, bin_factor, approximate_R in paper_scenario_specs:
+-    samples = paper_case_results[(integration, slit, ao_enabled)]["detector_samples"]
+-    samples = samples[samples["bin_factor"] == bin_factor].to_pandas()
+-    for (channel, trace_id), order_rows in samples.groupby(["channel", "trace_id"], sort=False):
+-        current_peak = order_rows.loc[order_rows["m5_ab"].idxmax()]
+-        paired_impact_rows.append({
+-            "integration": integration,
+-            "slit": slit,
+-            "AO": ao_enabled,
+-            "design": approximate_R,
+-            "detector": "CCD" if channel in {"B", "G", "R"} else "H2RG",
+-            "channel": channel,
+-            "trace_id": trace_id,
+-            "wave_nm": current_peak["wave_nm"],
+-            "current_m5_ab": current_peak["m5_ab"],
+-            "conventional_m5_ab": current_peak["conventional_m5_ab"],
+-            "conventional_minus_current_m5": current_peak["conventional_delta_m5"],
+-        })
+-
+-paired_detector_impact_samples = Table(rows=paired_impact_rows)
+-detector_impact_rows = []
+-for detector_name in ("CCD", "H2RG"):
+-    values = np.asarray(paired_detector_impact_samples["conventional_minus_current_m5"][paired_detector_impact_samples["detector"] == detector_name], dtype=float)
+-    detector_impact_rows.append({
+-        "detector": detector_name,
+-        "paired order peaks": len(values),
+-        "median impact": np.median(values),
+-        "worst impact": np.min(values),
+-        "best impact": np.max(values),
+-    })
+-
+-print("Impact sign: conventional minus current mAB5, evaluated at each current-detector " "order-peak wavelength.")
+-display_frame(detector_impact_rows,
+-    formats={
+-        "median impact": "{:+.2f}",
+-        "worst impact": "{:+.2f}",
+-        "best impact": "{:+.2f}",
+-    }
+-)
++from copy import deepcopy
++from time import perf_counter
++
++# These are independent optical simulations: an 18 um pixel cannot be represented by a QE ratio.
++alt_cmd = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=[COMPARISON_DETECTOR_MODE])
++for key in ("!OBS.airmass", "!OBS.seeing", "!OBS.brightness", "!OBS.mjdobs", "!OBS.pupil_angle", "!INST.include_diffuse_emissivity", "!SIM.sub_pixel.flag"):
++    alt_cmd[key] = zs.cmds[key]
++set_channel_exposure(alt_cmd)
++warning_prevent_sync_alt_ra_dec(alt_cmd)
++atmosphere_names = ("atmo_transmission", "continuum_emission", "airglow_and_interline_continuum")
++for document in alt_cmd.yaml_dicts:
++    if "effects" in document:
++        document["effects"] = [effect for effect in document["effects"] if effect["name"] not in atmosphere_names]
++alt_train = sim.OpticalTrain(alt_cmd)
++for name in atmosphere_names:
++    alt_train.optics_manager.add_effect(deepcopy(zs[name]))
++
++alternate_cases, alternate_airglow = {}, {}
++alternate_exposure_rows = []
++for slit, ao_enabled in ((.70, False), (.33, False), (.33, True)):
++    case_started = perf_counter()
++    print(f'{COMPARISON_DETECTOR_MODE}: {slit:.2f}" AO={ao_enabled}, preparing four optical renders', flush=True)
++    alt_train.cmds["!INST.vis_curr_slit"] = slit
++    alt_train.cmds["!INST.nir_curr_slit"] = slit
++    set_channel_exposure(alt_train.cmds)
++    alt_train.update(migrate_cmds=True)
++    set_train_ao_state(alt_train, ao_enabled)
++    trace_samples = trace_resolution_diagnostic_table(alt_train)
++    background = observe_readout(None, ["sky_lines"], train=alt_train)
++    print(f'  sky without OH rendered; {perf_counter() - case_started:.1f} s elapsed', flush=True)
++    background_rates = [plane.data.copy() for plane in alt_train.image_planes]
++    source = observe_readout(flat_ab_point_center, ["sky_lines"], train=alt_train)
++    print(f'  source + sky without OH rendered; {perf_counter() - case_started:.1f} s elapsed', flush=True)
++    source_rates = [plane.data-bg for plane, bg in zip(alt_train.image_planes, background_rates, strict=True)]
++    full_background = observe_readout(None, train=alt_train)
++    print(f'  full sky rendered; {perf_counter() - case_started:.1f} s elapsed', flush=True)
++    full_background_rates = [plane.data.copy() for plane in alt_train.image_planes]
++    full_source = observe_readout(flat_ab_point_center, train=alt_train)
++    print(f'  source + full sky rendered; {perf_counter() - case_started:.1f} s elapsed', flush=True)
++    full_source_rates = [plane.data-bg for plane, bg in zip(alt_train.image_planes, full_background_rates, strict=True)]
++    for integration, magnitude, scale in (("1 hour", 20., 1.), ("5 minutes", 17., five_minute_source_scale)):
++        print(f'  extracting {integration}; {perf_counter() - case_started:.1f} s elapsed', flush=True)
++        set_channel_exposure(alt_train.cmds, integration)
++        budget = detector_background_budget_table(alt_train)
++        background = readout_optical_rates(background_rates, train=alt_train)
++        source = readout_optical_rates(background_rates, source_rates, scale, train=alt_train)
++        full_background = readout_optical_rates(full_background_rates, train=alt_train)
++        full_source = readout_optical_rates(full_background_rates, full_source_rates, scale, train=alt_train)
++        key = (integration, slit, ao_enabled)
++        factors = tuple(sorted(set(paper_case_results[key]["samples_raw"]["bin_factor"]) | {1, 18, 38, 40}))
++        result = reduce_zero_point_case(f'{COMPARISON_DETECTOR_MODE}, {integration}, {slit:.2f}", AO={ao_enabled}', source_hdul=source, background_hdul=background, detector_table=budget, trace_samples=trace_samples, input_abmag=magnitude, bin_factors=factors, slit_arcsec=slit, ao_enabled=ao_enabled, integration=integration, train=alt_train)
++        alternate_cases[key] = result
++        alternate_airglow[key] = airglow_comparison_samples_table(result["samples_raw"], full_source, full_background, budget, readout_titles, source_signal_fraction_min=SOURCE_SIGNAL_FRACTION_MIN, bin_factors=factors)
++        for channel, hdul in zip(readout_titles, full_source, strict=True):
++            h = hdul[1].header
++            alternate_exposure_rows.append((COMPARISON_DETECTOR_MODE, integration, slit, ao_enabled, channel, h["DIT"], h["NDIT"], h["PEAKDIT"], h["WELLDEP"], h["PEAKDIT"]/h["WELLDEP"]))
++    print(f'{COMPARISON_DETECTOR_MODE}: {slit:.2f}" AO={ao_enabled} complete in {perf_counter() - case_started:.1f} s', flush=True)
++    del source, background, full_source, full_background, source_rates, background_rates, full_source_rates, full_background_rates
++
++display_frame(detector_background_budget_table(alt_train), columns=["channel", "detector_mode", "read_noise_e_rms", "dark_current_e_s_pix", "excess_noise_factor", "full_well_e"])
++alternate_exposures = Table(rows=alternate_exposure_rows, names=("detector mode", "integration", "slit", "AO", "channel", "DIT", "NDIT", "peak e-/integration", "usable well e-", "well fraction"))
++display_frame(alternate_exposures)
++alternate_exposures.write(output_dir/"alternate_detector_exposures.ecsv", overwrite=True)
+ 
+# %% code cell detector-sensitivity-summary
+-from IPython.display import Markdown, display
+-
+-# Recalculate the conventional-detector version of the existing one-hour,
+-# 0.70" natural-seeing paired ledger. No new ScopeSim readout is required.
+-paired_detector_samples = natural_airglow_comparison_samples_raw
+-native_rows = (paired_detector_samples["bin_factor"] == 1) & (paired_detector_samples["native_count"] == 1)
+-conventional_paired_samples = paired_detector_samples[native_rows].copy()
+-
+-channels = np.asarray(conventional_paired_samples["channel"], dtype=str)
+-current_qe = np.empty(len(conventional_paired_samples))
+-conventional_qe = np.empty(len(conventional_paired_samples))
+-
+-for detector_id, channel in enumerate(readout_titles):
+-    rows = channels == channel
+-    current_effect = active_qe_selector.wheel_effects[detector_id]
+-    current_qe[rows] = qe_at_selected_samples(current_effect, conventional_paired_samples, rows, detector_position=detector_id < 3)
+-
+-    if detector_id < 3:
+-        conventional_effect = standard_ccd_selector.wheel_effects[detector_id]
+-    else:
+-        conventional_effect = h2rg_qe
+-    conventional_qe[rows] = qe_at_selected_samples(conventional_effect, conventional_paired_samples, rows)
+-
+-qe_ratio = conventional_qe / current_qe
+-is_ccd = np.isin(channels, ("B", "G", "R"))
+-ccd_assumptions = conventional_detector_assumptions["CCD"]
+-h2rg_assumptions = conventional_detector_assumptions["H2RG"]
+-
+-read_noise_e = np.where(is_ccd, ccd_assumptions["read_noise_e"], h2rg_assumptions["read_noise_e"])
+-dark_current_e_s_pix = np.where(is_ccd, ccd_assumptions["dark_current_e_hr_pix"] / 3600, h2rg_assumptions["dark_current_e_hr_pix"] / 3600)
+-
+-dit_s = 1800
+-ndit = 2
+-exposure_time_s = dit_s * ndit
+-n_pix = np.asarray(conventional_paired_samples["n_pix"], dtype=float)
+-conventional_detector_variance_e2 = 2 * n_pix * (dark_current_e_s_pix * exposure_time_s + read_noise_e**2 * ndit)
+-
+-for prefix in ("", "simulation_"):
+-    source_signal_e = np.asarray(conventional_paired_samples[f"{prefix}signal_e"], dtype=float) * qe_ratio
+-    sky_e = np.asarray(conventional_paired_samples[f"{prefix}background_e"], dtype=float) * qe_ratio
+-    source_shot_variance_e2 = source_signal_e
+-    sky_variance_e2 = 2 * sky_e
+-    non_source_variance_e2 = sky_variance_e2 + conventional_detector_variance_e2
+-
+-    conventional_paired_samples[f"{prefix}signal_e"] = source_signal_e
+-    conventional_paired_samples[f"{prefix}source_var_e"] = source_shot_variance_e2
+-    conventional_paired_samples[f"{prefix}background_e"] = sky_e
+-    conventional_paired_samples[f"{prefix}background_var_e"] = sky_variance_e2
+-    conventional_paired_samples[f"{prefix}detector_var_e"] = conventional_detector_variance_e2
+-    conventional_paired_samples[f"{prefix}fixed_variance_e"] = non_source_variance_e2
+-
+-    m5_column = "m5_ab" if prefix == "" else "simulation_m5_ab"
+-    conventional_paired_samples[m5_column] = [limiting_abmag_for_target_snr(input_abmag, signal, source_variance, fixed_variance) for input_abmag, signal, source_variance, fixed_variance in zip(conventional_paired_samples["input_abmag"], source_signal_e, source_shot_variance_e2, non_source_variance_e2, strict=True)]
+-
+-conventional_paired_samples["snr_at_input"] = conventional_paired_samples["signal_e"] / np.sqrt(conventional_paired_samples["source_var_e"] + conventional_paired_samples["fixed_variance_e"])
+-conventional_paired_samples["airglow_background_delta_m5"] = conventional_paired_samples["m5_ab"] - conventional_paired_samples["simulation_m5_ab"]
+-
+-conventional_natural_curves, conventional_natural_selection = snr_selected_spectral_bins(conventional_paired_samples, bin_factors=(18,), integration="1 hour", slit_arcsec=0.70, ao_enabled=False)
+-
+-current_detector_curve = natural_curves[(natural_curves["bin_factor"] == 18) & (natural_curves["sky_model"] == "simulation") & (natural_curves["native_element_selection"] == "S/N-selected")].to_pandas()
+-conventional_detector_curve = conventional_natural_curves[(conventional_natural_curves["bin_factor"] == 18) & (conventional_natural_curves["sky_model"] == "simulation") & (conventional_natural_curves["native_element_selection"] == "S/N-selected")].to_pandas()
+-
+-matched_bin_keys = [
+-    "channel", "trace_id", "contiguous_order_run", "bin_index_within_run",
+-]
+-matched_detector_bins = current_detector_curve.merge(conventional_detector_curve, on=matched_bin_keys, suffixes=("_current", "_conventional"), validate="one_to_one")
+-matched_detector_bins = matched_detector_bins[matched_detector_bins["complete_native_bin_current"] & matched_detector_bins["complete_native_bin_conventional"]]
+-matched_detector_bins["conventional minus current m5 [mag]"] = matched_detector_bins["limiting_magnitude_ab_conventional"] - matched_detector_bins["limiting_magnitude_ab_current"]
+-
+-current_native_frame = paired_detector_samples[native_rows].to_pandas()
+-conventional_native_frame = conventional_paired_samples.to_pandas()
+-
+-no_oh_detector_impacts = {}
+-for integration in ("1 hour", "5 minutes"):
+-    samples = paper_case_results[(integration, 0.70, False)]["detector_samples"]
+-    samples = samples[samples["bin_factor"] == 18].to_pandas()
+-    no_oh_detector_impacts[integration] = samples
++# Each package is extracted and S/N-selected on its own physical detector grid.
++conventional_natural_curves, conventional_natural_selection = snr_selected_spectral_bins(alternate_airglow[("1 hour", .70, False)], bin_factors=(1, 2, 18), integration="1 hour", slit_arcsec=.70, ao_enabled=False)
+ 
+ detector_sensitivity_rows = []
+-detector_exposure_rows = []
+-for channel in readout_titles:
+-    current_bins = current_detector_curve[(current_detector_curve["channel"] == channel) & current_detector_curve["complete_native_bin"]]
+-    conventional_bins = conventional_detector_curve[(conventional_detector_curve["channel"] == channel) & conventional_detector_curve["complete_native_bin"]]
+-    matched_bins = matched_detector_bins[matched_detector_bins["channel"] == channel]
+-    current_native = current_native_frame[current_native_frame["channel"] == channel]
+-    conventional_native = conventional_native_frame[conventional_native_frame["channel"] == channel]
+-
+-    current_variance_e2_pix = np.median(current_native["simulation_detector_var_e"] / current_native["n_pix"])
+-    conventional_variance_e2_pix = np.median(conventional_native["simulation_detector_var_e"] / conventional_native["n_pix"])
+-    detector_name = "CCD" if channel in {"B", "G", "R"} else "H2RG"
+-    detector_pair = "qCCD -> CCD" if detector_name == "CCD" else "LMAPD -> H2RG"
+-
+-    detector_sensitivity_rows.append({
+-        "arm": channel,
+-        "detector pair": detector_pair,
+-        "median conventional/current QE": np.median(qe_ratio[channels == channel]),
+-        "current detector variance [e2/pix]": current_variance_e2_pix,
+-        "conventional detector variance [e2/pix]": conventional_variance_e2_pix,
+-        "median retained detector pixels/bin": np.median(conventional_bins["detector_variance_e2"] / conventional_variance_e2_pix),
+-        "conventional sky variance [e2/bin]": np.median(conventional_bins["sky_variance_e2"]),
+-        "conventional detector variance [e2/bin]": np.median(conventional_bins["detector_variance_e2"]),
+-        "detector fraction of non-source variance": np.median(conventional_bins["detector_variance_e2"] / conventional_bins["non_source_variance_e2"]),
+-        "median conventional-current m5 [mag]": np.median(matched_bins["conventional minus current m5 [mag]"]),
+-    })
+-
+-    one_hour = no_oh_detector_impacts["1 hour"]
+-    five_minutes = no_oh_detector_impacts["5 minutes"]
+-    detector_exposure_rows.append({
+-        "arm": channel,
+-        "detector pair": detector_pair,
+-        "1 hour OH-disabled median delta m5 [mag]": np.median(one_hour.loc[one_hour["channel"] == channel, "conventional_delta_m5"]),
+-        "5 minute OH-disabled median delta m5 [mag]": np.median(five_minutes.loc[five_minutes["channel"] == channel, "conventional_delta_m5"]),
+-    })
+-
+-display(Markdown(r"""
+-### Conventional-detector sensitivity regime
+-
+-This diagnostic uses the one-hour, 0.70" natural-seeing, approximately
+-$R=1000$ calculation with OH included and each detector system independently
+-S/N optimized. Values are medians across raw, complete, matched output bins;
+-no presentation mask or smoothing enters the table.
+-
+-A one-hour result means one hour on source plus a separate one-hour matched
+-background exposure. Source shot noise enters once. Sky and detector variance
+-enter twice. The matched detector term per extracted pixel is
+-
+-$$
+-\sigma_{\mathrm{det,pair}}^2 =
+-2\left(i_{\mathrm{dark}}\,\mathrm{DIT}\,\mathrm{NDIT}
+-+ \mathrm{RN}^2\,\mathrm{NDIT}\right).
+-$$
+-
+-For the adopted H2RG assumptions this is
+-$2(23 + 6^2\times2)=190\ \mathrm{e^2/pix}$: 46 $\mathrm{e^2/pix}$ from
+-two total hours of dark current and 144 $\mathrm{e^2/pix}$ from four total
+-readouts. The variance is multiplied by every retained physical extraction
+-pixel; no NIR on-chip binning is assumed.
+-
+-The sign convention is
+-$\Delta m_5=m_5(\mathrm{CCD/H2RG})-m_5(\mathrm{qCCD/LMAPD})$.
+-Negative values mean the conventional detector is shallower. The second table
+-uses the existing OH-disabled, all-element products to expose the integration
+-time dependence; it is a detector diagnostic, not the OH-included optimized
+-science curve.
+-"""))
+-
+-display_frame(detector_sensitivity_rows,
+-    formats={
+-        "median conventional/current QE": "{:.3f}",
+-        "current detector variance [e2/pix]": "{:.2f}",
+-        "conventional detector variance [e2/pix]": "{:.2f}",
+-        "median retained detector pixels/bin": "{:.0f}",
+-        "conventional sky variance [e2/bin]": "{:,.0f}",
+-        "conventional detector variance [e2/bin]": "{:,.0f}",
+-        "detector fraction of non-source variance": "{:.1%}",
+-        "median conventional-current m5 [mag]": "{:+.3f}",
+-    }
+-)
+-
+-display(Markdown("**Exposure-time check:** matched OH-disabled, all-element R~1000 bins."))
+-display_frame(detector_exposure_rows,
+-    formats={
+-        "1 hour OH-disabled median delta m5 [mag]": "{:+.3f}",
+-        "5 minute OH-disabled median delta m5 [mag]": "{:+.3f}",
+-    }
+-)
++for mode, cases_to_summarize in ((DETECTOR_MODE, paper_case_results), (COMPARISON_DETECTOR_MODE, alternate_cases)):
++    for (integration, slit, ao_enabled), result in cases_to_summarize.items():
++        native = result["samples_complete"]
++        native = native[native["bin_factor"] == 1]
++        for channel in readout_titles:
++            samples = native[native["channel"] == channel]
++            row = next(row for row in result["detector_budget"] if row["channel"] == channel)
++            detector_sensitivity_rows.append({
++                "mode": mode, "integration": integration, "slit": slit, "AO": ao_enabled, "channel": channel,
++                "DIT": row["dit_s"], "NDIT": row["ndit"],
++                "detector variance [e2/pix]": 2*(row["dark_current_e_s_pix"]*row["exposure_time_s"] + row["read_noise_e_rms"]**2),
++                "median extracted pixels/native element": np.median(samples["n_pix"]),
++                "median no-OH detector variance fraction": np.median(samples["detector_var_e"]/samples["fixed_variance_e"]),
++            })
++display_frame(detector_sensitivity_rows)
++print("Matched blank subtraction: source variance enters once; sky, dark and read variance enter twice.")
++print("Each LmAPD photon variance is F times its detected photon signal. Dark and effective read noise are independent.")
++print("The flat-AB comparison notebook shows both packages at measured native resolution and on a common R=1000 grid.")
+ 
+# %% code cell 433b19a5abf19db8
+ from astropy.table import vstack
+ import pandas as pd
+@@ -3573,8 +3369,8 @@
+ conventional_curve = conventional_natural_curves[(conventional_natural_curves["bin_factor"] == 18) & (conventional_natural_curves["sky_model"] == "simulation") & (conventional_natural_curves["native_element_selection"] == "S/N-selected")].copy()
+ 
+ # Short plot-only tags fit the existing fixed-width Astropy string column.
+-current_curve["sky_model"] = "qCCD"
+-conventional_curve["sky_model"] = "CCD-H2RG"
++current_curve["sky_model"] = "baseline"
++conventional_curve["sky_model"] = "alternate"
+ 
+ detector_comparison_curves = vstack([current_curve, conventional_curve], metadata_conflicts="silent")
+ 
+@@ -3584,9 +3380,9 @@
+         "slit_arcsec": 0.70,
+         "ao_enabled": False,
+         "bin_factor": 18,
+-        "sky_model": "qCCD",
++        "sky_model": "baseline",
+         "native_element_selection": "S/N-selected",
+-        "label": '0.70" NS, qCCD/LMAPD, S/N optimized, R~1k',
++        "label": f'0.70" NS, {DETECTOR_MODE}, S/N optimized, R~1k',
+         "color": colors[1],
+         "linestyle": "-",
+         "linewidth_multiplier": 0.9,
+@@ -3597,9 +3393,9 @@
+         "slit_arcsec": 0.70,
+         "ao_enabled": False,
+         "bin_factor": 18,
+-        "sky_model": "CCD-H2RG",
++        "sky_model": "alternate",
+         "native_element_selection": "S/N-selected",
+-        "label": '0.70" NS, CCD/H2RG, S/N optimized, R~1k',
++        "label": f'0.70" NS, {COMPARISON_DETECTOR_MODE}, S/N optimized, R~1k',
+         "color": colors[4],
+         "linestyle": "--",
+         "linewidth_multiplier": 0.9,
+@@ -3607,215 +3403,95 @@
+     },
+ ]
+ 
+-current_detector_selector = {
+-    "integration": "1 hour",
+-    "slit_arcsec": 0.70,
+-    "ao_enabled": False,
+-    "bin_factor": 18,
+-    "sky_model": "qCCD",
+-    "native_element_selection": "S/N-selected",
+-}
+-
+-fig, ax = plot_limiting_magnitude_curves(detector_comparison_curves, detector_comparison_specs, title='0.70" natural seeing: detector comparison', shared_presentation_mask_selector=current_detector_selector, dynamic_range_mag=PLOT_DYNAMIC_RANGE_MAG, minimum_limiting_magnitude_ab=clip_zp_below, ylim=(21, 25))
++fig, ax = plot_limiting_magnitude_curves(detector_comparison_curves, detector_comparison_specs, title='0.70" natural seeing: detector comparison', dynamic_range_mag=PLOT_DYNAMIC_RANGE_MAG, minimum_limiting_magnitude_ab=clip_zp_below, ylim=(21, 25))
+ display_and_save_figure(fig, "conventional_vs_current_detector_natural_r1000")
+ 
+ 
+-# Raw matched-bin magnitude differences, before display masks or smoothing.
+-row_keys = [
+-    "channel",
+-    "trace_id",
+-    "contiguous_order_run",
+-    "bin_index_within_run",
+-]
+-
++# Interpolate curves only for a wavelength-matched display; native pixels are not paired.
+ current_raw = current_curve.to_pandas()
+-conventional_raw = conventional_curve.to_pandas()
+-
+-matched_bins = current_raw.merge(conventional_raw, on=row_keys, suffixes=("_current", "_conventional"), validate="one_to_one")
+-matched_bins["CCD/H2RG minus qCCD/LMAPD [mag]"] = matched_bins["limiting_magnitude_ab_conventional"] - matched_bins["limiting_magnitude_ab_current"]
+-
+-magnitude_difference_summary = matched_bins.groupby("channel", sort=False)["CCD/H2RG minus qCCD/LMAPD [mag]"].agg(median="median", p16=lambda values: values.quantile(0.16), p84=lambda values: values.quantile(0.84), minimum="min", maximum="max").reindex(readout_titles)
+-
+-print("Raw matched-bin limiting-magnitude difference; negative means CCD/H2RG is shallower:")
+-display(magnitude_difference_summary.style.format("{:+.3f}"))
+-
+-
+-# Verify that the conventional detector calculation produced a new S/N mask.
+-current_native = natural_native_selection[(natural_native_selection["bin_factor"] == 18) & (natural_native_selection["sky_model"] == "simulation")].to_pandas()
+-
+-conventional_native = conventional_natural_selection[(conventional_natural_selection["bin_factor"] == 18) & (conventional_natural_selection["sky_model"] == "simulation")].to_pandas()
+-
+-native_keys = row_keys + ["native_sample_index"]
+-
+-mask_comparison = current_native[native_keys + ["retained_by_snr_selection"]].merge(conventional_native[native_keys + ["retained_by_snr_selection"]], on=native_keys, suffixes=("_current", "_conventional"), validate="one_to_one")
+-
+-mask_comparison["mask changed"] = mask_comparison["retained_by_snr_selection_current"] != mask_comparison["retained_by_snr_selection_conventional"]
+-
+-selection_mask_summary = mask_comparison.groupby("channel", sort=False).agg(native_elements=("mask changed", "size"), changed_elements=("mask changed", "sum"), current_retained_fraction=("retained_by_snr_selection_current", "mean"), conventional_retained_fraction=("retained_by_snr_selection_conventional", "mean")).reindex(readout_titles)
+-
+-print("Native-element selection comparison:")
+-display(selection_mask_summary.style.format({
+-    "current_retained_fraction": "{:.3f}",
+-    "conventional_retained_fraction": "{:.3f}",
+-}))
+-
+-
+-# Confirm that the conventional/current QE transformation was nontrivial.
+-qe_frame = pd.DataFrame({"channel": channels, "conventional/current QE": qe_ratio})
+-qe_summary = qe_frame.groupby("channel", sort=False)["conventional/current QE"].agg(median="median", minimum="min", maximum="max").reindex(readout_titles)
+-
+-print("Conventional/current detector QE ratio at the native samples:")
+-display(qe_summary.style.format("{:.3f}"))
++alternate_raw = conventional_curve.to_pandas()
++impact_rows = []
++for (channel, trace_id), order in current_raw.groupby(["channel", "trace_id"], sort=False):
++    other = alternate_raw[(alternate_raw["channel"] == channel) & (alternate_raw["trace_id"] == trace_id)].sort_values("nominal_wavelength_nm")
++    order = order[(order["nominal_wavelength_nm"] >= other["nominal_wavelength_nm"].min()) & (order["nominal_wavelength_nm"] <= other["nominal_wavelength_nm"].max())]
++    delta = np.interp(order["nominal_wavelength_nm"], other["nominal_wavelength_nm"], other["limiting_magnitude_ab"]) - order["limiting_magnitude_ab"]
++    impact_rows.extend((channel, trace_id, wave, value) for wave, value in zip(order["nominal_wavelength_nm"], delta, strict=True))
++impact = pd.DataFrame(impact_rows, columns=["channel", "trace_id", "nominal_wavelength_nm", "alternate minus baseline m5"])
++display(impact.groupby("channel", sort=False)["alternate minus baseline m5"].agg(["median", "min", "max"]).style.format("{:+.3f}"))
++
++print("QE and pixel pitch are configured in IRDB; no alternative signal/noise rescaling is applied.")
+ 
+# %% code cell 565af6cf0809ae8f
+ SKY_EQUALITY_SLIT_ARCSEC = 0.33
+-SKY_EQUALITY_BIN_FACTORS = (1, 18,  40)
++SKY_EQUALITY_BIN_FACTORS = (1, 18, 40)
+ SKY_EQUALITY_AO_STATES = (False, True)
+ SKY_EQUALITY_REFERENCE_TIMES_S = (10, 300, 3600)
+ SKY_EQUALITY_VISIBLE_CHECK = ("B", 370.0)
+ SKY_EQUALITY_INFRARED_CHECK = ("H", 1650.0)
+ SKY_EQUALITY_MAX_CCD_BIN = 5
+-
+-equality_budget_by_channel = {str(row["channel"]): row for row in ao_detector_budget_1h}
+-sky_equality_rows = []
+-ccd_binning_rows = []
++# Explicit charge-binning scenarios for this comparison, independent of mode names.
++SKY_EQUALITY_CHARGE_BINNING = {DETECTOR_MODE: False, COMPARISON_DETECTOR_MODE: True}
++
++def sky_equality_for_case(ledger, budget, *, background_column, charge_binning):
++    native = ledger[ledger["bin_factor"] == 1].copy()
++    rows = []
++    for channel in readout_titles:
++        samples = native[native["channel"] == channel]
++        detector = next(row for row in budget if row["channel"] == channel)
++        # Optional CCD charge binning reduces read samples, not physical dark-current area.
++        bin_x, bin_y = 1, 1
++        if charge_binning and channel in ("B", "G", "R"):
++            bin_x = max(1, min(SKY_EQUALITY_MAX_CCD_BIN, int(np.min(samples["spectral_width_pix"]))//2))
++            bin_y = max(1, min(SKY_EQUALITY_MAX_CCD_BIN, int(np.min(samples["spatial_width_pix"]))//2))
++        reads = np.ceil(samples["spectral_width_pix"]/bin_x)*np.ceil(samples["spatial_width_pix"]/bin_y)
++        rn_single = detector["read_noise_e_rms"]/np.sqrt(detector["ndit"])
++        photon_variance_rate = detector["excess_noise_factor"]*samples[background_column]/detector["exposure_time_s"]
++        dark_rate = samples["n_pix"]*detector["dark_current_e_s_pix"]
++        # Equal sky and detector variance: F*B*t = dark*t + n_read*RN**2.
++        for trace_id in dict.fromkeys(samples["trace_id"]):
++            select = np.flatnonzero(samples["trace_id"] == trace_id)
++            select = select[np.argsort(samples["sample_index"][select])]
++            order = samples[select]
++            read_cumulative = np.r_[0., np.cumsum(reads[select]*rn_single**2)]
++            rate_cumulative = np.r_[0., np.cumsum(photon_variance_rate[select] - dark_rate[select])]
++            for factor in SKY_EQUALITY_BIN_FACTORS:
++                starts = np.arange(0, len(order), factor)
++                stops = np.minimum(starts + factor, len(order))
++                read_variance = read_cumulative[stops] - read_cumulative[starts]
++                rate_difference = rate_cumulative[stops] - rate_cumulative[starts]
++                equality = np.full(len(starts), np.nan)
++                positive = rate_difference > 0
++                equality[positive] = read_variance[positive]/rate_difference[positive]
++                wave = .5*(order["wave_low_nm"][starts] + order["wave_high_nm"][stops - 1])
++                rows.extend((channel, str(trace_id), factor, index, wavelength, value) for index, (wavelength, value) in enumerate(zip(wave, equality, strict=True)))
++        ccd_binning_rows.append((channel, bin_x, bin_y))
++    return Table(rows=rows, names=("channel", "trace_id", "bin_factor", "bin_index", "wave_nm", "t_equal_s"))
++
++sky_equality_rows, ccd_binning_rows = [], []
+ for ao_enabled in SKY_EQUALITY_AO_STATES:
+-    seeing = "AO" if ao_enabled else "Natural"
+-    case = paper_case_results[("1 hour", SKY_EQUALITY_SLIT_ARCSEC, ao_enabled)]
++    key = ("1 hour", SKY_EQUALITY_SLIT_ARCSEC, ao_enabled)
+     if ao_enabled:
+-        background_ledger = ao_airglow_comparison_samples_raw[np.isin(ao_airglow_comparison_samples_raw["bin_factor"], SKY_EQUALITY_BIN_FACTORS)].copy()
+-        background_ledger["background_e"] = background_ledger["simulation_background_e"]
++        baseline = ao_airglow_comparison_samples_raw
++        background_column = "simulation_background_e"
+     else:
+-        background_ledger = background_samples_table(case["samples_raw"], ao_simulation_background_1h, ao_detector_budget_1h, readout_titles, SKY_EQUALITY_BIN_FACTORS)
+-    background_ledger = background_ledger[background_ledger["native_count"] == background_ledger["bin_factor"]]
+-    native_background = background_ledger[background_ledger["bin_factor"] == 1]
+-    native_channels = np.asarray(native_background["channel"], dtype=str)
+-    current_qe = np.empty(len(native_background))
+-    conventional_qe = np.empty(len(native_background))
+-    ccd_bins = {}
+-
+-    for detector_id, channel in enumerate(readout_titles):
+-        channel_rows = native_channels == channel
+-        current_qe[channel_rows] = qe_at_selected_samples(active_qe_selector.wheel_effects[detector_id], native_background, channel_rows, detector_position=detector_id < 3)
+-        conventional_effect = standard_ccd_selector.wheel_effects[detector_id] if detector_id < 3 else h2rg_qe
+-        conventional_qe[channel_rows] = qe_at_selected_samples(conventional_effect, native_background, channel_rows)
+-        if channel in {"B", "G", "R"}:
+-            channel_native = native_background[channel_rows]
+-            min_nx = int(np.min(channel_native["spectral_width_pix"]))
+-            min_ny = int(np.min(channel_native["spatial_width_pix"]))
+-            ccd_bins[channel] = (max(1, min(SKY_EQUALITY_MAX_CCD_BIN, min_nx // 2)), max(1, min(SKY_EQUALITY_MAX_CCD_BIN, min_ny // 2)))
+-
+-    conventional_sky_e = np.asarray(native_background["background_e"], dtype=float) * conventional_qe / current_qe
+-    native_traces = np.asarray(native_background["trace_id"], dtype=str)
+-    native_cumulative = {}
+-    for channel in sorted(set(native_channels)):
+-        for trace_id in sorted(set(native_traces[native_channels == channel]), key=trace_id_sort_key):
+-            indices = np.flatnonzero((native_channels == channel) & (native_traces == trace_id))
+-            indices = indices[np.argsort(native_background["sample_index"][indices])]
+-            assert np.array_equal(native_background["sample_index"][indices], np.arange(len(indices)))
+-            if channel in {"B", "G", "R"}:
+-                bin_x, bin_y = ccd_bins[channel]
+-                conventional_reads = np.ceil(native_background["spectral_width_pix"][indices] / bin_x) * np.ceil(native_background["spatial_width_pix"][indices] / bin_y)
+-            else:
+-                conventional_reads = native_background["n_pix"][indices]
+-            native_cumulative[(channel, trace_id)] = (np.r_[0.0, np.cumsum(conventional_sky_e[indices])], np.r_[0.0, np.cumsum(conventional_reads)])
+-    for bin_factor in SKY_EQUALITY_BIN_FACTORS:
+-        samples = background_ledger[background_ledger["bin_factor"] == bin_factor]
+-        for sample in samples:
+-            channel = str(sample["channel"])
+-            budget = equality_budget_by_channel[channel]
+-            start, stop = int(sample["native_start_index"]), int(sample["native_stop_index"])
+-            conventional_sky_cumulative, conventional_read_cumulative = native_cumulative[(channel, str(sample["trace_id"]))]
+-            assert stop - start == int(sample["native_count"])
+-            n_x = int(sample["spectral_width_pix"])
+-            n_y = int(sample["spatial_width_pix"])
+-            n_phys = int(sample["n_pix"])
+-            full_sky_rate = float(sample["background_e"]) / float(budget["exposure_time_s"])
+-            current_dark_rate = n_phys * float(budget["dark_current_e_s_pix"])
+-            current_read_noise = float(budget["read_noise_e_rms"]) / np.sqrt(float(budget["ndit"]))
+-            current_n_read = n_phys
+-            current_read_variance = current_n_read * current_read_noise**2
+-            current_rate_difference = full_sky_rate - current_dark_rate
+-            current_time = current_read_variance / current_rate_difference if current_rate_difference > 0 else np.nan
+-
+-            conventional_name = "CCD" if channel in {"B", "G", "R"} else "H2RG"
+-            conventional_assumptions = conventional_detector_assumptions[conventional_name]
+-            conventional_sky_rate = (conventional_sky_cumulative[stop] - conventional_sky_cumulative[start]) / float(budget["exposure_time_s"])
+-            conventional_dark_rate = n_phys * conventional_assumptions["dark_current_e_hr_pix"] / 3600
+-            if conventional_name == "CCD":
+-                bin_x, bin_y = ccd_bins[channel]
+-                conventional_n_read = int(conventional_read_cumulative[stop] - conventional_read_cumulative[start])
+-            else:
+-                bin_x, bin_y = 1, 1
+-                conventional_n_read = n_phys
+-            conventional_read_variance = conventional_n_read * conventional_assumptions["read_noise_e"]**2
+-            conventional_rate_difference = conventional_sky_rate - conventional_dark_rate
+-            conventional_time = conventional_read_variance / conventional_rate_difference if conventional_rate_difference > 0 else np.nan
+-
+-            sky_equality_rows.append({
+-                "seeing": seeing, "ao_enabled": ao_enabled, "bin_factor": bin_factor,
+-                "channel": channel, "trace_id": str(sample["trace_id"]),
+-                "sample_index": int(sample["sample_index"]), "bin_index": int(sample["bin_index"]),
+-                "wave_nm": float(sample["wave_nm"]), "n_x_phys": n_x,
+-                "n_y_phys": n_y, "n_phys": n_phys,
+-                "current_detector": "qCCD" if channel in {"B", "G", "R"} else "LMAPD",
+-                "current_n_read": current_n_read, "current_read_variance_e2": current_read_variance,
+-                "current_dark_rate_e_s": current_dark_rate, "current_full_sky_rate_e_s": full_sky_rate,
+-                "current_t_equal_s": current_time, "conventional_detector": conventional_name,
+-                "ccd_bin_x": bin_x, "ccd_bin_y": bin_y, "conventional_n_read": conventional_n_read,
+-                "conventional_read_variance_e2": conventional_read_variance,
+-                "conventional_dark_rate_e_s": conventional_dark_rate,
+-                "conventional_full_sky_rate_e_s": conventional_sky_rate,
+-                "conventional_t_equal_s": conventional_time,
+-            })
+-
+-    for bin_factor in SKY_EQUALITY_BIN_FACTORS:
+-        for channel in ("B", "G", "R"):
+-            channel_native = native_background[native_channels == channel]
+-            bin_x, bin_y = ccd_bins[channel]
+-            ccd_binning_rows.append({
+-                "seeing": seeing, "bin factor": bin_factor, "channel": channel,
+-                "minimum physical Nx": int(np.min(channel_native["spectral_width_pix"])),
+-                "minimum physical Ny": int(np.min(channel_native["spatial_width_pix"])),
+-                "CCD bin x": bin_x, "CCD bin y": bin_y,
+-            })
+-
+-sky_equality_samples = Table(rows=sky_equality_rows)
+-ccd_binning_summary = Table(rows=ccd_binning_rows)
+-display_frame(ccd_binning_summary)
+-
++        background_column = "background_e"
++        baseline = background_samples_table(paper_case_results[key]["samples_raw"], ao_simulation_background_1h, ao_detector_budget_1h, readout_titles, SKY_EQUALITY_BIN_FACTORS)
++    current = sky_equality_for_case(baseline, paper_case_results[key]["detector_budget"], background_column=background_column, charge_binning=SKY_EQUALITY_CHARGE_BINNING[DETECTOR_MODE]).to_pandas()
++    other = sky_equality_for_case(alternate_airglow[key], alternate_cases[key]["detector_budget"], background_column="simulation_background_e", charge_binning=SKY_EQUALITY_CHARGE_BINNING[COMPARISON_DETECTOR_MODE]).to_pandas()
++    for (channel, trace_id, factor), order in current.groupby(["channel", "trace_id", "bin_factor"], sort=False):
++        alt = other[(other["channel"] == channel) & (other["trace_id"] == trace_id) & (other["bin_factor"] == factor)].sort_values("wave_nm")
++        order = order[(order["wave_nm"] >= alt["wave_nm"].min()) & (order["wave_nm"] <= alt["wave_nm"].max())]
++        comparison = np.interp(order["wave_nm"], alt["wave_nm"], alt["t_equal_s"])
++        sky_equality_rows.extend(("AO" if ao_enabled else "Natural", factor, channel, trace_id, index, wave, value, alt_value) for index, wave, value, alt_value in zip(order["bin_index"], order["wave_nm"], order["t_equal_s"], comparison, strict=True))
++
++sky_equality_samples = Table(rows=sky_equality_rows, names=("seeing", "bin_factor", "channel", "trace_id", "bin_index", "wave_nm", "current_t_equal_s", "conventional_t_equal_s"))
+ sky_equality_table_rows = sky_equality_samples.to_pandas()
++display_frame(Table(rows=sorted(set(ccd_binning_rows)), names=("channel", "CCD bin x", "CCD bin y")))
+ representative_rows = []
+ for channel, target_wave_nm in (SKY_EQUALITY_VISIBLE_CHECK, SKY_EQUALITY_INFRARED_CHECK):
+     candidates = sky_equality_table_rows[(sky_equality_table_rows["seeing"] == "Natural") & (sky_equality_table_rows["bin_factor"] == 1) & (sky_equality_table_rows["channel"] == channel)]
+-    row = candidates.iloc[int(np.argmin(np.abs(candidates["wave_nm"] - target_wave_nm)))]
+-    representative_rows.append({
+-        "channel": channel,
+-        "wavelength [nm]": row["wave_nm"],
+-        "physical pixels": int(row["n_phys"]),
+-        "current read samples": int(row["current_n_read"]),
+-        "conventional read samples": int(row["conventional_n_read"]),
+-        "current read variance [e2]": row["current_read_variance_e2"],
+-        "current sky rate [e-/s]": row["current_full_sky_rate_e_s"],
+-        "current dark rate [e-/s]": row["current_dark_rate_e_s"],
+-        "current equality [s]": row["current_t_equal_s"],
+-        "conventional read variance [e2]": row["conventional_read_variance_e2"],
+-        "conventional sky rate [e-/s]": row["conventional_full_sky_rate_e_s"],
+-        "conventional dark rate [e-/s]": row["conventional_dark_rate_e_s"],
+-        "conventional equality [s]": row["conventional_t_equal_s"],
+-    })
+-display_frame(representative_rows,
+-    formats={
+-        "wavelength [nm]": "{:.1f}",
+-        "current read variance [e2]": "{:.3g}",
+-        "current sky rate [e-/s]": "{:.3g}",
+-        "current dark rate [e-/s]": "{:.3g}",
+-        "current equality [s]": "{:.3g}",
+-        "conventional read variance [e2]": "{:.3g}",
+-        "conventional sky rate [e-/s]": "{:.3g}",
+-        "conventional dark rate [e-/s]": "{:.3g}",
+-        "conventional equality [s]": "{:.3g}",
+-    }
+-)
++    row = candidates.iloc[np.argmin(np.abs(candidates["wave_nm"] - target_wave_nm))]
++    representative_rows.append({"channel": channel, "wavelength [nm]": row["wave_nm"], f"{DETECTOR_MODE} equality [s]": row["current_t_equal_s"], f"{COMPARISON_DETECTOR_MODE} equality [s]": row["conventional_t_equal_s"]})
++display_frame(representative_rows)
+ 
+# %% code cell 5d41959186ce5fec
+ from matplotlib.lines import Line2D
+ 
+@@ -3963,7 +3639,7 @@
+ }[SKY_EQUALITY_LINESTYLE_BY]
+ 
+ fig, axes = plt.subplots(1, 2, figsize=(13.2, 5.0), sharex=True, sharey=True, constrained_layout=True)
+-panel_specs = (("current_t_equal_s_plot", "qCCD / LmAPD"), ("conventional_t_equal_s_plot", "CCD / H2RG"))
++panel_specs = (("current_t_equal_s_plot", DETECTOR_MODE), ("conventional_t_equal_s_plot", COMPARISON_DETECTOR_MODE))
+ for ax, (plot_column, panel_title) in zip(axes, panel_specs, strict=True):
+     for case in SKY_EQUALITY_PLOT_CASES:
+         samples = sky_equality_plot_samples[case]
+@@ -4266,3 +3942,4 @@
+ 
+ display_and_save_figure(scene_figure, 'adc_scene')
+ 
+# %% code cell d65b2825e3e2f872
++
+# %% code cell a318d9884d43492e
+--- review/xs-21-scientific-helpers/notebooks/zshooter_spie2026.ipynb
++++ review/xs-22-performance-trades/notebooks/zshooter_spie2026.ipynb
+@@ -71,16 +71,27 @@
+ irdb_path = configure_irdb_path(fallback_irdb_path="/Users/jibailey/src/irdb")
+ set_scopesim_log_level(level="warning")
+ zshooter_dir = instrument_package_dir("ZShooter_v2")
+-output_dir = make_local_output_dir(dirname="spie2026")
++output_dir = make_local_output_dir(dirname="spie2026_detectors")
++DETECTOR_MODE = "SPEC"
++COMPARISON_DETECTOR_MODE = "SPEC_ALTDETECT"  # Editable IRDB package; detector properties come from its YAML.
++# Explicit (DIT seconds, independent integrations), ordered B/G/R/YJ/H/K.
++# These settings include the full OH sky even in the no-OH diagnostic plots.
++EXPOSURES = {
++    "SPEC": {"1 hour": [(1200, 3)]*3 + [(100, 36), (30, 120), (60, 60)],
++             "5 minutes": [(300, 1)]*3 + [(100, 3), (30, 10), (60, 5)]},
++    "SPEC_ALTDETECT": {"1 hour": [(1200, 3)]*3 + [(300, 12), (90, 40), (150, 24)],
++                       "5 minutes": [(300, 1)]*3 + [(300, 1), (75, 4), (150, 2)]},
++}
+ hide_scopesim_progress = True
+ disable_scopesim_top_level_catch()
+ 
+-def set_channel_exposure(cmds, *, dit, ndit):
+-    cmds["!OBS.dit"] = dit
+-    cmds["!OBS.ndit"] = ndit
+-    for channel in ("blue", "green", "red", "yj", "h", "k"):
++def set_channel_exposure(cmds, exposure="1 hour"):
++    settings = EXPOSURES[from_currsys("!DET.detector_mode", cmds)][exposure]
++    cmds["!OBS.dit"], cmds["!OBS.ndit"] = settings[0]
++    for channel, (dit, ndit) in zip(("blue", "green", "red", "yj", "h", "k"), settings, strict=True):
+         cmds[f"!OBS.dit_{channel}"] = dit
+         cmds[f"!OBS.ndit_{channel}"] = ndit
++
+ 
+ component_metadata = {"telescope_reflection": {"throughput_group": "telescope", "emission_phase": "pre_disperser"},
+                       "ir_blocking_filter_selector": {"throughput_group": "ir_blocking_filter"},
+@@ -122,7 +133,7 @@
+     code_revision = subprocess.run(["git", "-C", str(pathlib.Path.cwd()), "describe", "--always", "--dirty"], check=True, capture_output=True, text=True).stdout.strip()
+     irdb_revision = subprocess.run(["git", "-C", str(irdb_path), "describe", "--always", "--dirty"], check=True, capture_output=True, text=True).stdout.strip()
+     run_card = Table(rows=[
+-        {"quantity": "instrument", "value": "ZShooter_v2 SPEC", "why_it_matters": "loads the release IRDB model"},
++        {"quantity": "instrument", "value": f"ZShooter_v2 {DETECTOR_MODE}", "why_it_matters": "loads the release IRDB model"},
+         {"quantity": "zs-scopesim revision", "value": code_revision, "why_it_matters": "identifies the notebook and package implementation"},
+         {"quantity": "ScopeSim version", "value": importlib.metadata.version("ScopeSim"), "why_it_matters": "identifies the simulation engine"},
+         {"quantity": "IRDB revision", "value": irdb_revision, "why_it_matters": "identifies the configured instrument data"},
+@@ -136,19 +147,23 @@
+         {"quantity": "VIS slit [arcsec]", "value": cmd_value("!INST.vis_curr_slit"), "why_it_matters": "source throughput and resolution"},
+         {"quantity": "NIR slit [arcsec]", "value": cmd_value("!INST.nir_curr_slit"), "why_it_matters": "source throughput and resolution"},
+         {"quantity": "spectral resolving power guardrail", "value": cmd_value("!SIM.spectral.spectral_resolution"), "why_it_matters": "internal spectral work grid / sky sampling guardrail"},
+-        {"quantity": "DIT x NDIT", "value": f"{cmd_value('!OBS.dit_green')} x {cmd_value('!OBS.ndit_green')}", "why_it_matters": "per-channel detector exposure; total is DIT*NDIT"},
++        {"quantity": "DIT x NDIT", "value": ", ".join(f"{arm.upper()}: {cmd_value(f'!OBS.dit_{arm}'):g}x{cmd_value(f'!OBS.ndit_{arm}')}" for arm in ("blue", "green", "red", "yj", "h", "k")), "why_it_matters": "explicit independent integrations per arm"},
+         {"quantity": "pupil angle [deg]", "value": cmd_value("!OBS.pupil_angle"), "why_it_matters": "source-pair orientation used below"},
+     ])
+     display_frame(run_card, rename={"why_it_matters": "why it matters"})
+     return run_card
++
+# %% markdown cell c1f988537436b9ea
++The exposure settings follow the revised `SPEC_ALTDETECT` YJ H2RG comparison (300 s x 12 for one hour; 300 s x 1 for five minutes). The saved outputs carried forward in the 2026-10-20 settings update used the preceding YJ LmAPD configuration; that update did not include a full rerun. Rerunning regenerates results from the selected IRDB package.
+ 
+# %% code cell 211f7490535dd414
+-cmd = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=["SPEC"])
++cmd = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=[DETECTOR_MODE])
++cmd = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=[DETECTOR_MODE])
+ cmd["!ATMO.skycalc_timeout"] = 60.0 #seconds
+ cmd["!OBS.airmass"] = 1.1
+ cmd["!OBS.seeing"] = 0.65
+ cmd["!OBS.brightness"] = "grey"
++cmd["!OBS.mjdobs"] = 60310.25
+ cmd["!OBS.pupil_angle"] = 0.0
+-set_channel_exposure(cmd, dit=1800, ndit=2)
++set_channel_exposure(cmd)
+ cmd["!INST.vis_curr_slit"] = 0.7 # 0.33
+ cmd["!INST.nir_curr_slit"] = 0.7 # 0.33
+ cmd["!INST.include_diffuse_emissivity"] = False
+@@ -163,10 +178,10 @@
+ 
+ This detector-facing diagnostic samples the loaded spectral traces on the active image planes. The table gives compact channel ranges; the first map shows local resolving power from the trace geometry and detector pixel scale, while the second map shows the corresponding spectral-element sampling width. Blank pixels are off trace. The plotted samples are kept only where the sampled slit footprint is fully on detector; the trace catalog below is the check for the total loaded order count. Detector rotation is part of the trace geometry being checked; `detector_pad` is legacy metadata and is not applied to the optical trace geometry.
+ 
+# %% code cell a55b6247
+-set_channel_exposure(zs.cmds, dit=1800, ndit=2)
++set_channel_exposure(zs.cmds)
+ zs.cmds["!INST.vis_curr_slit"] = 0.33
+ zs.cmds["!INST.nir_curr_slit"] = 0.33
+-zs.update()
++zs.update(migrate_cmds=True)
+ show_run();
+ 
+ trace_resolution = trace_resolution_diagnostic_table(zs)
+@@ -176,11 +191,15 @@
+ fig.suptitle('0.33" slit Echellogram')
+ display_and_save_figure(fig, "resolving_power_033_slit")
+ 
+# %% code cell 9de5e6b878be8e54
+-set_channel_exposure(zs.cmds, dit=1800, ndit=2)
++set_channel_exposure(zs.cmds)
+ zs.cmds["!INST.vis_curr_slit"] = 0.70
+ zs.cmds["!INST.nir_curr_slit"] = 0.70
+-zs.update()
++zs.update(migrate_cmds=True)
+ 
+# %% code cell 38ba78232aade192
++set_channel_exposure(zs.cmds)
++zs.cmds["!INST.vis_curr_slit"] = 0.70
++zs.cmds["!INST.nir_curr_slit"] = 0.70
++zs.update(migrate_cmds=True)
+ show_run();
+ trace_resolution = trace_resolution_diagnostic_table(zs)
+ trace_resolution_summary = trace_resolution_summary_table(trace_resolution)
+@@ -1010,13 +1029,32 @@
+     logging.getLogger("astar.scopesim").setLevel(logging.WARNING)
+     effect_names = list(disabled_effects or [])
+     with disable_background(disabled_background, train=train), temporarily_disable_effects(train, effect_names), disable_scopesim_progress_bars(hide_scopesim_progress):
+-        if source is None:
+-            train.observe()
+-        else:
+-            train.observe(source)
+-        hdul = train.readout()
++        for plane in train.image_planes:
++            plane.data.fill(0)
++        train.observe(source, update=False)
++        exposure = {key: train.cmds[f'!OBS.{key}'] for key in ('dit', 'ndit')}
++        for arm in ('blue', 'green', 'red', 'yj', 'h', 'k'):
++            exposure[f'dit_{arm}'] = train.cmds[f'!OBS.dit_{arm}']
++            exposure[f'ndit_{arm}'] = train.cmds[f'!OBS.ndit_{arm}']
++        hdul = train.readout(**exposure)
+     logging.getLogger("astar.scopesim").setLevel(logging.WARNING)
+     return hdul
++
++
++def readout_optical_rates(background_rates, source_rates=None, source_scale=1., *, train=None):
++    train = zs if train is None else train
++    # Rates are before dark current, integration and stochastic detector effects.
++    for plane, background in zip(train.image_planes, background_rates, strict=True):
++        plane.data[:] = background
++    if source_rates is not None:
++        for plane, signal in zip(train.image_planes, source_rates, strict=True):
++            plane.data += source_scale*signal
++    exposure = {key: train.cmds[f'!OBS.{key}'] for key in ('dit', 'ndit')}
++    for arm in ('blue', 'green', 'red', 'yj', 'h', 'k'):
++        exposure[f'dit_{arm}'] = train.cmds[f'!OBS.dit_{arm}']
++        exposure[f'ndit_{arm}'] = train.cmds[f'!OBS.ndit_{arm}']
++    with temporarily_disable_effects(train, READOUT_RANDOM_NOISE_EFFECTS):
++        return train.readout(**exposure)
+ 
+# %% code cell 13c38eeccb2b04eb
+ readout_titles = ["B", "G", "R", "YJ", "H", "K"]
+ readout_scale_groups = [["B", "G", "R"], ["YJ", "H", "K"]]
+@@ -1039,7 +1077,11 @@
+ 
+# %% code cell cb89aab9c94118bf
+ readouts["full_background"] = observe_readout(None, None)
+ readouts["source_no_sky_lines"] = observe_readout(source_to_observe, ["sky_lines"])
++wide_total_rates = [plane.data.copy() for plane in zs.image_planes]
+ readouts["background_no_sky_lines"] = observe_readout(None, ["sky_lines"])
++wide_background_rates = [plane.data.copy() for plane in zs.image_planes]
++wide_source_rates = [total-background for total, background in zip(wide_total_rates, wide_background_rates, strict=True)]
++del wide_total_rates
+ 
+ source_minus_background = readout_delta_summary_table(readouts["source_full_background"], readouts["full_background"], titles=readout_titles)
+ 
+# %% code cell b89c0d370d46d895
+@@ -1092,6 +1134,7 @@
+         "read_noise_e_rms": read_rms,
+         "detector_variance_e2_pix": detector_variance,
+         "mean_detector_signal_e_pix": dark,
++        "excess_noise_factor": row["excess_noise_factor"],
+     }
+ 
+ 
+@@ -1124,8 +1167,8 @@
+         background_image = readout_image(background_hdu)
+         signal = source_image - background_image
+         background = background_image - terms["bias_e_pix"] - terms["mean_detector_signal_e_pix"]
+-        one_exposure_fixed_variance = background + terms["detector_variance_e2_pix"]
+-        variance = signal + 2.0 * one_exposure_fixed_variance
++        one_exposure_fixed_variance = terms["excess_noise_factor"] * background + terms["detector_variance_e2_pix"]
++        variance = terms["excess_noise_factor"] * signal + 2.0 * one_exposure_fixed_variance
+         snr = signal / np.sqrt(variance)
+         signal_images.append(signal)
+         background_images.append(background)
+@@ -1137,7 +1180,8 @@
+     display_rows = []
+     for row in summary_table:
+         channel = str(row["channel"])
+-        spectral_fwhm = float(row["spectral_fwhm_pix"])
++        # Representative width for this coarse per-channel footprint summary.
++        spectral_fwhm = float(row["spectral_fwhm_median_pix"])
+         spatial_min = float(row["spatial_fwhm_min_pix"])
+         spatial_median = float(row["spatial_fwhm_median_pix"])
+         spatial_max = float(row["spatial_fwhm_max_pix"])
+@@ -1588,12 +1632,9 @@
+ 
+ 
+ def trace_sample_detector_coordinates(train, trace_samples):
+-    """Map every native wavelength at the source position rendered on the slit grid."""
++    """Map native wavelengths at the continuously rendered, centered point source."""
+     trace_values = np.asarray(trace_samples["trace_id"], dtype=str)
+     rows = []
+-
+-    sub_pixel_enabled = bool(from_currsys("!SIM.sub_pixel.flag", train.cmds))
+-    from scopesim.optics import image_plane_utils as imp_utils
+ 
+     for trace_id in sorted(set(trace_values), key=trace_id_sort_key):
+         order_samples = trace_samples[trace_values == trace_id]
+@@ -1601,19 +1642,8 @@
+         order_samples = order_samples[np.argsort(order_samples["sample_index"])]
+         wave_grid_nm = np.asarray(order_samples["wave_nm"], dtype=float)
+ 
+-        trace_fovs = [fov for fov in train.fov_manager.fovs if str(fov.trace_id) == trace_id]
+-        assert len(trace_fovs) == 1, (trace_id, len(trace_fovs))
+-        fov = trace_fovs[0]
+-
+-        source_xpix, _ = imp_utils.val2pix(fov.header, 0.0, 0.0)
+-        dxi_arcsec = (fov.header["CDELT1"] * u.Unit(fov.header["CUNIT1"])).to_value(u.arcsec)
+-
+-        rendered_source_xpix = source_xpix if sub_pixel_enabled else int(source_xpix)
+-        rendered_xi = fov.meta["xi_min"].to(u.arcsec) + rendered_source_xpix * dxi_arcsec * u.arcsec
+-
+-        mapped = train.trace_detector_coordinates(xi=rendered_xi, wavelengths={trace_id: wave_grid_nm * u.nm})
+-
+-        # Only one xi was requested, so do not filter for xi == 0.
++        mapped = train.trace_detector_coordinates(xi=0 * u.arcsec, wavelengths={trace_id: wave_grid_nm * u.nm})
++
+         mapped_wave_nm = mapped["wavelength"].to_value(u.nm)
+         mapped_order = np.argsort(mapped_wave_nm)
+         mapped_wave_nm = mapped_wave_nm[mapped_order]
+@@ -1705,6 +1735,7 @@
+             "signal": signal,
+             "sky": sky,
+             "detector_variance_e2_pix": terms["detector_variance_e2_pix"],
++            "excess_noise_factor": terms["excess_noise_factor"],
+         }
+     return products
+ 
+@@ -1722,8 +1753,8 @@
+     signal_e = np.sum(signal_pixels)
+     sky_e = np.sum(sky_pixels)
+     n_pix = rectangle["n_pix"]
+-    source_var_e = signal_e
+-    sky_var_e = 2 * sky_e
++    source_var_e = products["excess_noise_factor"] * signal_e
++    sky_var_e = 2 * products["excess_noise_factor"] * sky_e
+     detector_var_e = 2 * n_pix * products["detector_variance_e2_pix"]
+     fixed_variance_e = sky_var_e + detector_var_e
+     snr_at_input = signal_e / np.sqrt(source_var_e + fixed_variance_e)
+@@ -2459,10 +2490,11 @@
+ 
+ 
+ def reduce_zero_point_case(label, *, source_hdul, background_hdul, detector_table, trace_samples,
+-                           input_abmag, bin_factors, slit_arcsec, ao_enabled, integration, dit, ndit,
+-                           aperture_calibration=None):
+-
+-    samples, apertures = trace_zero_point_samples_table(zs, source_hdul, background_hdul, detector_table, trace_samples, readout_titles, input_abmag=input_abmag, case_label=label, bin_factors=bin_factors, aperture_calibration=aperture_calibration, return_apertures=True)
++                           input_abmag, bin_factors, slit_arcsec, ao_enabled, integration,
++                           aperture_calibration=None, train=None):
++    train = zs if train is None else train
++
++    samples, apertures = trace_zero_point_samples_table(train, source_hdul, background_hdul, detector_table, trace_samples, readout_titles, input_abmag=input_abmag, case_label=label, bin_factors=bin_factors, aperture_calibration=aperture_calibration, return_apertures=True)
+ 
+     full_bins = samples["native_count"] == samples["bin_factor"]
+     finite = full_bins & np.isfinite(samples["m5_ab"])
+@@ -2470,7 +2502,7 @@
+ 
+     best_zp_table = best_zero_point_order_table(samples[selected])
+ 
+-    return {"label": label, "integration": integration, "dit": dit, "ndit": ndit, "slit_arcsec": slit_arcsec, "ao_enabled": ao_enabled, "input_abmag": input_abmag,
++    return {"label": label, "integration": integration, "detector_budget": detector_table, "slit_arcsec": slit_arcsec, "ao_enabled": ao_enabled, "input_abmag": input_abmag,
+             "samples_raw": samples, "samples_complete": samples[finite], "samples_selected": samples[selected], "order_best": best_zp_table, "apertures": apertures,
+             }
+ 
+@@ -2478,65 +2510,74 @@
+ paper_case_results = {}
+ 
+ # Existing .70", one-hour, natural-seeing readouts.
+-paper_case_results[("1 hour", 0.70, False)] = reduce_zero_point_case('1 hour, 0.70" slit', source_hdul=readouts["source_no_sky_lines"], background_hdul=readouts["background_no_sky_lines"], detector_table=detector_budget, trace_samples=trace_resolution, input_abmag=20.0, bin_factors=(1, 2, 18), slit_arcsec=0.70, ao_enabled=False, integration="1 hour", dit=1800, ndit=2, aperture_calibration=zero_point_trace_apertures)
+-
+-# .33", one hour. The background is common to natural seeing and AO.
+-set_channel_exposure(zs.cmds, dit=1800, ndit=2)
++paper_case_results[("1 hour", 0.70, False)] = reduce_zero_point_case('1 hour, 0.70" slit', source_hdul=readouts["source_no_sky_lines"], background_hdul=readouts["background_no_sky_lines"], detector_table=detector_budget, trace_samples=trace_resolution, input_abmag=20.0, bin_factors=(1, 2, 18), slit_arcsec=0.70, ao_enabled=False, integration="1 hour", aperture_calibration=zero_point_trace_apertures)
++
++# .33", one hour. Render each background on the matching PSF integration grid.
++set_channel_exposure(zs.cmds)
+ zs.cmds["!INST.vis_curr_slit"] = 0.33
+ zs.cmds["!INST.nir_curr_slit"] = 0.33
+-zs.update()
++zs.update(migrate_cmds=True)
+ set_train_ao_state(zs, False)
+ narrow_detector_budget_1h = detector_background_budget_table(zs)
+ narrow_background_1h = observe_readout(None, ["sky_lines"])
++narrow_background_rates = [plane.data.copy() for plane in zs.image_planes]
+ narrow_trace_noao_1h = trace_resolution_diagnostic_table(zs)
+ narrow_source_noao_1h = observe_readout(flat_ab_point_center, ["sky_lines"])
+-paper_case_results[("1 hour", 0.33, False)] = reduce_zero_point_case('1 hour, 0.33" slit, natural', source_hdul=narrow_source_noao_1h, background_hdul=narrow_background_1h, detector_table=narrow_detector_budget_1h, trace_samples=narrow_trace_noao_1h, input_abmag=20.0, bin_factors=(1, 18, 40), slit_arcsec=0.33, ao_enabled=False, integration="1 hour", dit=1800, ndit=2)
++narrow_natural_rates = [plane.data-background for plane, background in zip(zs.image_planes, narrow_background_rates, strict=True)]
++paper_case_results[("1 hour", 0.33, False)] = reduce_zero_point_case('1 hour, 0.33" slit, natural', source_hdul=narrow_source_noao_1h, background_hdul=narrow_background_1h, detector_table=narrow_detector_budget_1h, trace_samples=narrow_trace_noao_1h, input_abmag=20.0, bin_factors=(1, 18, 40), slit_arcsec=0.33, ao_enabled=False, integration="1 hour")
+ 
+ set_train_ao_state(zs, True)
+ narrow_trace_ao_1h = trace_resolution_diagnostic_table(zs)
++narrow_background_ao_1h = observe_readout(None, ["sky_lines"])
++narrow_background_ao_rates = [plane.data.copy() for plane in zs.image_planes]
+ narrow_source_ao_1h = observe_readout(flat_ab_point_center, ["sky_lines"])
+-paper_case_results[("1 hour", 0.33, True)] = reduce_zero_point_case('1 hour, 0.33" slit, AO', source_hdul=narrow_source_ao_1h, background_hdul=narrow_background_1h, detector_table=narrow_detector_budget_1h, trace_samples=narrow_trace_ao_1h, input_abmag=20.0, bin_factors=(1, 2, 4, 18, 38, 40), slit_arcsec=0.33, ao_enabled=True, integration="1 hour", dit=1800, ndit=2)
+-del narrow_background_1h, narrow_source_noao_1h, narrow_source_ao_1h
+-
+-# .70", five minutes, natural seeing.
+-set_channel_exposure(zs.cmds, dit=300, ndit=1)
++narrow_ao_rates = [plane.data-background for plane, background in zip(zs.image_planes, narrow_background_ao_rates, strict=True)]
++paper_case_results[("1 hour", 0.33, True)] = reduce_zero_point_case('1 hour, 0.33" slit, AO', source_hdul=narrow_source_ao_1h, background_hdul=narrow_background_ao_1h, detector_table=narrow_detector_budget_1h, trace_samples=narrow_trace_ao_1h, input_abmag=20.0, bin_factors=(1, 2, 4, 18, 38, 40), slit_arcsec=0.33, ao_enabled=True, integration="1 hour")
++del narrow_background_1h, narrow_background_ao_1h, narrow_source_noao_1h, narrow_source_ao_1h
++
++# .70", five minutes, natural seeing. Reuse the same optical electron rates.
++five_minute_source_scale = 10**(.4*(20.-17.))
++set_channel_exposure(zs.cmds, "5 minutes")
+ zs.cmds["!INST.vis_curr_slit"] = 0.70
+ zs.cmds["!INST.nir_curr_slit"] = 0.70
+-zs.update()
++zs.update(migrate_cmds=True)
+ set_train_ao_state(zs, False)
+ wide_detector_budget_5m = detector_background_budget_table(zs)
+-wide_background_5m = observe_readout(None, ["sky_lines"])
++wide_background_5m = readout_optical_rates(wide_background_rates)
+ wide_trace_5m = trace_resolution_diagnostic_table(zs)
+-wide_source_5m = observe_readout(flat_ab_point_center_5min, ["sky_lines"])
+-paper_case_results[("5 minutes", 0.70, False)] = reduce_zero_point_case('5 minutes, 0.70" slit', source_hdul=wide_source_5m, background_hdul=wide_background_5m, detector_table=wide_detector_budget_5m, trace_samples=wide_trace_5m, input_abmag=17.0, bin_factors=(1, 2, 18), slit_arcsec=0.70, ao_enabled=False, integration="5 minutes", dit=300, ndit=1)
++wide_source_5m = readout_optical_rates(wide_background_rates, wide_source_rates, five_minute_source_scale)
++paper_case_results[("5 minutes", 0.70, False)] = reduce_zero_point_case('5 minutes, 0.70" slit', source_hdul=wide_source_5m, background_hdul=wide_background_5m, detector_table=wide_detector_budget_5m, trace_samples=wide_trace_5m, input_abmag=17.0, bin_factors=(1, 2, 18), slit_arcsec=0.70, ao_enabled=False, integration="5 minutes")
+ del wide_background_5m, wide_source_5m
+ 
+-# .33", five minutes. The background is common to natural seeing and AO.
++# .33", five minutes. Reuse rates with the matching natural-seeing or AO grid.
+ zs.cmds["!INST.vis_curr_slit"] = 0.33
+ zs.cmds["!INST.nir_curr_slit"] = 0.33
+-zs.update()
++zs.update(migrate_cmds=True)
+ set_train_ao_state(zs, False)
+ narrow_detector_budget_5m = detector_background_budget_table(zs)
+-narrow_background_5m = observe_readout(None, ["sky_lines"])
++narrow_background_5m = readout_optical_rates(narrow_background_rates)
+ narrow_trace_noao_5m = trace_resolution_diagnostic_table(zs)
+-narrow_source_noao_5m = observe_readout(flat_ab_point_center_5min, ["sky_lines"])
+-paper_case_results[("5 minutes", 0.33, False)] = reduce_zero_point_case('5 minutes, 0.33" slit, natural', source_hdul=narrow_source_noao_5m, background_hdul=narrow_background_5m, detector_table=narrow_detector_budget_5m, trace_samples=narrow_trace_noao_5m, input_abmag=17.0, bin_factors=(1, 18, 40), slit_arcsec=0.33, ao_enabled=False, integration="5 minutes", dit=300, ndit=1)
++narrow_source_noao_5m = readout_optical_rates(narrow_background_rates, narrow_natural_rates, five_minute_source_scale)
++paper_case_results[("5 minutes", 0.33, False)] = reduce_zero_point_case('5 minutes, 0.33" slit, natural', source_hdul=narrow_source_noao_5m, background_hdul=narrow_background_5m, detector_table=narrow_detector_budget_5m, trace_samples=narrow_trace_noao_5m, input_abmag=17.0, bin_factors=(1, 18, 40), slit_arcsec=0.33, ao_enabled=False, integration="5 minutes")
+ 
+ set_train_ao_state(zs, True)
+ narrow_trace_ao_5m = trace_resolution_diagnostic_table(zs)
+-narrow_source_ao_5m = observe_readout(flat_ab_point_center_5min, ["sky_lines"])
+-paper_case_results[("5 minutes", 0.33, True)] = reduce_zero_point_case('5 minutes, 0.33" slit, AO', source_hdul=narrow_source_ao_5m, background_hdul=narrow_background_5m, detector_table=narrow_detector_budget_5m, trace_samples=narrow_trace_ao_5m, input_abmag=17.0, bin_factors=(1, 2, 4, 18, 38, 40), slit_arcsec=0.33, ao_enabled=True, integration="5 minutes", dit=300, ndit=1)
+-del narrow_background_5m, narrow_source_noao_5m, narrow_source_ao_5m
++narrow_background_ao_5m = readout_optical_rates(narrow_background_ao_rates)
++narrow_source_ao_5m = readout_optical_rates(narrow_background_ao_rates, narrow_ao_rates, five_minute_source_scale)
++paper_case_results[("5 minutes", 0.33, True)] = reduce_zero_point_case('5 minutes, 0.33" slit, AO', source_hdul=narrow_source_ao_5m, background_hdul=narrow_background_ao_5m, detector_table=narrow_detector_budget_5m, trace_samples=narrow_trace_ao_5m, input_abmag=17.0, bin_factors=(1, 2, 4, 18, 38, 40), slit_arcsec=0.33, ao_enabled=True, integration="5 minutes")
++del narrow_background_5m, narrow_background_ao_5m, narrow_source_noao_5m, narrow_source_ao_5m
++del narrow_background_rates, narrow_background_ao_rates, narrow_natural_rates, narrow_ao_rates
++print("Five-minute forecasts reuse optical rates; detector exposure and dark current are read out anew.")
+ 
+ for key, result in paper_case_results.items():
+     print(f"{result['label']}: retained {len(result['samples_selected']):,}/" f"{len(result['samples_complete']):,} samples")
+ 
+ # Leave the notebook in its baseline state.
+-set_channel_exposure(zs.cmds, dit=1800, ndit=2)
++set_channel_exposure(zs.cmds)
+ zs.cmds["!INST.vis_curr_slit"] = 0.70
+ zs.cmds["!INST.nir_curr_slit"] = 0.70
+ set_train_ao_state(zs, False)
+-zs.update()
++zs.update(migrate_cmds=True)
+ trace_resolution = trace_resolution_diagnostic_table(zs)
+ trace_resolution_summary = trace_resolution_summary_table(trace_resolution)
+ detector_budget = detector_background_budget_table(zs)
+@@ -2549,10 +2590,10 @@
+ AO_LIMITING_BIN_FACTOR = 38
+ 
+ ao_limiting_case = paper_case_results[AO_LIMITING_CASE_KEY]
+-set_channel_exposure(zs.cmds, dit=1800, ndit=2)
++set_channel_exposure(zs.cmds)
+ zs.cmds["!INST.vis_curr_slit"] = 0.33
+ zs.cmds["!INST.nir_curr_slit"] = 0.33
+-zs.update()
++zs.update(migrate_cmds=True)
+ set_train_ao_state(zs, True)
+ 
+ ao_detector_budget_1h = detector_background_budget_table(zs)
+@@ -2567,11 +2608,11 @@
+ # del ao_simulation_background_1h, ao_simulation_source_1h, ao_detector_budget_1h
+ 
+ # Restore the baseline train and its derived diagnostics.
+-set_channel_exposure(zs.cmds, dit=1800, ndit=2)
++set_channel_exposure(zs.cmds)
+ zs.cmds["!INST.vis_curr_slit"] = 0.70
+ zs.cmds["!INST.nir_curr_slit"] = 0.70
+ set_train_ao_state(zs, False)
+-zs.update()
++zs.update(migrate_cmds=True)
+ trace_resolution = trace_resolution_diagnostic_table(zs)
+ trace_resolution_summary = trace_resolution_summary_table(trace_resolution)
+ detector_budget = detector_background_budget_table(zs)
+@@ -2992,7 +3033,7 @@
+     selected_orders = order_best[order_best["bin_factor"] == bin_factor]
+     row = {
+         "integration": integration,
+-        "DITxNDIT": f"{result['dit']}x{result['ndit']}",
++        "DITxNDIT": ", ".join(f"{row['channel']}: {row['dit_s']:g}x{row['ndit']}" for row in result["detector_budget"]),
+         "slit": f'{slit:.2f}"',
+         "AO": "AO" if ao_enabled else "Natural",
+         "bin": bin_factor,
+@@ -3235,331 +3276,93 @@
+ for control in oh_disabled_control_rows:
+     values = ", ".join(f"{channel}={control[channel]:+.3f}" for channel in readout_titles)
+     print(f"{control['setup']}: {values}")
+-
+# %% code cell 83a23129825b6a9f
+-from scopesim.effects import SpectralQuantumEfficiency, TaperedQuantumEfficiency
+-
+-qe_selectors = [effect for effect in zs.optics_manager.all_effects if effect_name(effect) == "detector_qe_selector"]
+-standard_ccd_selector = [effect for effect in qe_selectors if not effect.include][0]
+-active_qe_selector = [effect for effect in qe_selectors if effect.include][0]
+-h2rg_qe = SpectralQuantumEfficiency(filename="detector_specs/H2RG_TER.dat", cmds=zs.cmds)
+-
+-assert all(not isinstance(effect, TaperedQuantumEfficiency) for detector_id in range(3) for effect in [standard_ccd_selector.wheel_effects[detector_id]])
+-
+-# User-editable paper assumptions. Dark current is kept in e-/hour/pixel here.
+-conventional_detector_assumptions = {
+-    "CCD": {"read_noise_e": 2.5, "dark_current_e_hr_pix": 0.01},
+-    "H2RG": {"read_noise_e": 6.0, "dark_current_e_hr_pix": 23.0},
+-}
+-
+-
+-def qe_at_selected_samples(effect, samples, rows, *, detector_position=False):
+-    qe = np.empty(np.count_nonzero(rows))
+-    selected_indices = np.flatnonzero(rows)
+-    selected_trace_ids = np.asarray(samples["trace_id"][rows], dtype=str)
+-    selected_bin_factors = np.asarray(samples["bin_factor"][rows], dtype=int)
+-
+-    for trace_id, bin_factor in sorted(set(zip(selected_trace_ids, selected_bin_factors, strict=True))):
+-        group = (selected_trace_ids == trace_id) & (selected_bin_factors == bin_factor)
+-        group_indices = selected_indices[group]
+-        wavelength_order = np.argsort(np.asarray(samples["wave_nm"][group_indices], dtype=float))
+-        sorted_indices = group_indices[wavelength_order]
+-        kwargs = {}
+-        if detector_position:
+-            kwargs = {
+-                "detector_x": np.asarray(samples["detector_x_pix"][sorted_indices], dtype=float),
+-                "detector_y": np.asarray(samples["detector_y_pix"][sorted_indices], dtype=float),
+-            }
+-        group_qe = effect.throughput_at(np.asarray(samples["wave_nm"][sorted_indices], dtype=float) * u.nm, **kwargs)
+-        qe[np.flatnonzero(group)[wavelength_order]] = group_qe
+-    return qe
+-
+-
+-def conventional_detector_samples(result):
+-    native = result["samples_raw"][result["samples_raw"]["bin_factor"] == 1].copy()
+-    current_qe = np.empty(len(native))
+-    conventional_qe = np.empty(len(native))
+-
+-    for detector_id, channel in enumerate(readout_titles):
+-        rows = np.asarray(native["channel"], dtype=str) == channel
+-        current_qe[rows] = qe_at_selected_samples(active_qe_selector.wheel_effects[detector_id], native, rows, detector_position=detector_id < 3)
+-        conventional_effect = standard_ccd_selector.wheel_effects[detector_id] if detector_id < 3 else h2rg_qe
+-        conventional_qe[rows] = qe_at_selected_samples(conventional_effect, native, rows)
+-
+-    qe_ratio = conventional_qe / current_qe
+-    conventional_signal = np.asarray(native["signal_e"], dtype=float) * qe_ratio
+-    conventional_sky = np.asarray(native["background_e"], dtype=float) * qe_ratio
+-    n_pix = np.asarray(native["n_pix"], dtype=float)
+-    detector_name = np.where(np.isin(np.asarray(native["channel"], dtype=str), ["B", "G", "R"]), "CCD", "H2RG")
+-    read_noise = np.array([conventional_detector_assumptions[name]["read_noise_e"] for name in detector_name])
+-    dark_current = np.array([conventional_detector_assumptions[name]["dark_current_e_hr_pix"] / 3600 for name in detector_name])
+-    conventional_detector_variance = 2 * n_pix * (dark_current * result["dit"] * result["ndit"] + read_noise**2 * result["ndit"])
+-    conventional_sky_variance = 2 * conventional_sky
+-    conventional_fixed_variance = conventional_sky_variance + conventional_detector_variance
+-    conventional_native = native.copy()
+-    conventional_native["signal_e"] = conventional_signal
+-    conventional_native["source_var_e"] = conventional_signal
+-    conventional_native["background_e"] = conventional_sky
+-    conventional_native["background_var_e"] = conventional_sky_variance
+-    conventional_native["detector_var_e"] = conventional_detector_variance
+-    conventional_native["fixed_variance_e"] = conventional_fixed_variance
+-    bin_factors = sorted(set(result["samples_raw"]["bin_factor"]))
+-    conventional = aggregate_native_extraction_ledger(conventional_native, bin_factors)
+-    conventional_lookup = {(str(row["channel"]), str(row["trace_id"]), int(row["bin_factor"]), int(row["native_start_index"])): row for row in conventional}
+-
+-    samples = result["samples_selected"].copy()
+-    current_qe_binned, conventional_qe_binned = [], []
+-    conventional_signal_binned, conventional_sky_var_binned = [], []
+-    conventional_detector_var_binned, conventional_m5 = [], []
+-    native_channels = np.asarray(native["channel"], dtype=str)
+-    native_traces = np.asarray(native["trace_id"], dtype=str)
+-    qe_cumulative = {}
+-    for channel in sorted(set(native_channels)):
+-        for trace_id in sorted(set(native_traces[native_channels == channel]), key=trace_id_sort_key):
+-            indices = np.flatnonzero((native_channels == channel) & (native_traces == trace_id))
+-            indices = indices[np.argsort(native["sample_index"][indices])]
+-            assert np.array_equal(native["sample_index"][indices], np.arange(len(indices)))
+-            qe_cumulative[(channel, trace_id)] = (np.r_[0.0, np.cumsum(current_qe[indices])], np.r_[0.0, np.cumsum(conventional_qe[indices])])
+-    for sample in samples:
+-        key = (str(sample["channel"]), str(sample["trace_id"]), int(sample["bin_factor"]), int(sample["native_start_index"]))
+-        row = conventional_lookup[key]
+-        start, stop = int(sample["native_start_index"]), int(sample["native_stop_index"])
+-        current_cumulative, conventional_cumulative = qe_cumulative[key[:2]]
+-        current_qe_binned.append((current_cumulative[stop] - current_cumulative[start]) / (stop - start))
+-        conventional_qe_binned.append((conventional_cumulative[stop] - conventional_cumulative[start]) / (stop - start))
+-        conventional_signal_binned.append(row["signal_e"])
+-        conventional_sky_var_binned.append(row["background_var_e"])
+-        conventional_detector_var_binned.append(row["detector_var_e"])
+-        conventional_m5.append(row["m5_ab"])
+-
+-    samples["current_qe"] = current_qe_binned
+-    samples["conventional_qe"] = conventional_qe_binned
+-    samples["conventional_signal_e"] = conventional_signal_binned
+-    samples["conventional_sky_var_e"] = conventional_sky_var_binned
+-    samples["conventional_detector_var_e"] = conventional_detector_var_binned
+-    samples["conventional_m5_ab"] = conventional_m5
+-    samples["conventional_delta_m5"] = conventional_m5 - np.asarray(samples["m5_ab"], dtype=float)
+-    return samples
+-
+-
+-for result in paper_case_results.values():
+-    result["detector_samples"] = conventional_detector_samples(result)
+-
+-detector_assumption_rows = [{"detector": name, "read noise [e-/read]": values["read_noise_e"], "dark current [e-/hour/pix]": values["dark_current_e_hr_pix"],} for name, values in conventional_detector_assumptions.items()]
+-print("Conventional B/G/R QE uses the inactive SpectralQuantumEfficiency curves, not tapered QE.")
+-display_frame(detector_assumption_rows,
+-    formats={
+-        "read noise [e-/read]": "{:.1f}",
+-        "dark current [e-/hour/pix]": "{:.2f}",
+-    }
+-)
+-
+-paired_impact_rows = []
+-for integration, slit, ao_enabled, bin_factor, approximate_R in paper_scenario_specs:
+-    samples = paper_case_results[(integration, slit, ao_enabled)]["detector_samples"]
+-    samples = samples[samples["bin_factor"] == bin_factor].to_pandas()
+-    for (channel, trace_id), order_rows in samples.groupby(["channel", "trace_id"], sort=False):
+-        current_peak = order_rows.loc[order_rows["m5_ab"].idxmax()]
+-        paired_impact_rows.append({
+-            "integration": integration,
+-            "slit": slit,
+-            "AO": ao_enabled,
+-            "design": approximate_R,
+-            "detector": "CCD" if channel in {"B", "G", "R"} else "H2RG",
+-            "channel": channel,
+-            "trace_id": trace_id,
+-            "wave_nm": current_peak["wave_nm"],
+-            "current_m5_ab": current_peak["m5_ab"],
+-            "conventional_m5_ab": current_peak["conventional_m5_ab"],
+-            "conventional_minus_current_m5": current_peak["conventional_delta_m5"],
+-        })
+-
+-paired_detector_impact_samples = Table(rows=paired_impact_rows)
+-detector_impact_rows = []
+-for detector_name in ("CCD", "H2RG"):
+-    values = np.asarray(paired_detector_impact_samples["conventional_minus_current_m5"][paired_detector_impact_samples["detector"] == detector_name], dtype=float)
+-    detector_impact_rows.append({
+-        "detector": detector_name,
+-        "paired order peaks": len(values),
+-        "median impact": np.median(values),
+-        "worst impact": np.min(values),
+-        "best impact": np.max(values),
+-    })
+-
+-print("Impact sign: conventional minus current mAB5, evaluated at each current-detector " "order-peak wavelength.")
+-display_frame(detector_impact_rows,
+-    formats={
+-        "median impact": "{:+.2f}",
+-        "worst impact": "{:+.2f}",
+-        "best impact": "{:+.2f}",
+-    }
+-)
+-
+# %% code cell detector-sensitivity-summary
+-from IPython.display import Markdown, display
+-
+-# Recalculate the conventional-detector version of the existing one-hour,
+-# 0.70" natural-seeing paired ledger. No new ScopeSim readout is required.
+-paired_detector_samples = natural_airglow_comparison_samples_raw
+-native_rows = (paired_detector_samples["bin_factor"] == 1) & (paired_detector_samples["native_count"] == 1)
+-conventional_paired_samples = paired_detector_samples[native_rows].copy()
+-
+-channels = np.asarray(conventional_paired_samples["channel"], dtype=str)
+-current_qe = np.empty(len(conventional_paired_samples))
+-conventional_qe = np.empty(len(conventional_paired_samples))
+-
+-for detector_id, channel in enumerate(readout_titles):
+-    rows = channels == channel
+-    current_effect = active_qe_selector.wheel_effects[detector_id]
+-    current_qe[rows] = qe_at_selected_samples(current_effect, conventional_paired_samples, rows, detector_position=detector_id < 3)
+-
+-    if detector_id < 3:
+-        conventional_effect = standard_ccd_selector.wheel_effects[detector_id]
+-    else:
+-        conventional_effect = h2rg_qe
+-    conventional_qe[rows] = qe_at_selected_samples(conventional_effect, conventional_paired_samples, rows)
+-
+-qe_ratio = conventional_qe / current_qe
+-is_ccd = np.isin(channels, ("B", "G", "R"))
+-ccd_assumptions = conventional_detector_assumptions["CCD"]
+-h2rg_assumptions = conventional_detector_assumptions["H2RG"]
+-
+-read_noise_e = np.where(is_ccd, ccd_assumptions["read_noise_e"], h2rg_assumptions["read_noise_e"])
+-dark_current_e_s_pix = np.where(is_ccd, ccd_assumptions["dark_current_e_hr_pix"] / 3600, h2rg_assumptions["dark_current_e_hr_pix"] / 3600)
+-
+-dit_s = 1800
+-ndit = 2
+-exposure_time_s = dit_s * ndit
+-n_pix = np.asarray(conventional_paired_samples["n_pix"], dtype=float)
+-conventional_detector_variance_e2 = 2 * n_pix * (dark_current_e_s_pix * exposure_time_s + read_noise_e**2 * ndit)
+-
+-for prefix in ("", "simulation_"):
+-    source_signal_e = np.asarray(conventional_paired_samples[f"{prefix}signal_e"], dtype=float) * qe_ratio
+-    sky_e = np.asarray(conventional_paired_samples[f"{prefix}background_e"], dtype=float) * qe_ratio
+-    source_shot_variance_e2 = source_signal_e
+-    sky_variance_e2 = 2 * sky_e
+-    non_source_variance_e2 = sky_variance_e2 + conventional_detector_variance_e2
+-
+-    conventional_paired_samples[f"{prefix}signal_e"] = source_signal_e
+-    conventional_paired_samples[f"{prefix}source_var_e"] = source_shot_variance_e2
+-    conventional_paired_samples[f"{prefix}background_e"] = sky_e
+-    conventional_paired_samples[f"{prefix}background_var_e"] = sky_variance_e2
+-    conventional_paired_samples[f"{prefix}detector_var_e"] = conventional_detector_variance_e2
+-    conventional_paired_samples[f"{prefix}fixed_variance_e"] = non_source_variance_e2
+-
+-    m5_column = "m5_ab" if prefix == "" else "simulation_m5_ab"
+-    conventional_paired_samples[m5_column] = [limiting_abmag_for_target_snr(input_abmag, signal, source_variance, fixed_variance) for input_abmag, signal, source_variance, fixed_variance in zip(conventional_paired_samples["input_abmag"], source_signal_e, source_shot_variance_e2, non_source_variance_e2, strict=True)]
+-
+-conventional_paired_samples["snr_at_input"] = conventional_paired_samples["signal_e"] / np.sqrt(conventional_paired_samples["source_var_e"] + conventional_paired_samples["fixed_variance_e"])
+-conventional_paired_samples["airglow_background_delta_m5"] = conventional_paired_samples["m5_ab"] - conventional_paired_samples["simulation_m5_ab"]
+-
+-conventional_natural_curves, conventional_natural_selection = snr_selected_spectral_bins(conventional_paired_samples, bin_factors=(18,), integration="1 hour", slit_arcsec=0.70, ao_enabled=False)
+-
+-current_detector_curve = natural_curves[(natural_curves["bin_factor"] == 18) & (natural_curves["sky_model"] == "simulation") & (natural_curves["native_element_selection"] == "S/N-selected")].to_pandas()
+-conventional_detector_curve = conventional_natural_curves[(conventional_natural_curves["bin_factor"] == 18) & (conventional_natural_curves["sky_model"] == "simulation") & (conventional_natural_curves["native_element_selection"] == "S/N-selected")].to_pandas()
+-
+-matched_bin_keys = [
+-    "channel", "trace_id", "contiguous_order_run", "bin_index_within_run",
+-]
+-matched_detector_bins = current_detector_curve.merge(conventional_detector_curve, on=matched_bin_keys, suffixes=("_current", "_conventional"), validate="one_to_one")
+-matched_detector_bins = matched_detector_bins[matched_detector_bins["complete_native_bin_current"] & matched_detector_bins["complete_native_bin_conventional"]]
+-matched_detector_bins["conventional minus current m5 [mag]"] = matched_detector_bins["limiting_magnitude_ab_conventional"] - matched_detector_bins["limiting_magnitude_ab_current"]
+-
+-current_native_frame = paired_detector_samples[native_rows].to_pandas()
+-conventional_native_frame = conventional_paired_samples.to_pandas()
+-
+-no_oh_detector_impacts = {}
+-for integration in ("1 hour", "5 minutes"):
+-    samples = paper_case_results[(integration, 0.70, False)]["detector_samples"]
+-    samples = samples[samples["bin_factor"] == 18].to_pandas()
+-    no_oh_detector_impacts[integration] = samples
++
+# %% code cell 80bdb326c7013eb2
++from copy import deepcopy
++from time import perf_counter
++
++# These are independent optical simulations: an 18 um pixel cannot be represented by a QE ratio.
++alt_cmd = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=[COMPARISON_DETECTOR_MODE])
++for key in ("!OBS.airmass", "!OBS.seeing", "!OBS.brightness", "!OBS.mjdobs", "!OBS.pupil_angle", "!INST.include_diffuse_emissivity", "!SIM.sub_pixel.flag"):
++    alt_cmd[key] = zs.cmds[key]
++set_channel_exposure(alt_cmd)
++warning_prevent_sync_alt_ra_dec(alt_cmd)
++atmosphere_names = ("atmo_transmission", "continuum_emission", "airglow_and_interline_continuum")
++for document in alt_cmd.yaml_dicts:
++    if "effects" in document:
++        document["effects"] = [effect for effect in document["effects"] if effect["name"] not in atmosphere_names]
++alt_train = sim.OpticalTrain(alt_cmd)
++for name in atmosphere_names:
++    alt_train.optics_manager.add_effect(deepcopy(zs[name]))
++
++alternate_cases, alternate_airglow = {}, {}
++alternate_exposure_rows = []
++for slit, ao_enabled in ((.70, False), (.33, False), (.33, True)):
++    case_started = perf_counter()
++    print(f'{COMPARISON_DETECTOR_MODE}: {slit:.2f}" AO={ao_enabled}, preparing four optical renders', flush=True)
++    alt_train.cmds["!INST.vis_curr_slit"] = slit
++    alt_train.cmds["!INST.nir_curr_slit"] = slit
++    set_channel_exposure(alt_train.cmds)
++    alt_train.update(migrate_cmds=True)
++    set_train_ao_state(alt_train, ao_enabled)
++    trace_samples = trace_resolution_diagnostic_table(alt_train)
++    background = observe_readout(None, ["sky_lines"], train=alt_train)
++    print(f'  sky without OH rendered; {perf_counter() - case_started:.1f} s elapsed', flush=True)
++    background_rates = [plane.data.copy() for plane in alt_train.image_planes]
++    source = observe_readout(flat_ab_point_center, ["sky_lines"], train=alt_train)
++    print(f'  source + sky without OH rendered; {perf_counter() - case_started:.1f} s elapsed', flush=True)
++    source_rates = [plane.data-bg for plane, bg in zip(alt_train.image_planes, background_rates, strict=True)]
++    full_background = observe_readout(None, train=alt_train)
++    print(f'  full sky rendered; {perf_counter() - case_started:.1f} s elapsed', flush=True)
++    full_background_rates = [plane.data.copy() for plane in alt_train.image_planes]
++    full_source = observe_readout(flat_ab_point_center, train=alt_train)
++    print(f'  source + full sky rendered; {perf_counter() - case_started:.1f} s elapsed', flush=True)
++    full_source_rates = [plane.data-bg for plane, bg in zip(alt_train.image_planes, full_background_rates, strict=True)]
++    for integration, magnitude, scale in (("1 hour", 20., 1.), ("5 minutes", 17., five_minute_source_scale)):
++        print(f'  extracting {integration}; {perf_counter() - case_started:.1f} s elapsed', flush=True)
++        set_channel_exposure(alt_train.cmds, integration)
++        budget = detector_background_budget_table(alt_train)
++        background = readout_optical_rates(background_rates, train=alt_train)
++        source = readout_optical_rates(background_rates, source_rates, scale, train=alt_train)
++        full_background = readout_optical_rates(full_background_rates, train=alt_train)
++        full_source = readout_optical_rates(full_background_rates, full_source_rates, scale, train=alt_train)
++        key = (integration, slit, ao_enabled)
++        factors = tuple(sorted(set(paper_case_results[key]["samples_raw"]["bin_factor"]) | {1, 18, 38, 40}))
++        result = reduce_zero_point_case(f'{COMPARISON_DETECTOR_MODE}, {integration}, {slit:.2f}", AO={ao_enabled}', source_hdul=source, background_hdul=background, detector_table=budget, trace_samples=trace_samples, input_abmag=magnitude, bin_factors=factors, slit_arcsec=slit, ao_enabled=ao_enabled, integration=integration, train=alt_train)
++        alternate_cases[key] = result
++        alternate_airglow[key] = airglow_comparison_samples_table(result["samples_raw"], full_source, full_background, budget, readout_titles, source_signal_fraction_min=SOURCE_SIGNAL_FRACTION_MIN, bin_factors=factors)
++        for channel, hdul in zip(readout_titles, full_source, strict=True):
++            h = hdul[1].header
++            alternate_exposure_rows.append((COMPARISON_DETECTOR_MODE, integration, slit, ao_enabled, channel, h["DIT"], h["NDIT"], h["PEAKDIT"], h["WELLDEP"], h["PEAKDIT"]/h["WELLDEP"]))
++    print(f'{COMPARISON_DETECTOR_MODE}: {slit:.2f}" AO={ao_enabled} complete in {perf_counter() - case_started:.1f} s', flush=True)
++    del source, background, full_source, full_background, source_rates, background_rates, full_source_rates, full_background_rates
++
++display_frame(detector_background_budget_table(alt_train), columns=["channel", "detector_mode", "read_noise_e_rms", "dark_current_e_s_pix", "excess_noise_factor", "full_well_e"])
++alternate_exposures = Table(rows=alternate_exposure_rows, names=("detector mode", "integration", "slit", "AO", "channel", "DIT", "NDIT", "peak e-/integration", "usable well e-", "well fraction"))
++display_frame(alternate_exposures)
++alternate_exposures.write(output_dir/"alternate_detector_exposures.ecsv", overwrite=True)
++
+# %% code cell 7e517ed200cc56f3
++# Each package is extracted and S/N-selected on its own physical detector grid.
++conventional_natural_curves, conventional_natural_selection = snr_selected_spectral_bins(alternate_airglow[("1 hour", .70, False)], bin_factors=(1, 2, 18), integration="1 hour", slit_arcsec=.70, ao_enabled=False)
+ 
+ detector_sensitivity_rows = []
+-detector_exposure_rows = []
+-for channel in readout_titles:
+-    current_bins = current_detector_curve[(current_detector_curve["channel"] == channel) & current_detector_curve["complete_native_bin"]]
+-    conventional_bins = conventional_detector_curve[(conventional_detector_curve["channel"] == channel) & conventional_detector_curve["complete_native_bin"]]
+-    matched_bins = matched_detector_bins[matched_detector_bins["channel"] == channel]
+-    current_native = current_native_frame[current_native_frame["channel"] == channel]
+-    conventional_native = conventional_native_frame[conventional_native_frame["channel"] == channel]
+-
+-    current_variance_e2_pix = np.median(current_native["simulation_detector_var_e"] / current_native["n_pix"])
+-    conventional_variance_e2_pix = np.median(conventional_native["simulation_detector_var_e"] / conventional_native["n_pix"])
+-    detector_name = "CCD" if channel in {"B", "G", "R"} else "H2RG"
+-    detector_pair = "qCCD -> CCD" if detector_name == "CCD" else "LMAPD -> H2RG"
+-
+-    detector_sensitivity_rows.append({
+-        "arm": channel,
+-        "detector pair": detector_pair,
+-        "median conventional/current QE": np.median(qe_ratio[channels == channel]),
+-        "current detector variance [e2/pix]": current_variance_e2_pix,
+-        "conventional detector variance [e2/pix]": conventional_variance_e2_pix,
+-        "median retained detector pixels/bin": np.median(conventional_bins["detector_variance_e2"] / conventional_variance_e2_pix),
+-        "conventional sky variance [e2/bin]": np.median(conventional_bins["sky_variance_e2"]),
+-        "conventional detector variance [e2/bin]": np.median(conventional_bins["detector_variance_e2"]),
+-        "detector fraction of non-source variance": np.median(conventional_bins["detector_variance_e2"] / conventional_bins["non_source_variance_e2"]),
+-        "median conventional-current m5 [mag]": np.median(matched_bins["conventional minus current m5 [mag]"]),
+-    })
+-
+-    one_hour = no_oh_detector_impacts["1 hour"]
+-    five_minutes = no_oh_detector_impacts["5 minutes"]
+-    detector_exposure_rows.append({
+-        "arm": channel,
+-        "detector pair": detector_pair,
+-        "1 hour OH-disabled median delta m5 [mag]": np.median(one_hour.loc[one_hour["channel"] == channel, "conventional_delta_m5"]),
+-        "5 minute OH-disabled median delta m5 [mag]": np.median(five_minutes.loc[five_minutes["channel"] == channel, "conventional_delta_m5"]),
+-    })
+-
+-display(Markdown(r"""
+-### Conventional-detector sensitivity regime
+-
+-This diagnostic uses the one-hour, 0.70" natural-seeing, approximately
+-$R=1000$ calculation with OH included and each detector system independently
+-S/N optimized. Values are medians across raw, complete, matched output bins;
+-no presentation mask or smoothing enters the table.
+-
+-A one-hour result means one hour on source plus a separate one-hour matched
+-background exposure. Source shot noise enters once. Sky and detector variance
+-enter twice. The matched detector term per extracted pixel is
+-
+-$$
+-\sigma_{\mathrm{det,pair}}^2 =
+-2\left(i_{\mathrm{dark}}\,\mathrm{DIT}\,\mathrm{NDIT}
+-+ \mathrm{RN}^2\,\mathrm{NDIT}\right).
+-$$
+-
+-For the adopted H2RG assumptions this is
+-$2(23 + 6^2\times2)=190\ \mathrm{e^2/pix}$: 46 $\mathrm{e^2/pix}$ from
+-two total hours of dark current and 144 $\mathrm{e^2/pix}$ from four total
+-readouts. The variance is multiplied by every retained physical extraction
+-pixel; no NIR on-chip binning is assumed.
+-
+-The sign convention is
+-$\Delta m_5=m_5(\mathrm{CCD/H2RG})-m_5(\mathrm{qCCD/LMAPD})$.
+-Negative values mean the conventional detector is shallower. The second table
+-uses the existing OH-disabled, all-element products to expose the integration
+-time dependence; it is a detector diagnostic, not the OH-included optimized
+-science curve.
+-"""))
+-
+-display_frame(detector_sensitivity_rows,
+-    formats={
+-        "median conventional/current QE": "{:.3f}",
+-        "current detector variance [e2/pix]": "{:.2f}",
+-        "conventional detector variance [e2/pix]": "{:.2f}",
+-        "median retained detector pixels/bin": "{:.0f}",
+-        "conventional sky variance [e2/bin]": "{:,.0f}",
+-        "conventional detector variance [e2/bin]": "{:,.0f}",
+-        "detector fraction of non-source variance": "{:.1%}",
+-        "median conventional-current m5 [mag]": "{:+.3f}",
+-    }
+-)
+-
+-display(Markdown("**Exposure-time check:** matched OH-disabled, all-element R~1000 bins."))
+-display_frame(detector_exposure_rows,
+-    formats={
+-        "1 hour OH-disabled median delta m5 [mag]": "{:+.3f}",
+-        "5 minute OH-disabled median delta m5 [mag]": "{:+.3f}",
+-    }
+-)
++for mode, cases_to_summarize in ((DETECTOR_MODE, paper_case_results), (COMPARISON_DETECTOR_MODE, alternate_cases)):
++    for (integration, slit, ao_enabled), result in cases_to_summarize.items():
++        native = result["samples_complete"]
++        native = native[native["bin_factor"] == 1]
++        for channel in readout_titles:
++            samples = native[native["channel"] == channel]
++            row = next(row for row in result["detector_budget"] if row["channel"] == channel)
++            detector_sensitivity_rows.append({
++                "mode": mode, "integration": integration, "slit": slit, "AO": ao_enabled, "channel": channel,
++                "DIT": row["dit_s"], "NDIT": row["ndit"],
++                "detector variance [e2/pix]": 2*(row["dark_current_e_s_pix"]*row["exposure_time_s"] + row["read_noise_e_rms"]**2),
++                "median extracted pixels/native element": np.median(samples["n_pix"]),
++                "median no-OH detector variance fraction": np.median(samples["detector_var_e"]/samples["fixed_variance_e"]),
++            })
++display_frame(detector_sensitivity_rows)
++print("Matched blank subtraction: source variance enters once; sky, dark and read variance enter twice.")
++print("Each LmAPD photon variance is F times its detected photon signal. Dark and effective read noise are independent.")
++print("The flat-AB comparison notebook shows both packages at measured native resolution and on a common R=1000 grid.")
+ 
+# %% code cell 433b19a5abf19db8
+ from astropy.table import vstack
+ import pandas as pd
+@@ -3571,8 +3374,8 @@
+ conventional_curve = conventional_natural_curves[(conventional_natural_curves["bin_factor"] == 18) & (conventional_natural_curves["sky_model"] == "simulation") & (conventional_natural_curves["native_element_selection"] == "S/N-selected")].copy()
+ 
+ # Short plot-only tags fit the existing fixed-width Astropy string column.
+-current_curve["sky_model"] = "qCCD"
+-conventional_curve["sky_model"] = "CCD-H2RG"
++current_curve["sky_model"] = "baseline"
++conventional_curve["sky_model"] = "alternate"
+ 
+ detector_comparison_curves = vstack([current_curve, conventional_curve], metadata_conflicts="silent")
+ 
+@@ -3582,9 +3385,9 @@
+         "slit_arcsec": 0.70,
+         "ao_enabled": False,
+         "bin_factor": 18,
+-        "sky_model": "qCCD",
++        "sky_model": "baseline",
+         "native_element_selection": "S/N-selected",
+-        "label": '0.70" NS, qCCD/LMAPD, S/N optimized, R~1k',
++        "label": f'0.70" NS, {DETECTOR_MODE}, S/N optimized, R~1k',
+         "color": colors[1],
+         "linestyle": "-",
+         "linewidth_multiplier": 0.9,
+@@ -3595,9 +3398,9 @@
+         "slit_arcsec": 0.70,
+         "ao_enabled": False,
+         "bin_factor": 18,
+-        "sky_model": "CCD-H2RG",
++        "sky_model": "alternate",
+         "native_element_selection": "S/N-selected",
+-        "label": '0.70" NS, CCD/H2RG, S/N optimized, R~1k',
++        "label": f'0.70" NS, {COMPARISON_DETECTOR_MODE}, S/N optimized, R~1k',
+         "color": colors[4],
+         "linestyle": "--",
+         "linewidth_multiplier": 0.9,
+@@ -3605,215 +3408,95 @@
+     },
+ ]
+ 
+-current_detector_selector = {
+-    "integration": "1 hour",
+-    "slit_arcsec": 0.70,
+-    "ao_enabled": False,
+-    "bin_factor": 18,
+-    "sky_model": "qCCD",
+-    "native_element_selection": "S/N-selected",
+-}
+-
+-fig, ax = plot_limiting_magnitude_curves(detector_comparison_curves, detector_comparison_specs, title='0.70" natural seeing: detector comparison', shared_presentation_mask_selector=current_detector_selector, dynamic_range_mag=PLOT_DYNAMIC_RANGE_MAG, minimum_limiting_magnitude_ab=clip_zp_below, ylim=(21, 25))
++fig, ax = plot_limiting_magnitude_curves(detector_comparison_curves, detector_comparison_specs, title='0.70" natural seeing: detector comparison', dynamic_range_mag=PLOT_DYNAMIC_RANGE_MAG, minimum_limiting_magnitude_ab=clip_zp_below, ylim=(21, 25))
+ display_and_save_figure(fig, "conventional_vs_current_detector_natural_r1000")
+ 
+ 
+-# Raw matched-bin magnitude differences, before display masks or smoothing.
+-row_keys = [
+-    "channel",
+-    "trace_id",
+-    "contiguous_order_run",
+-    "bin_index_within_run",
+-]
+-
++# Interpolate curves only for a wavelength-matched display; native pixels are not paired.
+ current_raw = current_curve.to_pandas()
+-conventional_raw = conventional_curve.to_pandas()
+-
+-matched_bins = current_raw.merge(conventional_raw, on=row_keys, suffixes=("_current", "_conventional"), validate="one_to_one")
+-matched_bins["CCD/H2RG minus qCCD/LMAPD [mag]"] = matched_bins["limiting_magnitude_ab_conventional"] - matched_bins["limiting_magnitude_ab_current"]
+-
+-magnitude_difference_summary = matched_bins.groupby("channel", sort=False)["CCD/H2RG minus qCCD/LMAPD [mag]"].agg(median="median", p16=lambda values: values.quantile(0.16), p84=lambda values: values.quantile(0.84), minimum="min", maximum="max").reindex(readout_titles)
+-
+-print("Raw matched-bin limiting-magnitude difference; negative means CCD/H2RG is shallower:")
+-display(magnitude_difference_summary.style.format("{:+.3f}"))
+-
+-
+-# Verify that the conventional detector calculation produced a new S/N mask.
+-current_native = natural_native_selection[(natural_native_selection["bin_factor"] == 18) & (natural_native_selection["sky_model"] == "simulation")].to_pandas()
+-
+-conventional_native = conventional_natural_selection[(conventional_natural_selection["bin_factor"] == 18) & (conventional_natural_selection["sky_model"] == "simulation")].to_pandas()
+-
+-native_keys = row_keys + ["native_sample_index"]
+-
+-mask_comparison = current_native[native_keys + ["retained_by_snr_selection"]].merge(conventional_native[native_keys + ["retained_by_snr_selection"]], on=native_keys, suffixes=("_current", "_conventional"), validate="one_to_one")
+-
+-mask_comparison["mask changed"] = mask_comparison["retained_by_snr_selection_current"] != mask_comparison["retained_by_snr_selection_conventional"]
+-
+-selection_mask_summary = mask_comparison.groupby("channel", sort=False).agg(native_elements=("mask changed", "size"), changed_elements=("mask changed", "sum"), current_retained_fraction=("retained_by_snr_selection_current", "mean"), conventional_retained_fraction=("retained_by_snr_selection_conventional", "mean")).reindex(readout_titles)
+-
+-print("Native-element selection comparison:")
+-display(selection_mask_summary.style.format({
+-    "current_retained_fraction": "{:.3f}",
+-    "conventional_retained_fraction": "{:.3f}",
+-}))
+-
+-
+-# Confirm that the conventional/current QE transformation was nontrivial.
+-qe_frame = pd.DataFrame({"channel": channels, "conventional/current QE": qe_ratio})
+-qe_summary = qe_frame.groupby("channel", sort=False)["conventional/current QE"].agg(median="median", minimum="min", maximum="max").reindex(readout_titles)
+-
+-print("Conventional/current detector QE ratio at the native samples:")
+-display(qe_summary.style.format("{:.3f}"))
++alternate_raw = conventional_curve.to_pandas()
++impact_rows = []
++for (channel, trace_id), order in current_raw.groupby(["channel", "trace_id"], sort=False):
++    other = alternate_raw[(alternate_raw["channel"] == channel) & (alternate_raw["trace_id"] == trace_id)].sort_values("nominal_wavelength_nm")
++    order = order[(order["nominal_wavelength_nm"] >= other["nominal_wavelength_nm"].min()) & (order["nominal_wavelength_nm"] <= other["nominal_wavelength_nm"].max())]
++    delta = np.interp(order["nominal_wavelength_nm"], other["nominal_wavelength_nm"], other["limiting_magnitude_ab"]) - order["limiting_magnitude_ab"]
++    impact_rows.extend((channel, trace_id, wave, value) for wave, value in zip(order["nominal_wavelength_nm"], delta, strict=True))
++impact = pd.DataFrame(impact_rows, columns=["channel", "trace_id", "nominal_wavelength_nm", "alternate minus baseline m5"])
++display(impact.groupby("channel", sort=False)["alternate minus baseline m5"].agg(["median", "min", "max"]).style.format("{:+.3f}"))
++
++print("QE and pixel pitch are configured in IRDB; no alternative signal/noise rescaling is applied.")
+ 
+# %% code cell 565af6cf0809ae8f
+ SKY_EQUALITY_SLIT_ARCSEC = 0.33
+-SKY_EQUALITY_BIN_FACTORS = (1, 18,  40)
++SKY_EQUALITY_BIN_FACTORS = (1, 18, 40)
+ SKY_EQUALITY_AO_STATES = (False, True)
+ SKY_EQUALITY_REFERENCE_TIMES_S = (10, 300, 3600)
+ SKY_EQUALITY_VISIBLE_CHECK = ("B", 370.0)
+ SKY_EQUALITY_INFRARED_CHECK = ("H", 1650.0)
+ SKY_EQUALITY_MAX_CCD_BIN = 5
+-
+-equality_budget_by_channel = {str(row["channel"]): row for row in ao_detector_budget_1h}
+-sky_equality_rows = []
+-ccd_binning_rows = []
++# Explicit charge-binning scenarios for this comparison, independent of mode names.
++SKY_EQUALITY_CHARGE_BINNING = {DETECTOR_MODE: False, COMPARISON_DETECTOR_MODE: True}
++
++def sky_equality_for_case(ledger, budget, *, background_column, charge_binning):
++    native = ledger[ledger["bin_factor"] == 1].copy()
++    rows = []
++    for channel in readout_titles:
++        samples = native[native["channel"] == channel]
++        detector = next(row for row in budget if row["channel"] == channel)
++        # Optional CCD charge binning reduces read samples, not physical dark-current area.
++        bin_x, bin_y = 1, 1
++        if charge_binning and channel in ("B", "G", "R"):
++            bin_x = max(1, min(SKY_EQUALITY_MAX_CCD_BIN, int(np.min(samples["spectral_width_pix"]))//2))
++            bin_y = max(1, min(SKY_EQUALITY_MAX_CCD_BIN, int(np.min(samples["spatial_width_pix"]))//2))
++        reads = np.ceil(samples["spectral_width_pix"]/bin_x)*np.ceil(samples["spatial_width_pix"]/bin_y)
++        rn_single = detector["read_noise_e_rms"]/np.sqrt(detector["ndit"])
++        photon_variance_rate = detector["excess_noise_factor"]*samples[background_column]/detector["exposure_time_s"]
++        dark_rate = samples["n_pix"]*detector["dark_current_e_s_pix"]
++        # Equal sky and detector variance: F*B*t = dark*t + n_read*RN**2.
++        for trace_id in dict.fromkeys(samples["trace_id"]):
++            select = np.flatnonzero(samples["trace_id"] == trace_id)
++            select = select[np.argsort(samples["sample_index"][select])]
++            order = samples[select]
++            read_cumulative = np.r_[0., np.cumsum(reads[select]*rn_single**2)]
++            rate_cumulative = np.r_[0., np.cumsum(photon_variance_rate[select] - dark_rate[select])]
++            for factor in SKY_EQUALITY_BIN_FACTORS:
++                starts = np.arange(0, len(order), factor)
++                stops = np.minimum(starts + factor, len(order))
++                read_variance = read_cumulative[stops] - read_cumulative[starts]
++                rate_difference = rate_cumulative[stops] - rate_cumulative[starts]
++                equality = np.full(len(starts), np.nan)
++                positive = rate_difference > 0
++                equality[positive] = read_variance[positive]/rate_difference[positive]
++                wave = .5*(order["wave_low_nm"][starts] + order["wave_high_nm"][stops - 1])
++                rows.extend((channel, str(trace_id), factor, index, wavelength, value) for index, (wavelength, value) in enumerate(zip(wave, equality, strict=True)))
++        ccd_binning_rows.append((channel, bin_x, bin_y))
++    return Table(rows=rows, names=("channel", "trace_id", "bin_factor", "bin_index", "wave_nm", "t_equal_s"))
++
++sky_equality_rows, ccd_binning_rows = [], []
+ for ao_enabled in SKY_EQUALITY_AO_STATES:
+-    seeing = "AO" if ao_enabled else "Natural"
+-    case = paper_case_results[("1 hour", SKY_EQUALITY_SLIT_ARCSEC, ao_enabled)]
++    key = ("1 hour", SKY_EQUALITY_SLIT_ARCSEC, ao_enabled)
+     if ao_enabled:
+-        background_ledger = ao_airglow_comparison_samples_raw[np.isin(ao_airglow_comparison_samples_raw["bin_factor"], SKY_EQUALITY_BIN_FACTORS)].copy()
+-        background_ledger["background_e"] = background_ledger["simulation_background_e"]
++        baseline = ao_airglow_comparison_samples_raw
++        background_column = "simulation_background_e"
+     else:
+-        background_ledger = background_samples_table(case["samples_raw"], ao_simulation_background_1h, ao_detector_budget_1h, readout_titles, SKY_EQUALITY_BIN_FACTORS)
+-    background_ledger = background_ledger[background_ledger["native_count"] == background_ledger["bin_factor"]]
+-    native_background = background_ledger[background_ledger["bin_factor"] == 1]
+-    native_channels = np.asarray(native_background["channel"], dtype=str)
+-    current_qe = np.empty(len(native_background))
+-    conventional_qe = np.empty(len(native_background))
+-    ccd_bins = {}
+-
+-    for detector_id, channel in enumerate(readout_titles):
+-        channel_rows = native_channels == channel
+-        current_qe[channel_rows] = qe_at_selected_samples(active_qe_selector.wheel_effects[detector_id], native_background, channel_rows, detector_position=detector_id < 3)
+-        conventional_effect = standard_ccd_selector.wheel_effects[detector_id] if detector_id < 3 else h2rg_qe
+-        conventional_qe[channel_rows] = qe_at_selected_samples(conventional_effect, native_background, channel_rows)
+-        if channel in {"B", "G", "R"}:
+-            channel_native = native_background[channel_rows]
+-            min_nx = int(np.min(channel_native["spectral_width_pix"]))
+-            min_ny = int(np.min(channel_native["spatial_width_pix"]))
+-            ccd_bins[channel] = (max(1, min(SKY_EQUALITY_MAX_CCD_BIN, min_nx // 2)), max(1, min(SKY_EQUALITY_MAX_CCD_BIN, min_ny // 2)))
+-
+-    conventional_sky_e = np.asarray(native_background["background_e"], dtype=float) * conventional_qe / current_qe
+-    native_traces = np.asarray(native_background["trace_id"], dtype=str)
+-    native_cumulative = {}
+-    for channel in sorted(set(native_channels)):
+-        for trace_id in sorted(set(native_traces[native_channels == channel]), key=trace_id_sort_key):
+-            indices = np.flatnonzero((native_channels == channel) & (native_traces == trace_id))
+-            indices = indices[np.argsort(native_background["sample_index"][indices])]
+-            assert np.array_equal(native_background["sample_index"][indices], np.arange(len(indices)))
+-            if channel in {"B", "G", "R"}:
+-                bin_x, bin_y = ccd_bins[channel]
+-                conventional_reads = np.ceil(native_background["spectral_width_pix"][indices] / bin_x) * np.ceil(native_background["spatial_width_pix"][indices] / bin_y)
+-            else:
+-                conventional_reads = native_background["n_pix"][indices]
+-            native_cumulative[(channel, trace_id)] = (np.r_[0.0, np.cumsum(conventional_sky_e[indices])], np.r_[0.0, np.cumsum(conventional_reads)])
+-    for bin_factor in SKY_EQUALITY_BIN_FACTORS:
+-        samples = background_ledger[background_ledger["bin_factor"] == bin_factor]
+-        for sample in samples:
+-            channel = str(sample["channel"])
+-            budget = equality_budget_by_channel[channel]
+-            start, stop = int(sample["native_start_index"]), int(sample["native_stop_index"])
+-            conventional_sky_cumulative, conventional_read_cumulative = native_cumulative[(channel, str(sample["trace_id"]))]
+-            assert stop - start == int(sample["native_count"])
+-            n_x = int(sample["spectral_width_pix"])
+-            n_y = int(sample["spatial_width_pix"])
+-            n_phys = int(sample["n_pix"])
+-            full_sky_rate = float(sample["background_e"]) / float(budget["exposure_time_s"])
+-            current_dark_rate = n_phys * float(budget["dark_current_e_s_pix"])
+-            current_read_noise = float(budget["read_noise_e_rms"]) / np.sqrt(float(budget["ndit"]))
+-            current_n_read = n_phys
+-            current_read_variance = current_n_read * current_read_noise**2
+-            current_rate_difference = full_sky_rate - current_dark_rate
+-            current_time = current_read_variance / current_rate_difference if current_rate_difference > 0 else np.nan
+-
+-            conventional_name = "CCD" if channel in {"B", "G", "R"} else "H2RG"
+-            conventional_assumptions = conventional_detector_assumptions[conventional_name]
+-            conventional_sky_rate = (conventional_sky_cumulative[stop] - conventional_sky_cumulative[start]) / float(budget["exposure_time_s"])
+-            conventional_dark_rate = n_phys * conventional_assumptions["dark_current_e_hr_pix"] / 3600
+-            if conventional_name == "CCD":
+-                bin_x, bin_y = ccd_bins[channel]
+-                conventional_n_read = int(conventional_read_cumulative[stop] - conventional_read_cumulative[start])
+-            else:
+-                bin_x, bin_y = 1, 1
+-                conventional_n_read = n_phys
+-            conventional_read_variance = conventional_n_read * conventional_assumptions["read_noise_e"]**2
+-            conventional_rate_difference = conventional_sky_rate - conventional_dark_rate
+-            conventional_time = conventional_read_variance / conventional_rate_difference if conventional_rate_difference > 0 else np.nan
+-
+-            sky_equality_rows.append({
+-                "seeing": seeing, "ao_enabled": ao_enabled, "bin_factor": bin_factor,
+-                "channel": channel, "trace_id": str(sample["trace_id"]),
+-                "sample_index": int(sample["sample_index"]), "bin_index": int(sample["bin_index"]),
+-                "wave_nm": float(sample["wave_nm"]), "n_x_phys": n_x,
+-                "n_y_phys": n_y, "n_phys": n_phys,
+-                "current_detector": "qCCD" if channel in {"B", "G", "R"} else "LMAPD",
+-                "current_n_read": current_n_read, "current_read_variance_e2": current_read_variance,
+-                "current_dark_rate_e_s": current_dark_rate, "current_full_sky_rate_e_s": full_sky_rate,
+-                "current_t_equal_s": current_time, "conventional_detector": conventional_name,
+-                "ccd_bin_x": bin_x, "ccd_bin_y": bin_y, "conventional_n_read": conventional_n_read,
+-                "conventional_read_variance_e2": conventional_read_variance,
+-                "conventional_dark_rate_e_s": conventional_dark_rate,
+-                "conventional_full_sky_rate_e_s": conventional_sky_rate,
+-                "conventional_t_equal_s": conventional_time,
+-            })
+-
+-    for bin_factor in SKY_EQUALITY_BIN_FACTORS:
+-        for channel in ("B", "G", "R"):
+-            channel_native = native_background[native_channels == channel]
+-            bin_x, bin_y = ccd_bins[channel]
+-            ccd_binning_rows.append({
+-                "seeing": seeing, "bin factor": bin_factor, "channel": channel,
+-                "minimum physical Nx": int(np.min(channel_native["spectral_width_pix"])),
+-                "minimum physical Ny": int(np.min(channel_native["spatial_width_pix"])),
+-                "CCD bin x": bin_x, "CCD bin y": bin_y,
+-            })
+-
+-sky_equality_samples = Table(rows=sky_equality_rows)
+-ccd_binning_summary = Table(rows=ccd_binning_rows)
+-display_frame(ccd_binning_summary)
+-
++        background_column = "background_e"
++        baseline = background_samples_table(paper_case_results[key]["samples_raw"], ao_simulation_background_1h, ao_detector_budget_1h, readout_titles, SKY_EQUALITY_BIN_FACTORS)
++    current = sky_equality_for_case(baseline, paper_case_results[key]["detector_budget"], background_column=background_column, charge_binning=SKY_EQUALITY_CHARGE_BINNING[DETECTOR_MODE]).to_pandas()
++    other = sky_equality_for_case(alternate_airglow[key], alternate_cases[key]["detector_budget"], background_column="simulation_background_e", charge_binning=SKY_EQUALITY_CHARGE_BINNING[COMPARISON_DETECTOR_MODE]).to_pandas()
++    for (channel, trace_id, factor), order in current.groupby(["channel", "trace_id", "bin_factor"], sort=False):
++        alt = other[(other["channel"] == channel) & (other["trace_id"] == trace_id) & (other["bin_factor"] == factor)].sort_values("wave_nm")
++        order = order[(order["wave_nm"] >= alt["wave_nm"].min()) & (order["wave_nm"] <= alt["wave_nm"].max())]
++        comparison = np.interp(order["wave_nm"], alt["wave_nm"], alt["t_equal_s"])
++        sky_equality_rows.extend(("AO" if ao_enabled else "Natural", factor, channel, trace_id, index, wave, value, alt_value) for index, wave, value, alt_value in zip(order["bin_index"], order["wave_nm"], order["t_equal_s"], comparison, strict=True))
++
++sky_equality_samples = Table(rows=sky_equality_rows, names=("seeing", "bin_factor", "channel", "trace_id", "bin_index", "wave_nm", "current_t_equal_s", "conventional_t_equal_s"))
+ sky_equality_table_rows = sky_equality_samples.to_pandas()
++display_frame(Table(rows=sorted(set(ccd_binning_rows)), names=("channel", "CCD bin x", "CCD bin y")))
+ representative_rows = []
+ for channel, target_wave_nm in (SKY_EQUALITY_VISIBLE_CHECK, SKY_EQUALITY_INFRARED_CHECK):
+     candidates = sky_equality_table_rows[(sky_equality_table_rows["seeing"] == "Natural") & (sky_equality_table_rows["bin_factor"] == 1) & (sky_equality_table_rows["channel"] == channel)]
+-    row = candidates.iloc[int(np.argmin(np.abs(candidates["wave_nm"] - target_wave_nm)))]
+-    representative_rows.append({
+-        "channel": channel,
+-        "wavelength [nm]": row["wave_nm"],
+-        "physical pixels": int(row["n_phys"]),
+-        "current read samples": int(row["current_n_read"]),
+-        "conventional read samples": int(row["conventional_n_read"]),
+-        "current read variance [e2]": row["current_read_variance_e2"],
+-        "current sky rate [e-/s]": row["current_full_sky_rate_e_s"],
+-        "current dark rate [e-/s]": row["current_dark_rate_e_s"],
+-        "current equality [s]": row["current_t_equal_s"],
+-        "conventional read variance [e2]": row["conventional_read_variance_e2"],
+-        "conventional sky rate [e-/s]": row["conventional_full_sky_rate_e_s"],
+-        "conventional dark rate [e-/s]": row["conventional_dark_rate_e_s"],
+-        "conventional equality [s]": row["conventional_t_equal_s"],
+-    })
+-display_frame(representative_rows,
+-    formats={
+-        "wavelength [nm]": "{:.1f}",
+-        "current read variance [e2]": "{:.3g}",
+-        "current sky rate [e-/s]": "{:.3g}",
+-        "current dark rate [e-/s]": "{:.3g}",
+-        "current equality [s]": "{:.3g}",
+-        "conventional read variance [e2]": "{:.3g}",
+-        "conventional sky rate [e-/s]": "{:.3g}",
+-        "conventional dark rate [e-/s]": "{:.3g}",
+-        "conventional equality [s]": "{:.3g}",
+-    }
+-)
++    row = candidates.iloc[np.argmin(np.abs(candidates["wave_nm"] - target_wave_nm))]
++    representative_rows.append({"channel": channel, "wavelength [nm]": row["wave_nm"], f"{DETECTOR_MODE} equality [s]": row["current_t_equal_s"], f"{COMPARISON_DETECTOR_MODE} equality [s]": row["conventional_t_equal_s"]})
++display_frame(representative_rows)
+ 
+# %% code cell 5d41959186ce5fec
+ from matplotlib.lines import Line2D
+ 
+@@ -3961,7 +3644,7 @@
+ }[SKY_EQUALITY_LINESTYLE_BY]
+ 
+ fig, axes = plt.subplots(1, 2, figsize=(13.2, 5.0), sharex=True, sharey=True, constrained_layout=True)
+-panel_specs = (("current_t_equal_s_plot", "qCCD / LmAPD"), ("conventional_t_equal_s_plot", "CCD / H2RG"))
++panel_specs = (("current_t_equal_s_plot", DETECTOR_MODE), ("conventional_t_equal_s_plot", COMPARISON_DETECTOR_MODE))
+ for ax, (plot_column, panel_title) in zip(axes, panel_specs, strict=True):
+     for case in SKY_EQUALITY_PLOT_CASES:
+         samples = sky_equality_plot_samples[case]

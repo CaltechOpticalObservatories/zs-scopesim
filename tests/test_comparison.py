@@ -1,8 +1,41 @@
 import numpy as np
 import pytest
 import astropy.units as u
+import os
 
-from zs_scopesim_tools.comparison import boxcar_sum, gaussian_bin_matrix, overlap_bin_matrix, limiting_abmag, line_width, select_spectral_samples
+from zs_scopesim_tools.comparison import boxcar_sum, gaussian_bin_matrix, overlap_bin_matrix, limiting_abmag, line_width, select_spectral_samples, save_comparison_case, load_comparison_case
+
+
+def test_optional_case_save_preserves_spectra_and_excludes_native_images(tmp_path):
+    configuration = {'instrument': 'ZShooter_v2', 'mode': 'SPEC_ALTDETECT4K', 'seeing': .65}
+    result = {'configuration': configuration, 'wave': np.array([1., 1.1])*u.um, 'source_rate': np.array([2., 3.]), 'native_images': [np.ones((4, 4))]}
+    filename = tmp_path/'case.pkl'
+    save_comparison_case(filename, result)
+    restored = load_comparison_case(filename, configuration, [])
+    np.testing.assert_equal(restored['wave'], result['wave'])
+    assert restored['wave'].unit == u.um
+    np.testing.assert_equal(restored['source_rate'], result['source_rate'])
+    assert restored['native_images'] is None
+    assert result['native_images'][0].shape == (4, 4)
+    save_comparison_case(filename, result, include_images=True)
+    restored = load_comparison_case(filename, configuration, [])
+    np.testing.assert_equal(restored['native_images'][0], result['native_images'][0])
+
+
+def test_explicit_case_load_fails_for_missing_or_obviously_stale_inputs(tmp_path):
+    configuration = {'mode': 'SPEC_ALTDETECT4K', 'seeing': .65}
+    filename = tmp_path/'case.pkl'
+    with pytest.raises(FileNotFoundError):
+        load_comparison_case(filename, configuration, [])
+    save_comparison_case(filename, {'configuration': configuration, 'native_images': None})
+    with pytest.raises(ValueError, match='settings differ'):
+        load_comparison_case(filename, configuration | {'seeing': .8}, [])
+    model = tmp_path/'detector.yaml'
+    model.write_text('pixel_size: 0.010\n')
+    newer = filename.stat().st_mtime_ns+1_000_000_000
+    os.utime(model, ns=(newer, newer))
+    with pytest.raises(ValueError, match='model inputs are newer'):
+        load_comparison_case(filename, configuration, [tmp_path])
 
 
 def test_boxcar_extracts_disjoint_native_pixels_on_either_axis():
