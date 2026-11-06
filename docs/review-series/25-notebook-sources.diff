@@ -1,0 +1,1747 @@
+--- review/xs-24-flat-ab-comparison/notebooks/01_Kilonovae.ipynb
++++ review/xs-25-kilonova-comparison/notebooks/01_Kilonovae.ipynb
+@@ -4,6 +4,10 @@
+ Kilonovae are high-energy astrophysical transients formed by the merger of a two neutron stars. They are short-lived (a few weeks) and evolve rapidly (i.e. drop in brightness), with the SED quickly shifting to the redder wavelengths in a matter of days after the merger. Which is why it is important to follow-up kilonovae ASAP, and get spectra across visible and NIR bands.
+ 
+ ZShooter will be uniquely suited with its rapid ToO capability, to observe KNe early and late in the sequence.
++
++The detector package and independent exposure counts are explicit below. Calibrations and science products are separated by detector mode. Both raw stochastic frames and accumulated electron/variance inputs are saved for reduction.
++
++**Runtime repair (2026-10-20):** all three epochs now extract in all six channels. BLUE's native iteration allowance is 4,000; the preserved failing 20-day swath converges at iteration 3,304 with the unchanged tolerance. The flat-AB controls, epoch/channel plots and host-component checks have been rerun. Science reductions reused the saved stochastic frames and calibration geometry. See [the runtime assessment](../docs/notebook-runtime-checks.md) for the checks and [the operating-point assessment](../docs/detector-operating-points.md#reduction-and-verification) for the separate requested-MJD forwarding issue in these saved frames.
+ 
+# %% markdown cell d4e5a56df4d50b2c
+ ### Imports
+ 
+# %% code cell cbe88f6dee337660
+@@ -12,7 +16,6 @@
+ from pathlib import Path
+ from typing import Optional, Literal
+ import logging
+-import importlib
+ import matplotlib.pyplot as plt
+ import numpy as np
+ import pandas as pd
+@@ -24,7 +27,7 @@
+ # zs_scopesim_tools convenience routines
+ import zs_scopesim_tools.helpers
+ from zs_scopesim_tools.helpers import (disable_scopesim_top_level_catch, warning_prevent_sync_alt_ra_dec,
+-                                       ignore_warnings, set_scopesim_log_level, make_local_output_dir, configure_irdb_path, timed, list_effects, simulate, save_zshooter_readout, subtract_hduls)
++                                       ignore_warnings, set_scopesim_log_level, make_local_output_dir, configure_irdb_path, timed, list_effects, simulate, save_zshooter_readout, electron_readouts, combine_readouts)
+ # scopesim and scopesim source creation related
+ import scopesim as sim
+ import scopesim_templates as sim_tp
+@@ -32,7 +35,7 @@
+ from scopesim.source import source_templates
+ from zs_scopesim_tools.sources import lamp_flat, transient, kilonova_spectra
+ from zs_scopesim_tools.plots import PlotScene, plot_readout_overview
+-from synphot.units import convert_flux, FLAM
++from synphot.units import convert_flux
+ 
+ # DRP
+ from zsdrp.ZSHOOTER import ZSHOOTER
+@@ -43,17 +46,28 @@
+ set_scopesim_log_level("warning")  # set ScopeSim log toggles
+ disable_scopesim_top_level_catch()
+ ignore_warnings()
+-logging.disable(logging.WARNING)
++logging.disable(logging.INFO)
+ 
+# %% markdown cell dff35cf193eea7d1
+ ### Setup
+ 
+ Set up OUTPUT directory, remember to change it if running different simulations from same notebook to prevent accidental overrides.
+ 
+# %% code cell c2b424afdbae5be2
+-OUTDIR = make_local_output_dir(dirname="01_Kilonovae/")
++DETECTOR_MODE = "SPEC"  # Or "SPEC_ALTDETECT"; each package has its own calibration directory.
++OUTDIR = make_local_output_dir(dirname=f"01_Kilonovae_detectors/{DETECTOR_MODE}/")
++# Explicit DIT and independent integrations in B/G/R/YJ/H/K order.
++SCIENCE_EXPOSURES = {
++    "SPEC": [(1200, 3)]*3 + [(100, 36), (30, 120), (60, 60)],
++    "SPEC_ALTDETECT": [(1200, 3)]*3 + [(300, 12), (90, 40), (150, 24)],
++}
++CALIBRATION_DITS = {
++    "SPEC": {"arcs": [40, 40, 3, .5, 4, 2], "flat": [120, 10, 3, .4, .4, .4], "standard": [100]*6},
++    "SPEC_ALTDETECT": {"arcs": [40, 40, 3, 3, 10, 5], "flat": [120, 10, 3, 1.2, 1.2, 1.2], "standard": [100]*6},
++}
++exposure_rows = []
+ 
+# %% markdown cell 6a13283b00f66d4b
+ Load the latest ZShooter instrument model configurations (from local `IRDB/ZShooter_v2`).
+ 
+# %% code cell 5901f7a99dd9dc35
+-zs_config = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=["SPEC"])
++zs_config = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=[DETECTOR_MODE])
+ 
+# %% markdown cell 3bd87f4a556da7d2
+ `list_effects()` is a helper to make a dataframe of all the optical effects in the model with some basic information about each.
+ 
+# %% code cell 3a86b7c01cbad7a1
+@@ -69,7 +83,7 @@
+                         imagetype = "SCIENCE", # one of BIAS, DOMEFLAT, ARCS, SCIENCE
+                         source = Source, # scopesim Source object instance
+                         exptimes = [300, 300, 300, 100, 100, 100], # list of 6 numbers, one per channel
+-                        ndit = 2, # Number of exposures to take at above exptime, same for all 6 channels
++                        ndit = [3, 3, 3, 36, 120, 60], # Independent integrations per arm
+                         output_dir = "/path/to/output/directory",
+                         disable_effects = ["name_of_effect_to_disable", "..."], # see list_effects()
+                         disable_backgrounds = ["sky_lines"], # from "sky", "sky_lines", "sky_continuum"
+@@ -85,7 +99,7 @@
+ )
+ ```
+ Returns a tuple of:
+- - list of size `ndit`, each item of which is a list of 6 fits.HDUList (one per channel), the raw images from scopesim readout
++ - One accumulated readout containing six fits.HDUList objects, one per channel, with explicit pixel variance.
+   - The scopesim OpticalTrain object
+ 
+# %% code cell b718e3ce4f9326ae
+ @timed
+@@ -93,7 +107,7 @@
+                               imagetype: str,
+                               source: Source,
+                               exptimes: Optional[list | float] = None,
+-                              ndit: int = 1,
++                              ndit: int | list = 1,
+                               output_dir: Optional[str | Path]=None,
+                               *,
+                               disable_effects: Optional[list[str]]=None,
+@@ -111,12 +125,12 @@
+                               ) -> tuple[list, sim.optics.OpticalTrain]:
+     """
+     :param object_name: Name of the Source object
+-    :param imagetype: IMAGETYPE keyword (BIAS, DOMEFLAT, ARCS, SKY, SCIENCE)
++    :param imagetype: IMAGETYPE keyword (BIAS, DOMEFLAT, TRACE, ARCS, SKY, SCIENCE)
+     :param source: Source instance
+     :param exptimes: List of exposure times in channel order (blue, green, red, yj, h, k) in seconds, or single value.
+                 If None, it is set to 0.0.
+-    :param ndit: number of exposures
+-    :param output_dir: Directory to save observed data in, FITS files are saved with {object_name}_{CHANNEL}.fits names
++    :param ndit: independent integrations, one count per arm or a common count
++    :param output_dir: Directory to save observed data in, FITS files are saved with {object_name}_{CHANNEL}.fits.gz names
+                         where CHANNEL is in [BLUE, GREEN, RED, YJ, H, K] (upper case)
+     :param disable_effects: List of effect names to disable
+     :param disable_backgrounds: List of background names to disable, options are "sky", "sky_continuum", or "sky_lines".
+@@ -133,10 +147,10 @@
+ 
+     :return: tuple(HDUList, OpticalTrain)
+     """
+-    if imagetype not in ["BIAS", "DOMEFLAT", "ARCS", "SKY", "SCIENCE"]:
+-        raise ValueError(f"Imagetype {imagetype} is incorrect! Choose from BIAS, DOMEFLAT, ARCS, SCIENCE.")
++    if imagetype not in ["BIAS", "DOMEFLAT", "TRACE", "ARCS", "SKY", "SCIENCE", "RAW_OBJECT", "STANDARD_RAW"]:
++        raise ValueError(f"Imagetype {imagetype} is incorrect! Choose from BIAS, DOMEFLAT, TRACE, ARCS, SKY, SCIENCE.")
+     # load ZShooter_v2 irdb model config
+-    config = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=["SPEC"])
++    config = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=[DETECTOR_MODE])
+     # update with passed params
+     config["!OBS.airmass"] = airmass if airmass else config["!OBS.airmass"]
+     config["!OBS.seeing"] = seeing if seeing else config["!OBS.seeing"]
+@@ -149,9 +163,11 @@
+     config["!ATMO.ao_enabled"] = ao_on
+ 
+     dits = [0.]*6 if exptimes is None else [exptimes]*6 if not isinstance(exptimes, list) else exptimes
+-    for dit, expkey in zip(dits, ['blue', 'green', 'red', 'yj', 'h', 'k']):
+-        config[f"!OBS.dit_{expkey}"] = dit
+-        config[f"!OBS.ndit_{expkey}"] = 1.
++    ndits = ndit if isinstance(ndit, list) else [ndit]*6
++    config["!OBS.dit"], config["!OBS.ndit"] = dits[0], ndits[0]
++    for dit, count, arm in zip(dits, ndits, ("blue", "green", "red", "yj", "h", "k"), strict=True):
++        config[f"!OBS.dit_{arm}"] = dit
++        config[f"!OBS.ndit_{arm}"] = count
+ 
+     if params is not None and isinstance(params, dict):
+         params = {key:val for key, val in params.items() if key in config}
+@@ -160,21 +176,22 @@
+     # make sure airmass, ra, dec are in sync if all are provided
+     warning_prevent_sync_alt_ra_dec(config)
+ 
++    if output_dir is not None:
++        output_dir = Path(output_dir)
++
+     # call simulate(), it inits optical train, runs observe() and readout()
+     print(f'Simulating {object_name}')
+-    n_hduls = []
+-    for i in range(ndit):
+-        zs, hdul = simulate(config, source=source, disable_effects=disable_effects, disable_backgrounds=disable_backgrounds, hide_progress_bars=True)
+-        # check desired counts
+-        print(f'Max counts per channel: {[int(np.max(hdu[1].data)) for hdu in hdul]}')
+-        # save the simulated readout to fits files
+-        if output_dir is not None:
+-            _ = save_zshooter_readout(hdul, output_dir=output_dir, object_name=object_name,
+-                                          imagetype=imagetype.upper(), ndit=i, cmds=config, train=zs)
+-            print(f"Saved readout #{i}/{ndit} in {output_dir}")
+-        n_hduls.append(hdul)
+-
+-    return n_hduls, zs
++    zs, raw = simulate(config, source=source, disable_effects=disable_effects, disable_backgrounds=disable_backgrounds, hide_progress_bars=True)
++    hdul = electron_readouts(zs, raw)
++    for arm, readout in zip(("BLUE", "GREEN", "RED", "YJ", "H", "K"), hdul, strict=True):
++        h = readout[1].header
++        exposure_rows.append((object_name, DETECTOR_MODE, arm, h["DIT"], h["NDIT"], h["EXPTIME"], h["PEAKDIT"], h["WELLDEP"], h["EXNOISE"], h["RON"], h["DARK"]))
++    print(f"Peak electrons per integration: {[round(readout[1].header['PEAKDIT']) for readout in hdul]}")
++    # ScopeSim draws the accumulated photons and NDIT independent effective read noises.
++    if output_dir is not None:
++        save_zshooter_readout(raw, output_dir/"native", object_name=object_name, imagetype=imagetype, cmds=config, train=zs)
++        save_zshooter_readout(hdul, output_dir, object_name=object_name, imagetype=imagetype, cmds=config, train=zs)
++    return [hdul], zs
+ 
+# %% markdown cell 570f841d2accc9f9
+ ### Create sources
+ 
+# %% markdown cell 259b05fe5fd9d52c
+@@ -216,7 +233,7 @@
+     # base galaxy centered at 0, 0 arcsec
+     gal = sim_tp.galaxy(sed='brown/NGC3870', z=z, amplitude=host_mag, pixel_scale=pixel_scale,
+                         r_eff=2.5, n=1., ellip=0.3, theta=90, extend=5)
+-    # shift upwards by 2"
++    # The host center is offset by 10.5 arcsec; its extended light still enters the slit.
+     gal.shift(dy=10.5 * u.arcsec)
+     # kilonova spectra from external Kasen spectrum models
+     kn_spectra = kilonova_spectra(model_files, phases=phases, redshift=z, combine_models=True)
+@@ -249,13 +266,13 @@
+ nir_slit = 0.7
+ ao_on = False
+ diffuse_emissivity_on = False
+-params = {"!SIM.spectral.spectral_bin_width": 1e-5} # in um, (== 0.1 Angstrom, use 0.05 Angstrom for smaller slit widths)
++params = {"!OBS.mjdobs": 60310.25, "!SIM.spectral.spectral_bin_width": 1e-5} # in um, (== 0.1 Angstrom, use 0.05 Angstrom for smaller slit widths)
+ 
+ args = {'airmass':airmass, 'seeing':seeing, 'brightness':brightness, 'vis_slit':vis_slit, 'nir_slit':nir_slit,
+         'ao_on': ao_on, 'diffuse_emissivity_on': diffuse_emissivity_on, 'params': params}
+ 
+ # creating a sub-directory in OUTDIR for this run config, naming it based on config params for uniqueness
+-output_dir = OUTDIR / f"kilonova_X-{airmass}_NS-{seeing}_{brightness}_slit-{vis_slit}_ao-{int(ao_on)}"
++output_dir = OUTDIR / f"kilonova_X-{airmass}_NS-{seeing}_{brightness}_slit-{vis_slit}_ao-{int(ao_on)}_optimal_variance"
+ output_dir.mkdir(parents=True, exist_ok=True)
+ 
+ overwrite_cals = True  # set True to redo cals
+@@ -267,24 +284,29 @@
+ disable_effects_cals = ["atmo_transmission", "continuum_emission", "airglow_and_interline_continuum",
+                         "seeing_psf", "adc_residuals"]
+ 
+-if overwrite_cals or len(sorted(output_dir.glob("*bias*")))!=6:
++calibration_files = [*output_dir.glob('*.fits'), *output_dir.glob('*.fits.gz')]
++calibration_names = {path.name.removesuffix('.gz') for path in calibration_files}
++rebuild_cals = overwrite_cals or any(f"{name}_0_{channel}.fits" not in calibration_names for name in ("bias", "arcs", "domeflat", "trace", "standard") for channel in ("BLUE", "GREEN", "RED", "YJ", "H", "K"))
++if rebuild_cals:
+     # bias
+     bias_hduls, _ = update_params_and_observe(object_name="bias", imagetype="BIAS", source=None, exptimes=0,
+                                              output_dir=output_dir, disable_effects=disable_effects_cals, **args)
+     # arcs
+     LAMP = lamp_flat()
+     arcs_hduls, _ = update_params_and_observe(object_name="arcs", imagetype="ARCS", source=LAMP,
+-                                             exptimes=[40, 40, 3, 3, 20, 10], output_dir=output_dir,
++                                             exptimes=CALIBRATION_DITS[DETECTOR_MODE]["arcs"], output_dir=output_dir,
+                                              disable_effects=disable_effects_cals, **args)
++    # Calibration exposure settings are explicit above; readout warns if a detector limit is exceeded.
+     # domeflat
+     DOMEFLAT = sim_tp.calibration.flat_field(temperature=3000*u.K, amplitude=8*u.ABmag, filter_curve='V', extend=60)
+     domeflat_hduls, _ = update_params_and_observe(object_name="domeflat", imagetype="DOMEFLAT", source=DOMEFLAT,
+-                                                 exptimes=[120, 10, 3, 3, 3, 3], output_dir=output_dir,
++                                                 exptimes=CALIBRATION_DITS[DETECTOR_MODE]["flat"], output_dir=output_dir,
+                                                  disable_effects=disable_effects_cals, **args)
+-    # standard star, sky disabled to save time doing one less sim for nodding
+-    STANDARD = sim_tp.misc.point_source(sed=source_templates.ab_spectrum(mag=16))
+-    std_hduls, _ = update_params_and_observe(object_name="standard", imagetype="SCIENCE", source=STANDARD,
+-                                            exptimes=100, disable_backgrounds=["sky"], output_dir=output_dir, **args)
++    # Short-slit traces separate the blue YJ orders and the alternate package's broader CCD response.
++    TRACE = sim_tp.calibration.flat_field(temperature=3000*u.K, amplitude=8*u.ABmag, filter_curve='V', extend=2)
++    trace_hduls, _ = update_params_and_observe(object_name="trace", imagetype="TRACE", source=TRACE,
++                                              exptimes=CALIBRATION_DITS[DETECTOR_MODE]["flat"], output_dir=output_dir,
++                                              disable_effects=disable_effects_cals, **args)
+     if plot:
+         _, _ = plot_readout_overview(bias_hduls[0],
+                                         titles=[f"bias {chan}" for chan in ["BLUE", "GREEN", "RED", "YJ", "H", "K"]])
+@@ -294,34 +316,48 @@
+         _, _ = PlotScene().from_source(DOMEFLAT)
+         _, _ = plot_readout_overview(domeflat_hduls[0],
+                                         titles=[f"domeflat {chan}" for chan in ["BLUE", "GREEN", "RED", "YJ", "H", "K"]])
++    del bias_hduls, domeflat_hduls, trace_hduls, arcs_hduls
++
+# %% code cell ebfdfd81d1aa52ef
++# Removing sky emission leaves telescope/instrument thermal emission in the standard.
++# Subtract an independent blank exposure with the same settings, including its detector pedestal.
++if rebuild_cals:
++    STANDARD = sim_tp.misc.point_source(sed=source_templates.ab_spectrum(mag=16))
++    std_hduls, std_train = update_params_and_observe(object_name="standard_raw", imagetype="SCIENCE", source=STANDARD,
++                                                     exptimes=CALIBRATION_DITS[DETECTOR_MODE]["standard"], disable_backgrounds=["sky"], **args)
++    save_zshooter_readout(std_hduls[0], output_dir, object_name="standard_raw", imagetype="STANDARD_RAW",
++                         cmds=std_train.cmds, train=std_train)
++    blank_hduls, _ = update_params_and_observe(object_name="standard_background", imagetype="SKY", source=None,
++                                               exptimes=CALIBRATION_DITS[DETECTOR_MODE]["standard"], disable_backgrounds=["sky"], output_dir=output_dir, **args)
++    std_hduls = [combine_readouts([std_hduls[0], blank_hduls[0]], [1, -1], source_indices=[0])]
++    save_zshooter_readout(std_hduls[0], output_dir, object_name="standard", imagetype="SCIENCE",
++                         cmds=std_train.cmds, train=std_train, extra_headers={"SUBTRACTED": True})
++    if plot:
+         _, _ = PlotScene().from_source(STANDARD)
+-        _, _ = plot_readout_overview(std_hduls[0],
+-                                        titles=[f"standard {chan}" for chan in ["BLUE", "GREEN", "RED", "YJ", "H", "K"]])
+-# for the precious RAM
+-del bias_hduls, domeflat_hduls, arcs_hduls, std_hduls
++        _, _ = plot_readout_overview(std_hduls[0], titles=[f"standard {chan}" for chan in ["BLUE", "GREEN", "RED", "YJ", "H", "K"]])
++    del std_hduls, blank_hduls, std_train
+ 
+# %% markdown cell f7e503b28fbb791a
+ Observe each KN, and one sky exposure for each unique frame exposure time.
+ 
+# %% code cell f38182cc14fabb29
+-importlib.reload(zs_scopesim_tools.helpers)
+-from zs_scopesim_tools.helpers import subtract_hduls, save_zshooter_readout
+-
+-sky_hduls, _ = update_params_and_observe(object_name=f"sky", imagetype="SKY", source=None,
+-                                     exptimes=1800, output_dir=output_dir, **args)
+-
+-# 2 frames x 1800s = 3600s = 1hr
+-for phase, source in KNs.items():
+-    # with full sky background
+-    objname = f"KN_{phase}d"
+-    hduls, _ = update_params_and_observe(object_name=objname, imagetype="SCIENCE", source=source,
+-                                            exptimes=1800, ndit=2, output_dir=output_dir, **args)
+-    # subtract sky
+-    for i, hdul in enumerate(hduls):
+-        sub_hdul = subtract_hduls(hdul, sky_hduls[0])
+-        _ = save_zshooter_readout(sub_hdul, output_dir=output_dir, object_name=f"{objname}_SUB", imagetype="SCIENCE", ndit=i, extra_headers={"SUBTRACTED": True})
+-
+-_ = plot_readout_overview(sky_hduls[0], titles=[f"Sky, {chan}" for chan in ["BLUE", "GREEN", "RED", "YJ", "H", "K"]])
+-_ = plot_readout_overview(hdul, titles=[f"{objname}, {chan}" for chan in ["BLUE", "GREEN", "RED", "YJ", "H", "K"]])
++# Each on-source integration has an independent matching blank exposure.
++# Combine unique detector frames before optimal extraction, so shared pixels are counted once.
++science_dits = [dit for dit, count in SCIENCE_EXPOSURES[DETECTOR_MODE]]
++science_ndits = [count for dit, count in SCIENCE_EXPOSURES[DETECTOR_MODE]]
++science_sources = {"FLAT_AB": sim_tp.misc.point_source(sed=source_templates.ab_spectrum(mag=20))}
++science_sources.update({f"KN_{phase}d": source for phase, source in KNs.items()})
++for objname, source in science_sources.items():
++    hduls, science_train = update_params_and_observe(object_name=objname, imagetype="RAW_OBJECT", source=source,
++                                        exptimes=science_dits, ndit=science_ndits, output_dir=output_dir, **args)
++    sky_hduls, _ = update_params_and_observe(object_name=f"{objname}_sky", imagetype="SKY", source=None,
++                                            exptimes=science_dits, ndit=science_ndits, output_dir=output_dir, **args)
++    sub_hdul = combine_readouts([hduls[0], sky_hduls[0]], [1, -1], source_indices=[0])
++    save_zshooter_readout(sub_hdul, output_dir, object_name=f"{objname}_SUB", imagetype="SCIENCE", extra_headers={"SUBTRACTED": True})
++    del hduls, sky_hduls
+ _ = plot_readout_overview(sub_hdul, titles=[f"{objname}-Sky, {chan}" for chan in ["BLUE", "GREEN", "RED", "YJ", "H", "K"]])
++del sub_hdul
++exposure_table = pd.DataFrame(exposure_rows, columns=["object", "detector_mode", "arm", "DIT", "NDIT", "on_source_s", "peak_e_per_integration", "usable_well_e", "F", "read_noise_total_e", "dark_e_s"])
++exposure_table["well_fraction"] = exposure_table["peak_e_per_integration"]/exposure_table["usable_well_e"]
++exposure_table.to_csv(output_dir/"exposures.csv", index=False)
++display(exposure_table)
+ 
+# %% markdown cell 791180cbe43ec652
+ ### Reducing the simulated readouts with Pyreduce
+ 
+@@ -329,6 +365,36 @@
+ 
+# %% code cell f491a4e1a50dbe8b
+ REDUCED_DIR = output_dir / "reduced"
+ REDUCED_DIR.mkdir(exist_ok=True)
++
+# %% code cell 18e08361ceca4cde
++# Independent blank readouts share optical rates but must have independent detector noise.
++noise_rows, source_noise_rows = [], []
++for channel in ['BLUE', 'GREEN', 'RED', 'YJ', 'H', 'K']:
++    with fits.open(output_dir / f'FLAT_AB_sky_0_{channel}.fits.gz') as first, fits.open(output_dir / f'KN_1.5d_sky_0_{channel}.fits.gz') as second:
++        residual = (first[1].data - second[1].data) / np.sqrt(first['VARIANCE'].data + second['VARIANCE'].data)
++        noise_rows.append((channel, residual.size, np.mean(residual, dtype=np.float64), np.std(residual, dtype=np.float64)))
++        blank_variance = first['VARIANCE'].data
++        excess_noise = first[1].header['EXNOISE']
++    with fits.open(output_dir / f'FLAT_AB_SUB_0_{channel}.fits.gz') as combined:
++        # V(A-B) = F*S + 2*V(B), with S the source expectation in input electrons.
++        expected_source = (combined['VARIANCE'].data - 2*blank_variance)/excess_noise
++        illuminated = expected_source > .1*np.max(expected_source)
++        residual = (combined[1].data[illuminated] - expected_source[illuminated]) / np.sqrt(combined['VARIANCE'].data[illuminated])
++        source_noise_rows.append((channel, residual.size, np.mean(residual, dtype=np.float64), np.std(residual, dtype=np.float64)))
++noise_summary = Table(rows=noise_rows, names=['channel', 'pixels', 'standardized_difference_mean', 'standardized_difference_std'])
++noise_summary.write(output_dir / 'readout_noise_check.csv', format='ascii.csv', overwrite=True)
++display(noise_summary)
++source_noise_summary = Table(rows=source_noise_rows, names=['channel', 'pixels', 'standardized_residual_mean', 'standardized_residual_std'])
++source_noise_summary.write(output_dir / 'source_noise_check.csv', format='ascii.csv', overwrite=True)
++display(source_noise_summary)
++del residual, blank_variance, expected_source, illuminated
++
+# %% markdown cell 12f8ae6fd19d7e3d
++### Propagated extraction uncertainties
++
++The reduction inputs are accumulated electrons with a `VARIANCE` image from source, sky, dark and read noise. Each arm uses the explicitly configured independent integrations and an equal-time independently drawn blank. Their accumulated counts and variances are combined before extraction. LmAPD photon variance is $F$ times the detected photon signal; dark and effective read variance are added separately. Native noisy detector frames are preserved in `native/`.
++
++Optimal extraction retains the regularized fitted spatial profile and slit tilt. Its covariance includes the profile fit and shared pixels in overlapping swaths. The displayed uncertainties condition on the measured trace, wavelength solution and calibration products. Median filtering below is only for display; it does not set spectral resolution or define a binned S/N.
++
++The flat AB control is reduced before the kilonova epochs. Its plotted wavelength integration bins use nominal $\lambda/\Delta\lambda=1000$ spacing; gaps and window edges can leave narrower bins with lower S/N. These are flux integrals with full covariance, not an LSF convolution to common resolving power. The integrated-band table gives the quantitative flux-closure check. The host galaxy remains in the science scene; the dashed transient spectrum is not the complete scene. See [the resolution note](../docs/resolution-and-sampling.md) and [detector operating assumptions](../docs/detector-operating-points.md).
+ 
+# %% markdown cell dd218f15a6e9f20
+ Since pyreduce reduction steps are designed to run per channel, load the raw file paths for each channel and object and store them in a dictionary for easy access using in-built method of pyreduce's `Instrument` subclass - `ZSHOOTER`
+ 
+# %% code cell 6296aa638f2c6d1
+@@ -337,10 +403,13 @@
+ zspy = ZSHOOTER()
+ files = {}
+ for chan in zspy.config.channels:
+-    stepnames = ['bias','flat','wavecal_master','science']
++    stepnames = ['bias','flat','trace','wavecal_master','science']
+     file_groups = zspy.sort_files(str(output_dir), target='', night='', channel=chan, steps=stepnames)
+-    _, fls = file_groups[0]
++    # Calibration-only nights can precede the single science group returned by PyReduce.
++    (_, fls), = [entry for entry in file_groups if len(entry[1]['science'])]
+     files[chan] = {name: fls[name] for name in stepnames}
++    if DETECTOR_MODE == 'SPEC' and chan != 'YJ':
++        files[chan]['trace'] = files[chan]['flat']
+ # files[chan]
+ 
+# %% markdown cell 47abaee21fec0022
+ ##### Commented cell below shows how to construct `files` nested dict of filenames manually, if needed.
+@@ -363,11 +432,110 @@
+ 
+ The output of `zsdrp.pipe.run_reduction()` is a dictionary of per channel calibration products and intermediate spectra (up to blaze normalization). Flux correction is applied after.
+ 
+# %% code cell 229c3b91d0b42def
+-import zsdrp.pipe, zsdrp.steps
+-importlib.reload(zsdrp.pipe)
+-importlib.reload(zsdrp.steps)
+-
+-results = zsdrp.pipe.run_reduction(files, channels=None, output_dir=REDUCED_DIR, disable_steps=['mask'], print_params=False, disable_all_plots=True, reuse_cals=True)
++from scopesim.source.source_templates import ab_spectrum
++from synphot.units import convert_flux
++from pyreduce.spectra import Spectra
++
++reference = ab_spectrum(mag=16)
++reference_wave = reference.waveset
++reference_flux = convert_flux(reference_wave, reference(reference_wave), "FLAM")
++# Establish the flat-AB control before extracting the fainter science scenes.
++results = {}
++for channel, group in files.items():
++    controls = [path for path in group['science'] if fits.getheader(path)['OBJECT'] in ('STANDARD', 'FLAT_AB_SUB')]
++    selected = {channel: {**group, 'science': controls}}
++    reduced = zsdrp.pipe.run_reduction(selected, channels=[channel], output_dir=REDUCED_DIR, disable_steps=['mask'],
++                                      print_params=False, disable_all_plots=True, reuse_cals=not rebuild_cals, require_variance=True, trace_list=science_train['trace_list_analytical'])
++    # Flux calibration converts its inputs in place; preserve the standard in original electron units.
++    reduced[channel]['spectra']['STANDARD'].save(REDUCED_DIR / f'standard_{channel}_extracted_electrons.fits.gz')
++    calibrated = zsdrp.pipe.run_flux_calibration_and_stitch(reduced, reference_wave=reference_wave, reference_flux=reference_flux,
++                                                          plot=False, output_dir=str(REDUCED_DIR))
++    cal = reduced[channel]
++    del cal['spectra'], cal['norm']
++    results[channel] = cal
++    del reduced, calibrated
++
+# %% code cell 9b277eafe7029ea9
++from astropy.io import fits
++from astropy.table import Table
++from matplotlib.colors import LogNorm
++
++diagnostic_dir = REDUCED_DIR / "diagnostics"
++diagnostic_dir.mkdir(exist_ok=True)
++calibration_rows = []
++fig, axes = plt.subplots(2, 3, figsize=(15, 10))
++for ax, (channel, cal) in zip(axes.ravel(), results.items(), strict=True):
++    traces = [t for t in cal['traces'] if not t.invalid]
++    row_for_order = {t.m: i for i, t in enumerate(traces)}
++    residuals = []
++    for line in cal['arc_lines']:
++        order = int(line['order'].rsplit('_', 1)[1])
++        trace = traces[row_for_order[order]]
++        if not trace.column_range[0] <= line['x'] < trace.column_range[1]:
++            continue
++        wavelength = cal['wave_img'][row_for_order[order]]
++        x = np.arange(wavelength.size)
++        residuals.append((np.interp(line['x'], x, wavelength) - line['line']) / np.interp(line['x'], x, np.abs(np.gradient(wavelength))))
++    calibration_rows.append((channel, len(traces), len(residuals), np.median(np.abs(residuals)), np.percentile(np.abs(residuals), 95)))
++    image = fits.getdata(files[channel]['trace'][0], 1) - cal['master_bias'][0]
++    ax.imshow(np.maximum(image, 1), origin='lower', cmap='gray', norm=LogNorm(1, 60000))
++    for t in traces:
++        x = np.arange(*t.column_range)
++        ax.plot(x, t.y_at_x(x), color='tomato', linewidth=0.5)
++        xc = x[len(x)//2]
++        ax.text(xc, t.y_at_x(xc), str(t.m), color='cyan', fontsize=5)
++    ax.set_title(f"{channel}: {len(traces)} measured orders")
++    ax.set_xlabel("Detector x (pixel)")
++    ax.set_ylabel("Detector y (pixel)")
++    ax.set_xlim(0, image.shape[1]-1)
++    ax.set_ylim(0, image.shape[0]-1)
++calibration_summary = Table(rows=calibration_rows, names=['channel', 'orders', 'arc_lines', 'median_abs_residual_pix', 'p95_abs_residual_pix'])
++calibration_summary['median_abs_residual_pix'].info.format = '.3f'
++calibration_summary['p95_abs_residual_pix'].info.format = '.3f'
++display(calibration_summary)
++calibration_summary.write(diagnostic_dir / "calibration.csv", format='ascii.csv', overwrite=True)
++fig.tight_layout()
++fig.savefig(diagnostic_dir / "measured_traces.png", dpi=180)
++plt.show()
++
+# %% code cell 2517088e3d69a3b7
++from zs_scopesim_tools.reduction_checks import flat_ab_extraction_bins, flat_ab_band_integrals
++from zsdrp.steps import TraceWrapper
++
++# Fixed comparison windows exclude broad inter-band gaps but retain narrow transmission features.
++# Selection never uses the noisy recovered flux.
++flat_windows = {'BLUE': (3500, 4000), 'GREEN': (4800, 6000), 'RED': (8000, 8800), 'YJ': (12000, 13000), 'H': (15500, 17000), 'K': (21000, 22000)}
++flat_files = {channel: REDUCED_DIR / f'spectra_FLAT_AB_SUB_{channel}_fluxcal.fits.gz' for channel in flat_windows}
++flat_intervals = {channel: [u.Quantity(limits, u.AA)] for channel, limits in flat_windows.items()}
++native_gap = {}
++for channel in flat_windows:
++    trace_path = REDUCED_DIR / f'trace_{channel}.fits.gz'
++    if not trace_path.exists():
++        trace_path = trace_path.with_suffix('')
++    traces = [trace for trace in TraceWrapper.load(trace_path) if not trace.invalid]
++    with np.load(REDUCED_DIR / f'wavecal_{channel}.npz') as calibration:
++        native_steps = np.concatenate([np.diff(wave[trace.column_range[0]:trace.column_range[1]]) for wave, trace in zip(calibration['wave_img'], traces, strict=True)])
++    native_gap[channel] = np.max(np.abs(native_steps)) * u.AA
++flat_bins, flat_figure = flat_ab_extraction_bins(flat_files, intervals=flat_intervals, max_gap=native_gap, magnitude=20, bin_R=1000)
++flat_bins.write(diagnostic_dir / 'flat_ab_bins.ecsv', overwrite=True)
++flat_figure.savefig(diagnostic_dir / 'flat_ab_recovery.png', dpi=160)
++flat_bands = flat_ab_band_integrals(flat_files, intervals=flat_intervals, max_gap=native_gap, magnitude=20)
++flat_bands.write(diagnostic_dir / 'flat_ab_bands.ecsv', overwrite=True)
++display(flat_bands['arm', 'covered_width', 'ratio', 'ratio_uncertainty', 'snr'])
++plt.show()
++
+# %% code cell 7d9396c34725b5aa
++# Reuse the explicitly rebuilt calibration files and original standard counts.
++# Save each scene/arm before proceeding to a fainter scene.
++for phase in KNs:
++    object_name = f'KN_{phase}D_SUB'
++    for channel, group in files.items():
++        science_file, = [path for path in group['science'] if fits.getheader(path)['OBJECT'] == object_name]
++        selected = {channel: {**group, 'science': [science_file]}}
++        print(f"Extracting {object_name}, {channel}")
++        reduced = zsdrp.pipe.run_reduction(selected, channels=[channel], output_dir=REDUCED_DIR, disable_steps=['mask'],
++                                          print_params=False, disable_all_plots=True, reuse_cals=True, require_variance=True, trace_list=science_train['trace_list_analytical'])
++        reduced[channel]['spectra']['STANDARD'] = Spectra.read(REDUCED_DIR / f'standard_{channel}_extracted_electrons.fits.gz', raw=True)
++        calibrated = zsdrp.pipe.run_flux_calibration_and_stitch(reduced, reference_wave=reference_wave, reference_flux=reference_flux,
++                                                              plot=False, output_dir=str(REDUCED_DIR))
++        del reduced, calibrated
+ 
+# %% code cell ab5115cbd5cead89
+ # import zsdrp.utils
+ # importlib.reload(zsdrp.utils)
+@@ -378,20 +546,27 @@
+ 
+# %% markdown cell 8318b6263e5bb2d9
+ Apply flux normalization. The standard source simulated above is a simple ab_spectrum at 16th mag so that's our ground truth, i.e. reference.
+ 
+# %% code cell 4ac6c9ea3d0ce02a
+-from scopesim.source.source_templates import ab_spectrum
+-from synphot.units import convert_flux
+-
+-reference = ab_spectrum(mag=16)
+-reference_wave = reference.waveset
+-reference_flux = convert_flux(reference_wave, reference(reference_wave), "FLAM")
+-
+-final_spectra = zsdrp.pipe.run_flux_calibration_and_stitch(results, reference_wave=reference_wave, reference_flux=reference_flux, plot=False, output_dir=str(REDUCED_DIR))
+-
+-# for the precious RAM
++from pyreduce.spectra import Spectra
++from zsdrp.steps import splice
++from zsdrp.utils import save_spectra_to_ascii
++
++# Combine already flux-calibrated channels without fitting noisy overlap scale factors.
++for objname in ['FLAT_AB_SUB', 'KN_1.5D_SUB', 'KN_7.5D_SUB', 'KN_20.0D_SUB']:
++    # Prefer a compressed product when both representations exist.
++    channel_files = {path.name.removesuffix('.gz'): path for suffix in ('.fits', '.fits.gz') for path in REDUCED_DIR.glob(f'spectra_{objname}_*_fluxcal{suffix}')}
++    channel_spectra = [Spectra.read(channel_files[name], raw=True) for name in sorted(channel_files)]
++    pieces = Spectra(header=channel_spectra[0].header, data=[spectra.data[0] for spectra in channel_spectra])
++    stitched = splice(pieces, simple=True)
++    stitched.save(REDUCED_DIR / f'spectra_{objname}_stitched.fits.gz')
++    save_spectra_to_ascii(stitched, REDUCED_DIR / f'spectra_{objname}_stitched.txt')
++    del channel_spectra, pieces, stitched
+ del results
+-del final_spectra
++
+# %% markdown cell b9d3c1bb5a1ea220
++The science inputs carry the accumulated source-minus-blank variance. The DRP propagates extraction and spectral covariance and the standard-response uncertainty. The scene contains host light; the overplotted reference is the transient alone, separated in the component check below. All requested epochs now extract with the repaired convergence settings; the weak fitted-profile caveat below remains relevant to their interpretation.
+ 
+# %% markdown cell 5d37114a6a55f8c9
+-`final_spectra` is a dictionary of stitched and flux normalized spectra keyed by object name (science objects only).
++The stitched FITS files retain spectral covariance; the text exports contain flux and marginal standard deviation. The following plots show native-sample S/N. Their 51-sample median curves are display guides, not spectra with a new measured resolving power.
++
++At 20 days, some BLUE/GREEN segments have strongly signed, noise-dominated fitted spatial profiles. Numerical convergence preserves the chosen estimator; it does not make those profiles physical measurements. Their covariance is a local, first-order propagation, not a complete nonlinear uncertainty assessment in this weak-profile regime. The extracted scene also contains host light, so its S/N is not the transient's detection significance. The [reduction assessment](../docs/kilonova-mirrored-reduction.md) records the controlled convergence and host-light checks.
+ 
+# %% markdown cell 2d2f1dd0d17f6ec2
+ Plot
+ 
+# %% code cell 4c63a747aae1517
+@@ -401,9 +576,9 @@
+ ax[0].tick_params(axis='y', labelsize=12)
+ ax[1].tick_params(axis='y', labelsize=12)
+ ax[1].tick_params(axis='x', labelsize=16)
+-ax[0].set_ylabel('Flux (erg/s/cm$^2/\AA$)', fontsize=18)
++ax[0].set_ylabel(r'Flux (erg/s/cm$^2/\AA$)', fontsize=18)
+ ax[1].set_ylabel('SNR', fontsize=18)
+-ax[1].set_xlabel('Wavelength ($\AA$)', fontsize=18)
++ax[1].set_xlabel(r'Wavelength ($\AA$)', fontsize=18)
+ 
+ for i,obj in enumerate(["KN_1.5D", "KN_7.5D", "KN_20.0D"]):
+     objname = f"{obj}_SUB" # set pattern string prefix
+@@ -418,10 +593,13 @@
+         print(f"{objname}: mean SNR = {np.mean(snr[good]):.2f}, "
+               f"median SNR = {np.median(snr[good]):.2f}")
+ 
+-        ax[0].plot(wave, spec, alpha=0.2, color=f"C{i}")
+-        ax[0].plot(wave, median_filter(spec, 51), label=obj, color=f"C{i}")
+-        ax[1].plot(wave, snr, alpha=0.2, color=f"C{i}")
+-        ax[1].plot(wave, median_filter(snr , 51), color=f"C{i}")
++        # Break display lines at gaps larger than every configured native wavelength step.
++        gap = max(native_gap.values()).to_value(u.AA)
++        for part in np.split(np.arange(len(wave)), np.flatnonzero(np.diff(wave) > gap) + 1):
++            ax[0].plot(wave[part], spec[part], alpha=0.2, color=f"C{i}")
++            ax[0].plot(wave[part], median_filter(spec[part], 51), label=obj if part[0] == 0 else None, color=f"C{i}")
++            ax[1].plot(wave[part], snr[part], alpha=0.2, color=f"C{i}")
++            ax[1].plot(wave[part], median_filter(snr[part], 51), color=f"C{i}")
+ 
+ 
+ ax[0].set_title('Exptime = 3600 s', fontsize=24)
+@@ -430,6 +608,7 @@
+ ax[0].set_ylim(-0.01e-15, 0.2e-15)
+ ax[1].set_ylim(-10, 100)
+ ax[0].legend(ncol=5)
++fig.savefig(diagnostic_dir / "kilonova_epochs.png", dpi=160)
+ plt.show()
+ 
+# %% markdown cell 2affd93d6bf219eb
+ Checking stitching
+@@ -447,9 +626,9 @@
+ ax[0].tick_params(axis='y', labelsize=12)
+ ax[1].tick_params(axis='y', labelsize=12)
+ ax[1].tick_params(axis='x', labelsize=16)
+-ax[0].set_ylabel('Flux (erg/s/cm$^2/\AA$)', fontsize=18)
++ax[0].set_ylabel(r'Flux (erg/s/cm$^2/\AA$)', fontsize=18)
+ ax[1].set_ylabel('SNR', fontsize=18)
+-ax[1].set_xlabel('Wavelength ($\AA$)', fontsize=18)
++ax[1].set_xlabel(r'Wavelength ($\AA$)', fontsize=18)
+ ax[0].set_title(f"{obj.upper()} 3600s, slit {vis_slit}", fontsize=18)
+ 
+ colors = {'BLUE': 'cornflowerblue', 'GREEN': 'green', 'RED': 'orange', 'YJ': 'orangered', 'H': 'red', 'K': 'maroon'}
+@@ -457,21 +636,137 @@
+     chan = str(fl).split('/')[-1].split('_')[-2].upper()
+     tbl = Table.read(str(fl), format='ascii', delimiter='\t')
+     snr = tbl['flux']/tbl['eflux']
+-    ax[0].plot(tbl['wavelength'], tbl['flux'], color=colors[chan], alpha=0.3)
+-    ax[0].plot(tbl['wavelength'], median_filter(tbl['flux'], 51), label=chan, color=colors[chan])
+-    ax[1].plot(tbl['wavelength'], snr, alpha=0.3, color=colors[chan])
+-    ax[1].plot(tbl['wavelength'], median_filter(snr, 51), color=colors[chan])
++    for part in np.split(np.arange(len(tbl)), np.flatnonzero(np.diff(tbl['wavelength']) > native_gap[chan].to_value(u.AA)) + 1):
++        ax[0].plot(tbl['wavelength'][part], tbl['flux'][part], color=colors[chan], alpha=0.3)
++        ax[0].plot(tbl['wavelength'][part], median_filter(tbl['flux'][part], 51), label=chan if part[0] == 0 else None, color=colors[chan])
++        ax[1].plot(tbl['wavelength'][part], snr[part], alpha=0.3, color=colors[chan])
++        ax[1].plot(tbl['wavelength'][part], median_filter(snr[part], 51), color=colors[chan])
+ stbl = Table.read(str(stitched), format='ascii', delimiter='\t')
+-ax[0].plot(stbl['wavelength'], median_filter(stbl['flux'], 51), color='gray', alpha=0.7, label='Stitched')
+-ax[1].plot(stbl['wavelength'], median_filter(stbl['flux']/stbl['eflux'], 51), color='white', alpha=0.7)
++gap = max(native_gap.values()).to_value(u.AA)
++for part in np.split(np.arange(len(stbl)), np.flatnonzero(np.diff(stbl['wavelength']) > gap) + 1):
++    ax[0].plot(stbl['wavelength'][part], median_filter(stbl['flux'][part], 51), color='gray', alpha=0.7, label='Stitched' if part[0] == 0 else None)
++    ax[1].plot(stbl['wavelength'][part], median_filter(stbl['flux'][part]/stbl['eflux'][part], 51), color='black', alpha=0.7)
+ model = convert_flux(stbl['wavelength'], KNs[1.5].spectra[1](stbl['wavelength']), "FLAM")
+-ax[0].plot(stbl['wavelength'], model.value, color='white', label='Model', ls='--')
++ax[0].plot(stbl['wavelength'], model.value, color='black', label='Transient input', ls='--')
+ 
+ ax[0].set_xlim(3000, 25000)
+ ax[0].set_ylim(-0.1e-15, 0.2e-15)
+ ax[1].set_ylim(-10, 100)
+ ax[0].legend(ncol=7, fontsize=16)
++fig.savefig(diagnostic_dir / "kilonova_1p5d_channels.png", dpi=160)
+ plt.show()
+-
+# %% code cell 38756f8fbaee0880
+-model
++
+# %% code cell 5ec1912ffecc061b
++# Extracted scene / input transient: the scene includes host light. These are not pure flux-recovery ratios.
++windows = {'BLUE': (3500, 4000), 'GREEN': (4800, 6000), 'RED': (8000, 8800), 'YJ': (12000, 13000), 'H': (15500, 17000), 'K': (21000, 22000)}
++recovery_rows = []
++for channel, (lo, hi) in windows.items():
++    data = Table.read(next(REDUCED_DIR.glob(f'*KN_1.5D_SUB_{channel}_fluxcal.txt')), format='ascii', delimiter='\t')
++    truth = convert_flux(data['wavelength'], KNs[1.5].spectra[1](data['wavelength']), 'FLAM').value
++    band = (data['wavelength'] > lo) & (data['wavelength'] < hi)
++    recovery_rows.append((channel, lo, hi, np.median(data['flux'][band] / truth[band])))
++recovery = Table(rows=recovery_rows, names=['channel', 'lower_A', 'upper_A', 'median_scene_over_transient_input'])
++recovery['median_scene_over_transient_input'].info.format = '.3f'
++display(recovery)
++recovery.write(diagnostic_dir / 'flux_recovery.csv', format='ascii.csv', overwrite=True)
++
+# %% markdown cell 9eaefdd812fa7b19
++### Separate host light from the kilonova
++
++The scene contains both the host galaxy and the transient; the reference curve above contains only the transient. This diagnostic repeats the observation for each component and their sum, then uses optical expectation images before detector random draws, dark current and bias. The science exposures above retain their normal stochastic detector effects.
++
+# %% code cell bca47137a2a6eeba
++from copy import deepcopy
++from zs_scopesim_tools.comparison import detector_rates
++
++host_only = deepcopy(KNs[1.5])
++host_only.fields = host_only.fields[:1]
++kn_only = deepcopy(KNs[1.5])
++kn_only.fields = kn_only.fields[1:]
++components = {'blank': None, 'kilonova': kn_only, 'host': host_only, 'scene': KNs[1.5]}
++blue_counts = {}
++for name, component in components.items():
++    hduls, component_train = update_params_and_observe(object_name=name, imagetype="SCIENCE", source=component,
++                                                        exptimes=3600, disable_backgrounds=["sky"], **args)
++    # Use the actual optical expectation, before detector random draws.
++    blue_counts[name] = detector_rates(component_train)[0] * 3600
++    del hduls, component_train
++for name in ['kilonova', 'host', 'scene']:
++    blue_counts[name] -= blue_counts['blank']
++residual = blue_counts['scene'] - blue_counts['kilonova'] - blue_counts['host']
++print(f"BLUE summed absolute additivity residual / scene electrons: {np.sum(np.abs(residual), dtype=np.float64) / np.sum(blue_counts['scene'], dtype=np.float64):.3g}")
++np.savez_compressed(diagnostic_dir / 'blue_scene_components.npz', **blue_counts)
++
+# %% code cell 58c88d67fc91e57b
++# These noiseless component extractions check flux additivity only; their legacy residual sig is not a science uncertainty.
++# The noisy flat-AB and kilonova products above require supplied detector variance.
++component_dir = diagnostic_dir / 'blue_components'
++component_dir.mkdir(exist_ok=True)
++component_files = []
++for name in ['kilonova', 'host', 'scene']:
++    with fits.open(output_dir / 'KN_1.5d_0_BLUE.fits.gz') as original:
++        hdul = fits.HDUList([original[0].copy(), original[1].copy()])
++    hdul[1].data = blue_counts[name]
++    for hdu in hdul:
++        hdu.header['EXPTIME'] = hdu.header['DIT'] = 3600
++        hdu.header['NDIT'] = 1
++        hdu.header['RON'] = hdu.header['DARK'] = 0
++    hdul[0].header['HIERARCH SIM CONFIG OBS dit_blue'] = 3600
++    hdul[0].header['HIERARCH SIM CONFIG OBS ndit_blue'] = 1
++    component_files.extend(save_zshooter_readout([hdul], component_dir, object_name=name, imagetype='SCIENCE', extra_headers={'SUBTRACTED': True}))
++blue_files = dict(files['BLUE'])
++standard_file, = [path for path in files['BLUE']['science'] if fits.getheader(path)['OBJECT'] == 'STANDARD']
++blue_files['science'] = component_files + [standard_file]
++components_reduced = zsdrp.pipe.run_reduction({'BLUE': blue_files}, channels=['BLUE'], output_dir=REDUCED_DIR,
++                                              disable_steps=['mask'], disable_all_plots=True, print_params=False, reuse_cals=True)
++components_flux = zsdrp.pipe.run_flux_calibration_and_stitch(components_reduced, reference_wave=reference_wave,
++                                                            reference_flux=reference_flux, plot=False, output_dir=component_dir)
++component_rows = []
++for name in ['KILONOVA', 'HOST', 'SCENE']:
++    spectrum = components_flux[name].data[0]
++    truth = convert_flux(spectrum.wave, KNs[1.5].spectra[1](spectrum.wave), 'FLAM').value
++    band = (spectrum.wave > 3500) & (spectrum.wave < 4000)
++    component_rows.append((name, np.median(spectrum.spec[band] / truth[band])))
++component_summary = Table(rows=component_rows, names=['component', 'median_flux_over_kilonova_input'])
++display(component_summary)
++component_summary.write(diagnostic_dir / 'blue_host_check.csv', format='ascii.csv', overwrite=True)
++del components_reduced
++
+# %% code cell 9d6070e1deceb592
++# Count closure before extraction, using a fixed ten-row aperture in each primary FSR.
++from zsdrp.steps import TraceWrapper
++trace_path = REDUCED_DIR / 'trace_BLUE.fits.gz'
++if not trace_path.exists():
++    trace_path = trace_path.with_suffix('')
++blue_traces = [trace for trace in TraceWrapper.load(trace_path) if not trace.invalid]
++with np.load(REDUCED_DIR / 'wavecal_BLUE.npz') as arc_solution:
++    blue_wave = arc_solution['wave_img']
++with np.load(Path(zspy._inst_dir) / 'free_spectral_ranges.npz') as fsr_file:
++    blue_fsr = dict(zip(fsr_file['BLUE_orders'], fsr_file['BLUE'], strict=True))
++aperture = np.zeros(blue_counts['scene'].shape, dtype=bool)
++for trace, wavelength in zip(blue_traces, blue_wave, strict=True):
++    x = np.arange(*trace.column_range)
++    lo, hi = blue_fsr[trace.m]
++    x = x[(wavelength[x] > max(lo, 3500)) & (wavelength[x] < min(hi, 4000))]
++    y = np.rint(trace.y_at_x(x)).astype(int)
++    rows = y[None, :] + np.arange(-5, 5)[:, None]
++    aperture[rows, x[None, :]] = True
++with fits.open(output_dir / 'KN_1.5d_SUB_0_BLUE.fits.gz') as combined:
++    observed_e = np.sum(combined[1].data[aperture], dtype=np.float64)
++    variance_e2 = np.sum(combined['VARIANCE'].data[aperture], dtype=np.float64)
++expected_e = np.sum(blue_counts['scene'][aperture], dtype=np.float64)
++print(f"Observed/expected aperture electrons: {observed_e/expected_e:.6f}; difference {(observed_e-expected_e)/np.sqrt(variance_e2):.2f} sigma")
++count_summary = Table(rows=[(aperture.sum(), observed_e, expected_e, np.sqrt(variance_e2))],
++                      names=['pixels', 'observed_electrons', 'expected_electrons', 'sigma_electrons'])
++count_summary.write(diagnostic_dir / 'blue_count_closure.csv', format='ascii.csv', overwrite=True)
++
++fig, ax = plt.subplots(figsize=(11, 4))
++for name, label in [('KILONOVA', 'Transient alone'), ('SCENE', 'Transient + host')]:
++    spectrum = components_flux[name].data[0]
++    truth = convert_flux(spectrum.wave, KNs[1.5].spectra[1](spectrum.wave), 'FLAM').value
++    ax.plot(spectrum.wave, spectrum.spec/truth, label=label)
++actual = Table.read(REDUCED_DIR / 'spectra_KN_1.5D_SUB_BLUE_fluxcal.txt', format='ascii', delimiter='\t')
++truth = convert_flux(actual['wavelength'], KNs[1.5].spectra[1](actual['wavelength']), 'FLAM').value
++ax.plot(actual['wavelength'], median_filter(actual['flux']/truth, 101), alpha=0.6, label='Noisy scene (101-sample median)')
++ax.axhline(1, color='gray', linewidth=0.8)
++ax.set(xlim=(3500, 4000), ylim=(0.9, 1.35), xlabel='Wavelength (Angstrom)', ylabel='Extracted flux / input transient')
++ax.legend()
++fig.tight_layout()
++fig.savefig(diagnostic_dir / 'blue_host_contribution.png', dpi=160)
++plt.show()
+ 
+# %% code cell c57040b13f26f649
+--- review/xs-24-flat-ab-comparison/notebooks/01_Kilonovae_XSHOOTER.ipynb
++++ review/xs-25-kilonova-comparison/notebooks/01_Kilonovae_XSHOOTER.ipynb
+@@ -0,0 +1,523 @@
++
+# %% markdown cell 9c735fbac387323d
++# Kilonova observations and extraction with X-shooter
++
++This companion to `01_Kilonovae.ipynb` starts with a flat AB continuum control, then runs the same Kasen transient plus displaced host at 1.5, 7.5 and 20 rest-frame days. Both faint-continuum and higher-resolution X-shooter settings are simulated and reduced with the prototype DRP.
++
++Both notebooks request dark sky at airmass 1.3 and seeing .70 arcsec. X-shooter uses MJD 60310.25; the ZShooter helper currently drops that requested key when it is absent from the initial commands, so the saved ZShooter frames use their resolved dark-sky date. See the operating-point assessment for that separate parameter-forwarding issue. Telescope, slit, throughput, detector sampling and effective read noise remain instrument-specific. Prepared images contain accumulated electrons and explicit per-pixel variance, including an independently drawn blank exposure. Native ADU frames are saved separately.
++
++Outputs go to `xshooter_kilonova_detectors/`; the earlier runs are preserved. Flux-calibrated science includes host light. The transient-only reference is labeled accordingly; the flat AB control is the clean technical flux test.
++
++**Runtime repair (2026-10-20):** all three epochs now extract and stitch in both modes, and the comparison figures have been regenerated from the saved stochastic frames. UVB's cycling uncertainty refinement is repaired without changing its estimator or tolerance. The **faint-mode NIR flux calibration remains invalid**: its flat-AB control has large spikes associated with unity-valued blaze samples near order ends. The other five mode/arm controls remain close to unity. See [the runtime assessment](../docs/notebook-runtime-checks.md) and [detector operating points](../docs/detector-operating-points.md#reduction-and-verification).
++
+# %% code cell bbf498a717098710
++from pathlib import Path
++from copy import deepcopy
++from time import perf_counter
++import gc
++import numpy as np
++import pandas as pd
++import matplotlib.pyplot as plt
++import astropy.units as u
++from astropy.io import fits
++from astropy.time import Time
++from astropy.visualization import simple_norm
++from synphot.units import convert_flux
++import scopesim as sim
++import scopesim_templates as sim_tp
++from scopesim.source.source_templates import ab_spectrum
++from zs_scopesim_tools.helpers import configure_irdb_path, make_local_output_dir, set_scopesim_log_level, warning_prevent_sync_alt_ra_dec, disable_scopesim_progress_bars, electron_readouts, combine_readouts, save_readout_to_fits
++from zs_scopesim_tools.comparison import detector_rates
++from zs_scopesim_tools.sources import transient, kilonova_spectra, lamp_flat, _read_lamp_lines
++
++irdb = Path(configure_irdb_path())
++set_scopesim_log_level('warning')
++output_dir = make_local_output_dir('xshooter_kilonova_detectors')
++ARMS = ('UVB', 'VIS', 'NIR')
++MJD, AIRMASS, SEEING = 60310.25, 1.3, .70
++timings, exposure_rows, peak_rows = [], [], []
++print('Output:', output_dir)
++print('ScopeSim:', sim.__file__)
++
+# %% markdown cell d1d1948009ff211d
++## Flat continuum first, then the science scene
++
++The AB 20 point source is independent of the AB 16 calibration standard. The kilonova source adds the original AB 14 host at an across-slit offset of 10.5 arcsec. The host's extended wings still contribute near the transient; a scene/transient ratio is not a pure calibration residual.
++
+# %% code cell d5f41cb0ea1ad719
++flat_ab = sim_tp.misc.point_source(sed=ab_spectrum(mag=20))
++standard = sim_tp.misc.point_source(sed=ab_spectrum(mag=16))
++redshift = .0098
++phases = (1.5, 7.5, 20.)
++model_files = ['knova_d1_n10_m0.025_vk0.30_Xlan1e-4.0.h5', 'knova_d1_n10_m0.040_vk0.15_Xlan1e-1.5.h5']
++host = sim_tp.galaxy(sed='brown/NGC3870', z=redshift, amplitude=14, pixel_scale=.01, r_eff=2.5, n=1., ellip=.3, theta=90, extend=5)
++host.shift(dy=10.5*u.arcsec)
++spectra = kilonova_spectra(model_files, phases=phases, redshift=redshift, combine_models=True)
++science_sources = {'FLAT_AB': flat_ab}
++for phase in phases:
++    science_sources[f'KILONOVA_{phase:g}D'] = host + transient(x=0, y=0, spextrum_template=spectra[phase], name=f'KN {phase}d')
++lamp = lamp_flat()
++lamp_lines = _read_lamp_lines(irdb/'ZShooter_v2/lamp_lines')
++domeflat = sim_tp.calibration.flat_field(temperature=3000*u.K, amplitude=8*u.ABmag, filter_curve='V', extend=60)
++short_trace = sim_tp.calibration.flat_field(temperature=3000*u.K, amplitude=8*u.ABmag, filter_curve='V', extend=2)
++
+# %% markdown cell 854bf3f57ddcbe64
++## Configured exposures and common atmosphere
++
++Faint continuum uses 1.0/.9/.9 arcsec slits with spectral CCD charge binning by two. Higher resolution uses .8/.9/.6 arcsec slits and unbinned CCDs. NIR is unbinned in both cases.
++
++One hour on source uses 1200 s x 3 in UVB/VIS, 300 s x 12 in faint-mode NIR and 450 s x 8 in high-mode NIR. NDIT counts independent integrations/ramps, not samples up a ramp. X-shooter's native NIR product averages NDIT ramps; the helper converts that actual noisy product to an accumulated-electron image and propagates its variance. Each science object has its own independently drawn equal-time blank, so the estimator costs an additional hour of sky time before overheads. The 89,000-electron NIR linearity check applies to each integration; the final accumulated image can exceed that value.
++
++The configured high-mode sky/thermal peak is 78,852 electrons per 450 s ramp, 11.4% below that limit. At the initially considered 600 s it would reach 105,136 electrons. Faint-mode science peaks at 53,843 electrons per 300 s. These are expected source plus optical-background counts before random draws, evaluated from the actual configured detector rates. Dark adds only 9 and 6 electrons per high/faint ramp, respectively. The adopted limit is an exposure check; the detector model does not simulate nonlinear saturation.
++
++Calibration illumination is the same synthetic lamp/3000 K flat used for ZShooter. Per-arm calibration DITs are explicit settings, rounded down from the preceding run's approximately 30,000-electron peaks, with NDIT=1. The NIR noise table's minimum supported DIT is 1 s. Readout warns when a peak exceeds the adopted limit; it never changes the exposure settings. Actual DITs and peaks are recorded below. This is a simulation calibration choice, not an ESO observing recommendation.
++
+# %% code cell 21d4095eaee20345
++# Explicit (DIT seconds, independent integrations), ordered UVB/VIS/NIR.
++SCIENCE_EXPOSURES = {
++    "faint": [(1200., 3), (1200., 3), (300., 12)],
++    "high": [(1200., 3), (1200., 3), (450., 8)],
++}
++STANDARD_EXPOSURES = [(100., 1)]*3
++# Fixed calibration DITs chosen from the preceding measured rate images.
++CALIBRATION_DITS = {
++    "faint": {"arc": [88., 7.8, 6.1], "flat": [6.8, 2., 1.], "trace": [6.8, 2., 1.]},
++    "high": {"arc": [180., 15.6, 6.1], "flat": [17., 4., 1.], "trace": [17., 4., 1.]},
++}
++atmosphere_names = ('atmo_transmission', 'continuum_emission', 'airglow_and_interline_continuum')
++common_commands = sim.UserCommands(use_instrument='ZShooter_v2', properties={'!OBS.mjdobs': MJD, '!OBS.airmass': AIRMASS, '!OBS.seeing': SEEING, '!OBS.brightness': 'dark', '!ATMO.skycalc_timeout': 60.})
++warning_prevent_sync_alt_ra_dec(common_commands)
++common_train = sim.OpticalTrain(common_commands)
++common_atmosphere = [deepcopy(common_train[name]) for name in atmosphere_names]
++del common_train
++configurations = {
++    'faint': {'!INST.uvb_curr_slit': '1.0', '!INST.vis_curr_slit': '0.9', '!INST.nir_curr_slit': '0.9', '!DET.biny_uvb': 2, '!DET.biny_vis': 2},
++    'high': {'!INST.uvb_curr_slit': '0.8', '!INST.vis_curr_slit': '0.9', '!INST.nir_curr_slit': '0.6', '!DET.biny_uvb': 1, '!DET.biny_vis': 1},
++}
++trains, frame_files = {}, {}
++calibration_disabled = (*atmosphere_names, 'seeing_psf', 'atmospheric_dispersion')
++print('Common atmosphere:', [(effect.meta['name'], type(effect).__name__) for effect in common_atmosphere])
++
+# %% code cell 29496241e60bceeb
++def observe(train, target, mode, label, disabled=()):
++    flags = {name: train[name].include for name in disabled}
++    for name in disabled:
++        train[name].include = False
++    for plane in train.image_planes:
++        plane.data.fill(0)
++    started = perf_counter()
++    try:
++        with disable_scopesim_progress_bars():
++            train.observe(target, update=False)
++    finally:
++        for name, included in flags.items():
++            train[name].include = included
++    timings.append((mode, label, perf_counter()-started))
++    print(mode, label, f'{timings[-1][2]:.1f} s', flush=True)
++
++def exposure_settings(dits, ndits):
++    settings = {'dit': dits[0], 'ndit': ndits[0]}
++    for arm, dit, ndit in zip(ARMS, dits, ndits, strict=True):
++        settings[f'dit_{arm.lower()}'] = dit
++        settings[f'ndit_{arm.lower()}'] = ndit
++    return settings
++
++def save_readouts(readouts, directory, stem, object_name, imagetype):
++    directory.mkdir(parents=True, exist_ok=True)
++    paths = []
++    for arm, hdul in zip(ARMS, readouts, strict=True):
++        for header in (hdul[0].header, hdul[1].header):
++            header['OBJECT'] = object_name
++            header['IMAGETYPE'] = imagetype
++            header['INSTRUME'] = 'XSHOOTER'
++            header['ARM'] = arm
++            header['MJD-OBS'] = MJD
++            header['DATE-OBS'] = Time(MJD, format='mjd').isot
++        path = directory/f'{stem}_{arm}.fits.gz'
++        save_readout_to_fits(hdul, path)
++        paths.append(path)
++    return paths
++
++def current_readout(train, settings, mode, directory, stem, object_name, roid):
++    native = train.readout(roid=roid, **settings)
++    # Per-integration limit, before NIR averaging and gain conversion.
++    rates = detector_rates(train)
++    for arm, image, readout in zip(ARMS, rates, native, strict=True):
++        h = readout[1].header
++        limit = 89000. if arm == 'NIR' else 65000.*h['GAIN']
++        dark_rate = train.cmds[f'!DET.dark_{arm.lower()}']
++        peak = image.max()*h['DIT'] + dark_rate*h['DIT']*h['BINX']*h['BINY']
++        if peak > limit:
++            import warnings
++            warnings.warn(f'{mode} {stem} {arm}: peak {peak:.0f} e exceeds {limit:.0f} e/integration; DIT and NDIT unchanged.')
++    save_readouts(native, directory/'native', stem, object_name, 'STANDARD_RAW' if object_name == 'STANDARD' else 'RAW_OBJECT')
++    electrons = electron_readouts(train, native)
++    for arm, hdul in zip(ARMS, electrons, strict=True):
++        h = hdul[1].header
++        exposure_rows.append((mode, stem, arm, h['DIT'], h['NDIT'], h['EXPTIME'], h['RON'], h['DARK']))
++    del native
++    return electrons
++
++def subtract_saved_blank(electrons, blank_paths):
++    blank = [fits.open(path, memmap=False) for path in blank_paths]
++    prepared = combine_readouts([electrons, blank], [1, -1], source_indices=[0])
++    for hdul in blank:
++        hdul.close()
++    return prepared
++
+# %% code cell 135125d9744f800b
++for mode, settings in configurations.items():
++    directory = output_dir/mode
++    directory.mkdir(parents=True, exist_ok=True)
++    properties = {'!OBS.mjdobs': MJD, '!OBS.airmass': AIRMASS, '!OBS.seeing': SEEING, '!OBS.brightness': 'dark', '!SIM.random.seed': 62419, '!OBS.dit': 1., '!OBS.ndit': 1} | settings
++    commands = sim.UserCommands(use_instrument='XSHOOTER', set_modes=['SPEC'], properties=properties, ignore_effects=['skycalc_atmosphere'])
++    warning_prevent_sync_alt_ra_dec(commands)
++    train = sim.OpticalTrain(commands)
++    for effect in common_atmosphere:
++        train.optics_manager.add_effect(deepcopy(effect))
++    assert train['shot_noise'].include and train['readout_noise'].include
++    trains[mode] = train
++    frame_files[mode] = {'calibrations': {}, 'science': {}}
++    caldir = directory/'calibrations'
++    # Only the zero-exposure CCD readouts are retained as bias calibrations.
++    observe(train, None, mode, 'bias', disabled=calibration_disabled)
++    bias = current_readout(train, exposure_settings([0., 0., 1.], [1, 1, 1]), mode, caldir, 'bias', 'BIAS', 10)
++    bias_paths = save_readouts(bias, caldir, 'bias', 'BIAS', 'BIAS')
++    bias_paths.pop().unlink()  # The required one-second NIR read is not a bias calibration.
++    frame_files[mode]['calibrations']['bias'] = bias_paths
++    del bias
++    for label, target in [('arc', lamp), ('flat', domeflat), ('trace', short_trace)]:
++        observe(train, target, mode, label, disabled=calibration_disabled)
++        rates = detector_rates(train)
++        dits = CALIBRATION_DITS[mode][label]
++        for arm, dit, image in zip(ARMS, dits, rates, strict=True):
++            peak_rows.append((mode, label, arm, dit, image.max()*dit))
++        kind = {'arc': 'ARCS', 'flat': 'DOMEFLAT', 'trace': 'TRACE'}[label]
++        electrons = current_readout(train, exposure_settings(dits, [1, 1, 1]), mode, caldir, label, label.upper(), {'arc': 11, 'flat': 12, 'trace': 13}[label])
++        frame_files[mode]['calibrations'][label] = save_readouts(electrons, caldir, label, label.upper(), kind)
++        del electrons, rates
++    print('CALIBRATIONS READY', caldir, flush=True)
++    science_dits = [dit for dit, count in SCIENCE_EXPOSURES[mode]]
++    science_ndits = [count for dit, count in SCIENCE_EXPOSURES[mode]]
++    science_settings = exposure_settings(science_dits, science_ndits)
++    standard_settings = exposure_settings([dit for dit, count in STANDARD_EXPOSURES], [count for dit, count in STANDARD_EXPOSURES])
++    # Observe the same blank once; independent readout IDs draw independent pixels for each object.
++    observe(train, None, mode, 'blank rates')
++    blank_files = {}
++    for index, object_name in enumerate(['STANDARD', *science_sources]):
++        exposure = standard_settings if object_name == 'STANDARD' else science_settings
++        electrons = current_readout(train, exposure, mode, directory, object_name.lower()+'_blank', object_name+'_BLANK', 100+index)
++        blank_files[object_name] = save_readouts(electrons, directory/'blanks', object_name.lower(), object_name+'_BLANK', 'SKY')
++        del electrons
++    for index, (object_name, target) in enumerate({'STANDARD': standard, **science_sources}.items()):
++        observe(train, target, mode, object_name)
++        exposure = standard_settings if object_name == 'STANDARD' else science_settings
++        dits = [dit for dit, count in STANDARD_EXPOSURES] if object_name == 'STANDARD' else science_dits
++        rates = detector_rates(train)
++        for arm, dit, image in zip(ARMS, dits, rates, strict=True):
++            peak_rows.append((mode, object_name, arm, dit, image.max()*dit))
++        electrons = current_readout(train, exposure, mode, directory, object_name.lower(), object_name, 200+index)
++        prepared = subtract_saved_blank(electrons, blank_files[object_name])
++        frame_files[mode]['science'][object_name] = save_readouts(prepared, directory/'prepared', object_name.lower(), object_name, 'SCIENCE')
++        del electrons, prepared, rates
++        gc.collect()
++    pd.DataFrame(timings, columns=['mode', 'stage', 'seconds']).to_csv(output_dir/'timings.csv', index=False)
++    pd.DataFrame(peak_rows, columns=['mode', 'object', 'arm', 'dit_s', 'peak_e_per_integration']).to_csv(output_dir/'peaks.csv', index=False)
++    pd.DataFrame(exposure_rows, columns=['mode', 'object', 'arm', 'dit_s', 'ndit', 'on_source_s', 'accumulated_read_noise_e', 'dark_e_s']).to_csv(output_dir/'exposures.csv', index=False)
++display(pd.DataFrame(peak_rows, columns=['mode', 'object', 'arm', 'dit_s', 'peak_e_per_integration']))
++
+# %% code cell 20e886cda8bc3e7c
++exposure_table = pd.DataFrame(exposure_rows, columns=['mode', 'object', 'arm', 'dit_s', 'ndit', 'on_source_s', 'accumulated_read_noise_e', 'dark_e_s'])
++exposure_table.to_csv(output_dir/'exposures.csv', index=False)
++display(exposure_table[exposure_table['object'] == 'flat_ab'])
++
++noise_check = []
++for mode in configurations:
++    for arm in ARMS:
++        with fits.open(output_dir/mode/'blanks'/f'flat_ab_{arm}.fits.gz') as first, fits.open(output_dir/mode/'blanks'/f'kilonova_1.5d_{arm}.fits.gz') as second:
++            residual = (first[1].data-second[1].data)/np.sqrt(first['VARIANCE'].data+second['VARIANCE'].data)
++            noise_check.append((mode, arm, residual.size, np.mean(residual, dtype=np.float64), np.std(residual, dtype=np.float64)))
++noise_check = pd.DataFrame(noise_check, columns=['mode', 'arm', 'pixels', 'mean_standardized_blank_difference', 'std_standardized_blank_difference'])
++noise_check.to_csv(output_dir/'independent_blank_noise.csv', index=False)
++display(noise_check)
++print('Independent equal-time blank differences should have mean zero and standard deviation one.')
++del residual
++
+# %% code cell b04be43d6befc10
++source_noise_rows = []
++for mode in configurations:
++    for arm in ARMS:
++        with fits.open(output_dir/mode/'prepared'/f'flat_ab_{arm}.fits.gz') as science, fits.open(output_dir/mode/'blanks'/f'flat_ab_{arm}.fits.gz') as blank:
++            # V(A-B) = S + 2(B+D+Vread), while the blank variance is B+D+Vread.
++            expected_source = science['VARIANCE'].data - 2*blank['VARIANCE'].data
++            selected = expected_source > .1*expected_source.max()
++            residual = (science[1].data[selected]-expected_source[selected])/np.sqrt(science['VARIANCE'].data[selected])
++            source_noise_rows.append((mode, arm, selected.sum(), np.mean(residual, dtype=np.float64), np.std(residual, dtype=np.float64)))
++source_noise_check = pd.DataFrame(source_noise_rows, columns=['mode', 'arm', 'selected_pixels', 'mean_standardized_source_residual', 'std_standardized_source_residual'])
++source_noise_check.to_csv(output_dir/'flat_ab_pixel_noise.csv', index=False)
++display(source_noise_check)
++print('Pixels above 10% of the expected source peak; this checks detector noise, before extraction or flux calibration.')
++del expected_source, selected, residual
++
+# %% code cell 611dfc4c5ccf43bb
++fig, axes = plt.subplots(2, 3, figsize=(15, 10), layout='constrained')
++for row, mode in enumerate(configurations):
++    for ax, arm, path in zip(axes[row], ARMS, frame_files[mode]['science']['KILONOVA_1.5D'], strict=True):
++        with fits.open(path) as hdul:
++            data = hdul[1].data
++            image = ax.imshow(data, origin='lower', cmap='gray', norm=simple_norm(data, stretch='asinh', percent=99.5), interpolation='nearest')
++            ax.set(title=f'{mode}: {arm}', xlabel='Native output x [pixel]', ylabel='Native output y [pixel]')
++            fig.colorbar(image, ax=ax, label='Accumulated electrons; blank subtracted', shrink=.7)
++fig.savefig(output_dir/'native_frames.png', dpi=150)
++plt.show()
++
+# %% markdown cell b6225569a577c02
++## Extract, flux calibrate and stitch
++
++The prototype DRP uses measured order traces, simulated lamp peaks and the configured X-shooter trace model for the model-assisted wavelength solution. The short illuminated flat separates traces; the full-slit flat supplies normalization. Each science input is one prepared sum with explicit variance, including its independent blank. Extraction propagates those pixel variances. Flux uncertainties are conditional on the fitted calibration response; standard/flat fitting uncertainty is a separate contribution.
++
++Arc support differs between modes. Faint-mode UVB orders 13–21, VIS orders 26/30 and NIR order 26 have no accepted isolated lines and use the configured model plus the arm-wide pixel correction. Higher resolution supplies accepted lines in every UVB/VIS order; NIR order 26 still relies on the model. The number of fitted per-order corrections depends on the accepted line count. See the [calibration assessment](../../zshooter-drp/docs/source/xshooter-reduction.md) for line counts and residuals; a low fitted-line RMS is not an independent wavelength measurement in an unsupported order.
++
++NIR has no additive bias in this configured model; its matching blank removes dark and thermal counts. No NIR bias group is passed to the DRP, whose generic missing-bias warning is expected here. A zero-second NIR read is outside the effective-noise table and is not used to manufacture a zero-noise calibration. The CCD biases do have zero exposure; their file-count scaling warning refers to subtracting one bias per calibration exposure, not missing science exposure metadata.
++
++Trace-save warnings reflect the validator's ascending-row convention. These products retain physical-order indexing, with wavelength and calibration rows checked against the saved order IDs; a decreasing row position does not indicate that the wavelength rows have been interchanged.
++
++The reduction runs one arm at a time to bound memory. It saves native extracted orders, arm spectra and stitched products. Telluric bands and low-throughput order edges remain in the native products.
++
+# %% code cell c1be7fd9a4044f2f
++import logging
++set_scopesim_log_level('warning')
++logging.disable(logging.INFO)
++import pyreduce
++from pyreduce.spectra import Spectra
++from zsdrp.XSHOOTER import XSHOOTER
++from zsdrp.pipe import run_reduction, run_flux_calibration_and_stitch
++from zsdrp.steps import splice
++
++print('PyReduce:', pyreduce.__file__)
++reference = ab_spectrum(mag=16)
++reference_wave = reference.waveset
++reference_flux = convert_flux(reference_wave, reference(reference_wave), 'FLAM')
++
++def stitch_arm_files(paths, destination):
++    arms = [Spectra.read(path, raw=True) for path in paths]
++    combined = Spectra(data=[arm.data[0] for arm in arms], header=arms[0].header)
++    stitched = splice(combined, simple=True)
++    stitched.save(destination)
++
++arm_products, stitched_products = {}, {}
++for mode in configurations:
++    directory = output_dir/mode
++    arm_products[mode], stitched_products[mode] = {}, {}
++    for index, arm in enumerate(ARMS):
++        armdir = directory/'reduced'/arm
++        armdir.mkdir(parents=True, exist_ok=True)
++        cals = frame_files[mode]['calibrations']
++        controls = [frame_files[mode]['science'][name][index] for name in ('STANDARD', 'FLAT_AB')]
++        files = {arm: {'bias': [cals['bias'][index]] if arm != 'NIR' else [], 'flat': [cals['flat'][index]], 'trace': [cals['trace'][index]], 'wavecal_master': [cals['arc'][index]], 'science': controls}}
++        started = perf_counter()
++        reduced = run_reduction(files, channels=[arm], output_dir=armdir, instrument=XSHOOTER(), trace_list=trains[mode]['spectral_traces'], lamp_lines=lamp_lines, require_variance=True, reuse_cals=False, disable_steps=['mask'], print_params=False, disable_all_plots=True)
++        # Preserve counts before response calibration divides the standard by its exposure time.
++        reduced[arm]['spectra']['STANDARD'].save(armdir/'standard_blazecal_counts.fits.gz')
++        calibrated = run_flux_calibration_and_stitch(reduced, reference_wave=reference_wave, reference_flux=reference_flux, standard_star_name='STANDARD', plot=False, output_dir=armdir)
++        arm_products[mode][arm] = {'FLAT_AB': armdir/f'spectra_FLAT_AB_{arm}_fluxcal.fits.gz'}
++        timings.append((mode, f'calibrations and AB control {arm}', perf_counter()-started))
++        print(mode, arm, f'control reduction {timings[-1][2]:.1f} s', flush=True)
++        del reduced, calibrated
++        gc.collect()
++    filename = directory/'reduced'/'FLAT_AB_stitched.fits.gz'
++    stitch_arm_files([arm_products[mode][arm]['FLAT_AB'] for arm in ARMS], filename)
++    stitched_products[mode]['FLAT_AB'] = filename
++pd.DataFrame(timings, columns=['mode', 'stage', 'seconds']).to_csv(output_dir/'timings.csv', index=False)
++
+# %% markdown cell 7872adc25eee4811
++## Flat AB recovery and the extracted kilonova scenes
++
++The flat AB control tests the flux scale without host light or transient color. Its finite wavelength-bin uncertainties use the propagated sparse spectral covariance, including extraction and rebinning correlations. The integration-bin spacing below is a display and measurement choice, not a new measured resolving power.
++
++The smooth sensitivity fit calibrates the continuum; this prototype does not apply a telluric correction. Selected comparison windows still contain atmospheric lines and response-fit residuals. The correlated excursions visible in the flat-AB plot should not all be assigned to random detector noise, even when the whole-arm integral is consistent with unity.
++
++The kilonova extractions contain both transient and transmitted host light. The black reference curves show the input transient alone, so scene/reference offsets are not a photon-conservation test. The plotted uncertainties describe the detector fluctuations conditional on these fitted traces, wavelength solutions and response calibration; independent calibration realizations are a separate uncertainty source.
++
+# %% code cell f3f18f0cfa31102a
++from astropy.table import vstack
++from zs_scopesim_tools.reduction_checks import flat_ab_extraction_bins, flat_ab_band_integrals
++
++# Fixed windows avoid the deep atmospheric bands; native FITS products retain all coverage.
++retained = {
++    'UVB': [(.33*u.um, .56*u.um)],
++    'VIS': [(.56*u.um, .68*u.um), (.70*u.um, .75*u.um), (.78*u.um, .89*u.um), (.99*u.um, 1.01*u.um)],
++    'NIR': [(1.02*u.um, 1.10*u.um), (1.17*u.um, 1.31*u.um), (1.50*u.um, 1.75*u.um), (2.05*u.um, 2.30*u.um)],
++}
++# These exceed the largest native spacings: .368/.427/1.180 Angstrom in faint mode.
++max_gap = {'UVB': .5*u.AA, 'VIS': .5*u.AA, 'NIR': 1.5*u.AA}
++flat_ab_bins, band_tables = {}, []
++for mode in configurations:
++    files = {arm: arm_products[mode][arm]['FLAT_AB'] for arm in ARMS}
++    bins, figure = flat_ab_extraction_bins(files, intervals=retained, max_gap=max_gap, magnitude=20., bin_R=1000.)
++    flat_ab_bins[mode] = bins
++    bins.write(output_dir/mode/'flat_ab_bins.ecsv', overwrite=True)
++    figure.suptitle(f'X-shooter {mode}: one hour on source plus independent equal-time sky')
++    figure.savefig(output_dir/mode/'flat_ab_recovery.png', dpi=180)
++    plt.show()
++    bands = flat_ab_band_integrals(files, intervals=retained, max_gap=max_gap, magnitude=20.)
++    bands['mode'] = mode
++    band_tables.append(bands)
++closure = vstack(band_tables)
++closure.write(output_dir/'flat_ab_closure.ecsv', overwrite=True)
++for column in ('ratio', 'ratio_uncertainty'):
++    closure[column].info.format = '.4f'
++closure['covered_width'].info.format = '.1f'
++closure['snr'].info.format = '.1f'
++display(closure[['mode', 'arm', 'covered_width', 'ratio', 'ratio_uncertainty', 'snr']])
++
+# %% code cell 2f288a8b591cf1e2
++def reduce_phase(phase):
++    object_name = f'KILONOVA_{phase:g}D'
++    timings[:] = [row for row in timings if not row[1].startswith(object_name+' extraction ')]
++    for mode in configurations:
++        directory = output_dir/mode
++        for index, arm in enumerate(ARMS):
++            armdir = directory/'reduced'/arm
++            cals = frame_files[mode]['calibrations']
++            files = {arm: {'bias': [cals['bias'][index]] if arm != 'NIR' else [], 'flat': [cals['flat'][index]], 'trace': [cals['trace'][index]], 'wavecal_master': [cals['arc'][index]], 'science': [frame_files[mode]['science'][object_name][index]]}}
++            started = perf_counter()
++            # These are exactly the calibration products rebuilt above from this mode's frames.
++            reduced = run_reduction(files, channels=[arm], output_dir=armdir, instrument=XSHOOTER(), trace_list=trains[mode]['spectral_traces'], lamp_lines=lamp_lines, require_variance=True, reuse_cals=True, disable_steps=['mask'], print_params=False, disable_all_plots=True)
++            reduced[arm]['spectra']['STANDARD'] = Spectra.read(armdir/'standard_blazecal_counts.fits.gz', raw=True)
++            calibrated = run_flux_calibration_and_stitch(reduced, reference_wave=reference_wave, reference_flux=reference_flux, standard_star_name='STANDARD', plot=False, output_dir=armdir)
++            arm_products[mode][arm][object_name] = armdir/f'spectra_{object_name}_{arm}_fluxcal.fits.gz'
++            timings.append((mode, f'{object_name} extraction {arm}', perf_counter()-started))
++            print(mode, arm, object_name, f'reduction {timings[-1][2]:.1f} s', flush=True)
++            del reduced, calibrated
++            gc.collect()
++        filename = directory/'reduced'/f'{object_name}_stitched.fits.gz'
++        stitch_arm_files([arm_products[mode][arm][object_name] for arm in ARMS], filename)
++        stitched_products[mode][object_name] = filename
++    pd.DataFrame(timings, columns=['mode', 'stage', 'seconds']).to_csv(output_dir/'timings.csv', index=False)
++
+# %% code cell 94355f7a760ea6d6
++reduce_phase(1.5)
++
+# %% code cell 23238fe35cd8d75
++reduce_phase(7.5)
++
+# %% code cell 27dee46f23bfcabd
++reduce_phase(20.)
++
+# %% markdown cell 56ee6f8b614209cf
++## Native extracted scenes
++
++These plots retain native wavelength samples and show the extracted scene with its one-sigma uncertainty. No smoothing or common-resolution convolution is applied. The covariance is a local first-order propagation through the fitted extraction and resampling, conditional on the calibration products; it is not a full nonlinear uncertainty distribution.
++
++At 20 days, weak UVB/VIS fits can have signed spatial profiles dominated by noise. Their numerical convergence does not make individual excursions physical detections. The extracted scene includes transmitted host light, whereas the black curve contains only the input transient. A scene/reference offset therefore needs that distinction before it can be interpreted.
++
+# %% code cell 5f95e25b186bb0a9
++flux_unit = u.erg/(u.s*u.cm**2*u.AA)
++model_wave = np.geomspace(.30, 2.50, 3000)*u.um
++fig, axes = plt.subplots(3, 2, figsize=(14, 10), sharex=True, constrained_layout=True)
++for column, mode in enumerate(configurations):
++    for row, phase in enumerate(phases):
++        ax = axes[row, column]
++        extracted_spectrum, = Spectra.read(stitched_products[mode][f'KILONOVA_{phase:g}D'], raw=True).data
++        wave = extracted_spectrum.wave*u.AA
++        scale = (1*flux_unit).to_value(u.uJy, equivalencies=u.spectral_density(wave))
++        flux = extracted_spectrum.spec*scale
++        uncertainty = extracted_spectrum.sig*scale
++        ax.plot(wave.to_value(u.um), flux, lw=.35, color='C0', label='Extracted scene')
++        ax.fill_between(wave.to_value(u.um), flux-uncertainty, flux+uncertainty, color='C0', alpha=.15, linewidth=0, label=r'$1\sigma$, conditional calibration')
++        input_flux = convert_flux(model_wave, spectra[phase](model_wave), u.uJy)
++        ax.plot(model_wave.value, input_flux.value, color='black', lw=1, label='Input transient only')
++        ax.set(title=f'{mode}: {phase:g} days', ylabel=r'$f_\nu$ [$\mu$Jy]', xlim=(.30, 2.50))
++        ax.axhline(0, color='0.6', lw=.5)
++axes[0, 0].legend(fontsize=8)
++for ax in axes[-1]:
++    ax.set_xlabel(r'Wavelength [$\mu$m]')
++fig.suptitle('X-shooter: one-hour scenes, independent equal-time sky subtraction')
++fig.savefig(output_dir/'stitched_kilonovae.png', dpi=180)
++plt.show()
++
+# %% markdown cell ce8b43da997b8bd5
++### Kilonova epochs: X-shooter and ZShooter
++
++**Saved-run calibration failure:** faint-mode NIR has large flux-calibration spikes near 2.268 microns and fails the flat-AB control above. Its curves are retained to show the failed product; do not use that mode's NIR flux or sensitivity for comparison. The higher-resolution mode's NIR control passes.
++
++Each mode below follows the ZShooter notebook's flux/S/N figure. Faint traces show the native X-shooter samples; solid epoch-colored curves use the same 51-sample median display filter as ZShooter. Burnt-red curves are the three saved ZShooter results, when present at the explicit filename template below with their adjacent trace/wavelength calibrations. S/N is computed before filtering; the filter does not put the instruments at a common resolving power.
++
++The dashed grey flux curves are the [ENGRAVE AT2017gfo spectra](https://www.engrave-eso.org/AT2017gfo-Data-Release/) at release phases 1.43 and 7.40 days, from the observations published by [Pian et al. (2017)](https://doi.org/10.1038/nature24298) and [Smartt et al. (2017)](https://doi.org/10.1038/nature24303). Their published flux scale is retained. They have photometric and telluric corrections and release smoothing; Galactic extinction remains. No observed 20-day curve or inferred published S/N is added.
++
++The observations used 1.0/0.9/0.9 arcsec slits, with 2400/3600 s exposures, seeing 0.61/0.53 arcsec and airmass ranges 1.45–1.72/1.66–2.44 at the two epochs ([Pian et al., Extended Data Table 2](https://arts.units.it/bitstream/11368/2921596/4/2921596_nature24298-PostPrint.pdf)). These are observational context for both simulated modes; equal slit widths do not imply identical detector settings or observing conditions. See the local [reference-data notes](reference_data/AT2017gfo/README.md) for the files and column conventions.
++
+# %% code cell e490712adf260b80
++from scipy.ndimage import median_filter
++
++zshooter_file = "01_Kilonovae_detectors/SPEC/kilonova_X-1.3_NS-0.7_dark_slit-0.7_ao-0_optimal_variance/reduced/spectra_KN_{phase:.1f}D_SUB_stitched.txt"
++zshooter_tables, zshooter_curves = {}, {}
++for phase in phases:
++    filename = Path(zshooter_file.format(phase=phase))
++    if filename.exists():
++        zshooter_tables[phase] = pd.read_csv(filename, sep='\t', comment='#')
++
++zshooter_dir = Path(zshooter_file).parent
++zshooter_channels = ('BLUE', 'GREEN', 'RED', 'YJ', 'H', 'K')
++zshooter_traces = {channel: zshooter_dir/f'trace_{channel}.fits.gz' for channel in zshooter_channels}
++for channel, path in zshooter_traces.items():
++    if not path.exists():
++        zshooter_traces[channel] = path.with_suffix('')
++if zshooter_tables and all(zshooter_traces[channel].exists() and (zshooter_dir/f'wavecal_{channel}.npz').exists() for channel in zshooter_channels):
++    zshooter_native_gap = {}
++    for channel in zshooter_channels:
++        with fits.open(zshooter_traces[channel]) as trace_file, np.load(zshooter_dir/f'wavecal_{channel}.npz') as calibration:
++            column_ranges = trace_file['TRACES'].data['COL_RANGE']
++            native_steps = np.concatenate([np.diff(wave[start:end]) for wave, (start, end) in zip(calibration['wave_img'], column_ranges, strict=True)])
++        zshooter_native_gap[channel] = np.max(np.abs(native_steps))*u.AA
++    gap = max(zshooter_native_gap.values()).to_value(u.AA)
++    for phase, table in zshooter_tables.items():
++        wave, flux, uncertainty = table['wavelength'], table['flux'], table['eflux']
++        snr = flux/uncertainty
++        parts = np.split(np.arange(len(wave)), np.flatnonzero(np.diff(wave) > gap) + 1)
++        zshooter_curves[phase] = [(wave[part], median_filter(flux[part], 51), median_filter(snr[part], 51)) for part in parts]
++
++observed_curves = []
++for observed_phase, mjd, style in ((1.43, 57983.969, '--'), (7.40, 57990.000, ':')):
++    filename = Path('reference_data/AT2017gfo')/f'AT2017gfo_ENGRAVE_v1.0_XSHOOTER_MJD-{mjd:.3f}_Phase+{observed_phase:.2f}d.dat'
++    observed_wave, observed_flux = np.loadtxt(filename, usecols=(0, 1), unpack=True)
++    # The released tables start with zero-filled flux samples; retain negative measurements.
++    observed_curves.append((observed_phase, observed_wave, np.ma.masked_equal(observed_flux, 0), style))
++
++zshooter_colors = ('#8b5f91', '#b65f48', '#82904e')
++
++for mode in configurations:
++    fig, ax = plt.subplots(2, 1, figsize=(20, 8))
++    ax[0].grid(True)
++    ax[1].grid(True)
++    ax[0].tick_params(axis='y', labelsize=12)
++    ax[1].tick_params(axis='y', labelsize=12)
++    ax[1].tick_params(axis='x', labelsize=16)
++    ax[0].set_ylabel(r'Flux (erg/s/cm$^2/\AA$)', fontsize=18)
++    ax[1].set_ylabel('SNR', fontsize=18)
++    ax[1].set_xlabel(r'Wavelength ($\AA$)', fontsize=18)
++
++    for i, phase in enumerate(phases):
++        product = Spectra.read(stitched_products[mode][f'KILONOVA_{phase:g}D'], raw=True)
++        extracted_spectrum, = product.data
++        wave, flux, uncertainty = extracted_spectrum.wave, extracted_spectrum.spec, extracted_spectrum.sig
++        # FITS arrays are big-endian; ndimage requires native byte order, retaining double precision.
++        flux = flux.astype(np.float64)
++        snr = flux/uncertainty
++        gap = max(max_gap.values()).to_value(u.AA)
++        # Filter native S/N for display only, independently across coverage gaps.
++        for part in np.split(np.arange(len(wave)), np.flatnonzero(np.diff(wave) > gap) + 1):
++            ax[0].plot(wave[part], flux[part], alpha=.2, color=f'C{i}', zorder=1)
++            ax[0].plot(wave[part], median_filter(flux[part], 51), color=f'C{i}', zorder=3, label=f'X-shooter {phase:g} d' if part[0] == 0 else None)
++            ax[1].plot(wave[part], snr[part], alpha=.2, color=f'C{i}', zorder=1)
++            ax[1].plot(wave[part], median_filter(snr[part], 51), color=f'C{i}', zorder=3)
++
++    for phase, curves in zshooter_curves.items():
++        color = zshooter_colors[phases.index(phase)]
++        for j, (wave, flux, snr) in enumerate(curves):
++            ax[0].plot(wave, flux, color=color, alpha=.65, zorder=2, label=f'ZShooter {phase:g} d' if j == 0 else None)
++            ax[1].plot(wave, snr, color=color, alpha=.65, zorder=2)
++    for observed_phase, wave, flux, style in observed_curves:
++        ax[0].plot(wave, flux, color='0.35', linestyle=style, lw=1.2, zorder=2.5, label=f'AT2017gfo {observed_phase:.2f} d')
++
++    ax[0].set_title(f'X-shooter {mode}: Exptime = {product.header["EXPTIME"]:g} s', fontsize=24)
++    ax[0].set_xlim(3070, 25000)
++    ax[1].set_xlim(3070, 25000)
++    ax[0].set_ylim(-.01e-15, .2e-15)
++    ax[1].set_ylim(-10, 100)
++    ax[0].legend(ncol=4, fontsize=10)
++    fig.subplots_adjust(bottom=.16, hspace=.25)
++    fig.text(.125, .025, 'AT2017gfo (ENGRAVE; Pian et al. 2017; Smartt et al. 2017): 1.43 / 7.40 d, 2400 / 3600 s, UVB/VIS/NIR slits 1.0/0.9/0.9 arcsec.\nPublished fluxes retain their photometric/telluric corrections and smoothing; no rescaling to the simulations. Solid simulation curves: 51-sample display medians.', fontsize=10)
++    fig.savefig(output_dir/f'kilonova_epochs_{mode}.png', dpi=160)
++    plt.show()
++
+# %% markdown cell c1edaa62ca3dbc3
++## Runtime and interpretation
++
++The timing table records optical `observe()` calls and complete per-arm DRP plus flux-calibration calls separately. Native readout, blank subtraction and FITS writing are additional work. This runtime repair reused the saved frames: optical timings are from their original simulations and extraction timings are from the current rerun. Concurrent notebook work affects these elapsed times; they are not an isolated observation-speed benchmark.
++
++Each prepared science frame and its variance are saved beside the native ADU readouts. Arm and stitched FITS products retain the propagated spectral covariance; ASCII exports contain only diagonal uncertainties.
++
++A fixed random seed makes this demonstration reproducible. Distinct readout IDs separate every object from its blank and the other objects. Corresponding IDs reuse that seed between the two modes, so the modes are not presented as independent noise ensembles; their individual variances remain the basis of the uncertainty calculations.
++
+# %% code cell bd4413b148bcab6d
++timing_table = pd.DataFrame(timings, columns=['mode', 'stage', 'seconds'])
++timing_table.to_csv(output_dir/'timings.csv', index=False)
++display(timing_table)
++print('Products:', output_dir)
+--- review/xs-24-flat-ab-comparison/validation/xshooter/Detector_Package_Reduction.ipynb
++++ review/xs-25-kilonova-comparison/validation/xshooter/Detector_Package_Reduction.ipynb
+@@ -0,0 +1,416 @@
++
+# %% code cell a477e400dac00d7c
++# basic
++from copy import deepcopy
++from pathlib import Path
++from typing import Optional, Literal
++import logging
++import matplotlib.pyplot as plt
++import numpy as np
++import pandas as pd
++import astropy.units as u
++from astropy.io import fits
++from astropy.table import Table
++from scipy.ndimage import median_filter
++
++# zs_scopesim_tools convenience routines
++import zs_scopesim_tools.helpers
++from zs_scopesim_tools.helpers import (disable_scopesim_top_level_catch, warning_prevent_sync_alt_ra_dec,
++                                       ignore_warnings, set_scopesim_log_level, make_local_output_dir, configure_irdb_path, timed, list_effects, simulate, save_zshooter_readout, electron_readouts, combine_readouts)
++# scopesim and scopesim source creation related
++import scopesim as sim
++import scopesim_templates as sim_tp
++from scopesim.source.source import Source
++from scopesim.source import source_templates
++from zs_scopesim_tools.sources import lamp_flat, transient, kilonova_spectra
++from zs_scopesim_tools.plots import PlotScene, plot_readout_overview
++from synphot.units import convert_flux
++
++# DRP
++from zsdrp.ZSHOOTER import ZSHOOTER
++import zsdrp.pipe, zsdrp.steps
++
++
++configure_irdb_path()  # REQUIRED the first time after installation, sets local IRDB directory path in ScopeSim
++set_scopesim_log_level("warning")  # set ScopeSim log toggles
++disable_scopesim_top_level_catch()
++ignore_warnings()
++logging.disable(logging.INFO)
++
+# %% markdown cell 3cb2debe850bc346
++# Alternative detector reduction
++
++This check loads the editable `SPEC_ALTDETECT` package from IRDB. In this run it uses untapered CCDs in B/G/R and 18 um H2RGs in YJ/H/K. It simulates calibration frames, a flat-AB standard and an independent flat-AB source/blank pair with the explicit exposure settings below. Reduction uses the actual configured trace geometry and saved detector WCS. The short-slit TRACE frames are used in every channel, with mode-specific DRP settings.
++
++The primary [kilonova notebook](../../notebooks/01_Kilonovae.ipynb) exposes the same detector-mode setting. This check isolates calibration, geometry and flux recovery from the faint-source profile-fit failure documented in [the operating-point assessment](../../docs/detector-operating-points.md#reduction-and-verification).
++
+# %% code cell fc9f8e88364f3e52
++DETECTOR_MODE = "SPEC_ALTDETECT"
++workspace = next(path for path in (Path.cwd(), *Path.cwd().parents) if (path/"env/zshooter-stack.toml").exists())
++OUTDIR = workspace/"notebooks/01_Kilonovae_detectors"/f"{DETECTOR_MODE}_yj_h2rg"
++OUTDIR.mkdir(parents=True, exist_ok=True)
++# Explicit DIT and independent integrations in B/G/R/YJ/H/K order.
++SCIENCE_EXPOSURES = {
++    "SPEC": [(1200, 3)]*3 + [(100, 36), (30, 120), (60, 60)],
++    "SPEC_ALTDETECT": [(1200, 3)]*3 + [(300, 12), (90, 40), (150, 24)],
++}
++CALIBRATION_DITS = {
++    "SPEC": {"arcs": [40, 40, 3, .5, 4, 2], "flat": [120, 10, 3, .4, .4, .4], "standard": [100]*6},
++    "SPEC_ALTDETECT": {"arcs": [40, 40, 3, 2, 10, 5], "flat": [120, 10, 3, 1.2, 1.2, 1.2], "standard": [100]*6},
++}
++exposure_rows = []
++
+# %% code cell c92d591c4cbfcfc0
++zs_config = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=[DETECTOR_MODE])
++
+# %% code cell a49fd212c52d038b
++@timed
++def update_params_and_observe(object_name: str,
++                              imagetype: str,
++                              source: Source,
++                              exptimes: Optional[list | float] = None,
++                              ndit: int | list = 1,
++                              output_dir: Optional[str | Path]=None,
++                              *,
++                              disable_effects: Optional[list[str]]=None,
++                              disable_backgrounds: Optional[list[Literal["sky", "sky_continuum", "sky_lines"]]]=None,
++                              airmass: Optional[float]=None,
++                              seeing: Optional[float]=None,
++                              brightness: Optional[Literal["bright", "grey", "dark"]]=None,
++                              vis_slit: Optional[float]=None,
++                              nir_slit: Optional[float]=None,
++                              pixel_scale: Optional[float]=None,
++                              pupil_angle: Optional[float]=None,
++                              ao_on: bool=False,
++                              diffuse_emissivity_on: bool=False,
++                              params: Optional[dict]=None
++                              ) -> tuple[list, sim.optics.OpticalTrain]:
++    """
++    :param object_name: Name of the Source object
++    :param imagetype: IMAGETYPE keyword (BIAS, DOMEFLAT, TRACE, ARCS, SKY, SCIENCE)
++    :param source: Source instance
++    :param exptimes: List of exposure times in channel order (blue, green, red, yj, h, k) in seconds, or single value.
++                If None, it is set to 0.0.
++    :param ndit: independent integrations, one count per arm or a common count
++    :param output_dir: Directory to save observed data in, FITS files are saved with {object_name}_{CHANNEL}.fits names
++                        where CHANNEL is in [BLUE, GREEN, RED, YJ, H, K] (upper case)
++    :param disable_effects: List of effect names to disable
++    :param disable_backgrounds: List of background names to disable, options are "sky", "sky_continuum", or "sky_lines".
++    :param airmass: Airmass
++    :param seeing: Seeing (natural)
++    :param brightness: Brightness of sky ("bright", "grey", or "dark")
++    :param vis_slit: Slit width for Visible channel
++    :param nir_slit: Slit width for NIR channel
++    :param pixel_scale: Instrument pixel scale
++    :param pupil_angle: Instrument pupil angle
++    :param ao_on: True for AO correction on, defaults to False
++    :param diffuse_emissivity_on: True for diffuse emissivity effect on, defaults to False
++    :param params: Dict of any other UserCommands alias keys and values to set
++
++    :return: tuple(HDUList, OpticalTrain)
++    """
++    if imagetype not in ["BIAS", "DOMEFLAT", "TRACE", "ARCS", "SKY", "SCIENCE", "RAW_OBJECT", "STANDARD_RAW"]:
++        raise ValueError(f"Imagetype {imagetype} is incorrect! Choose from BIAS, DOMEFLAT, TRACE, ARCS, SKY, SCIENCE.")
++    # load ZShooter_v2 irdb model config
++    config = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=[DETECTOR_MODE])
++    # update with passed params
++    config["!OBS.airmass"] = airmass if airmass else config["!OBS.airmass"]
++    config["!OBS.seeing"] = seeing if seeing else config["!OBS.seeing"]
++    config["!OBS.brightness"] = brightness if brightness else config["!OBS.brightness"]
++    config["!OBS.pupil_angle"] = pupil_angle if pupil_angle else config["!OBS.pupil_angle"]
++    config["!INST.vis_curr_slit"] = vis_slit if vis_slit else config["!INST.vis_curr_slit"]
++    config["!INST.nir_curr_slit"] = nir_slit if nir_slit else config["!INST.nir_curr_slit"]
++    config["!INST.pixel_scale"] = pixel_scale if pixel_scale else config["!INST.pixel_scale"]
++    config["!INST.include_diffuse_emissivity"] = diffuse_emissivity_on
++    config["!ATMO.ao_enabled"] = ao_on
++
++    dits = [0.]*6 if exptimes is None else [exptimes]*6 if not isinstance(exptimes, list) else exptimes
++    ndits = ndit if isinstance(ndit, list) else [ndit]*6
++    config["!OBS.dit"], config["!OBS.ndit"] = dits[0], ndits[0]
++    for dit, count, arm in zip(dits, ndits, ("blue", "green", "red", "yj", "h", "k"), strict=True):
++        config[f"!OBS.dit_{arm}"] = dit
++        config[f"!OBS.ndit_{arm}"] = count
++
++    if params is not None and isinstance(params, dict):
++        params = {key:val for key, val in params.items() if key in config}
++        # USE THIS TO UPDATE THE CONFIG WITH NEW PROPERTIES, IT IS NOT A NORMAL DICT
++        config.update_alias(config, params)
++    # make sure airmass, ra, dec are in sync if all are provided
++    warning_prevent_sync_alt_ra_dec(config)
++
++    if output_dir is not None:
++        output_dir = Path(output_dir)
++
++    # call simulate(), it inits optical train, runs observe() and readout()
++    print(f'Simulating {object_name}')
++    zs, raw = simulate(config, source=source, disable_effects=disable_effects, disable_backgrounds=disable_backgrounds, hide_progress_bars=True)
++    hdul = electron_readouts(zs, raw)
++    for arm, readout in zip(("BLUE", "GREEN", "RED", "YJ", "H", "K"), hdul, strict=True):
++        h = readout[1].header
++        exposure_rows.append((object_name, DETECTOR_MODE, arm, h["DIT"], h["NDIT"], h["EXPTIME"], h["PEAKDIT"], h["WELLDEP"], h["EXNOISE"], h["RON"], h["DARK"]))
++    print(f"Peak electrons per integration: {[round(readout[1].header['PEAKDIT']) for readout in hdul]}")
++    # ScopeSim draws the accumulated photons and NDIT independent effective read noises.
++    if output_dir is not None:
++        save_zshooter_readout(raw, output_dir/"native", object_name=object_name, imagetype=imagetype, cmds=config, train=zs)
++        save_zshooter_readout(hdul, output_dir, object_name=object_name, imagetype=imagetype, cmds=config, train=zs)
++    return [hdul], zs
++
+# %% code cell 7758b535813eb312
++airmass = 1.3
++seeing = 0.7
++brightness = "dark"
++vis_slit = 0.7
++nir_slit = 0.7
++ao_on = False
++diffuse_emissivity_on = False
++params = {"!OBS.mjdobs": 60310.25, "!SIM.spectral.spectral_bin_width": 1e-5} # in um, (== 0.1 Angstrom, use 0.05 Angstrom for smaller slit widths)
++
++args = {'airmass':airmass, 'seeing':seeing, 'brightness':brightness, 'vis_slit':vis_slit, 'nir_slit':nir_slit,
++        'ao_on': ao_on, 'diffuse_emissivity_on': diffuse_emissivity_on, 'params': params}
++
++# creating a sub-directory in OUTDIR for this run config, naming it based on config params for uniqueness
++output_dir = OUTDIR / f"kilonova_X-{airmass}_NS-{seeing}_{brightness}_slit-{vis_slit}_ao-{int(ao_on)}_optimal_variance"
++output_dir.mkdir(parents=True, exist_ok=True)
++
++overwrite_cals = True  # set True to redo cals
++plot = True  # Set True for plotting
++
+# %% code cell e9e11709d77031a7
++# for cals
++disable_effects_cals = ["atmo_transmission", "continuum_emission", "airglow_and_interline_continuum",
++                        "seeing_psf", "adc_residuals"]
++
++rebuild_cals = overwrite_cals or any(len(list(output_dir.glob(f"{name}_0_*.fits"))) != 6 for name in ("bias", "arcs", "domeflat", "trace", "standard"))
++if rebuild_cals:
++    # bias
++    bias_hduls, _ = update_params_and_observe(object_name="bias", imagetype="BIAS", source=None, exptimes=0,
++                                             output_dir=output_dir, disable_effects=disable_effects_cals, **args)
++    # arcs
++    LAMP = lamp_flat()
++    arcs_hduls, _ = update_params_and_observe(object_name="arcs", imagetype="ARCS", source=LAMP,
++                                             exptimes=CALIBRATION_DITS[DETECTOR_MODE]["arcs"], output_dir=output_dir,
++                                             disable_effects=disable_effects_cals, **args)
++    # Calibration exposure settings are explicit above; readout warns if a detector limit is exceeded.
++    # domeflat
++    DOMEFLAT = sim_tp.calibration.flat_field(temperature=3000*u.K, amplitude=8*u.ABmag, filter_curve='V', extend=60)
++    domeflat_hduls, _ = update_params_and_observe(object_name="domeflat", imagetype="DOMEFLAT", source=DOMEFLAT,
++                                                 exptimes=CALIBRATION_DITS[DETECTOR_MODE]["flat"], output_dir=output_dir,
++                                                 disable_effects=disable_effects_cals, **args)
++    # A short illuminated slit separates the overlapping blue YJ orders for measured tracing.
++    TRACE = sim_tp.calibration.flat_field(temperature=3000*u.K, amplitude=8*u.ABmag, filter_curve='V', extend=2)
++    trace_hduls, _ = update_params_and_observe(object_name="trace", imagetype="TRACE", source=TRACE,
++                                              exptimes=CALIBRATION_DITS[DETECTOR_MODE]["flat"], output_dir=output_dir,
++                                              disable_effects=disable_effects_cals, **args)
++    if plot:
++        _, _ = plot_readout_overview(bias_hduls[0],
++                                        titles=[f"bias {chan}" for chan in ["BLUE", "GREEN", "RED", "YJ", "H", "K"]])
++        _, _ = PlotScene().from_source(LAMP)
++        _, _ = plot_readout_overview(arcs_hduls[0],
++                                        titles=[f"arcs {chan}" for chan in ["BLUE", "GREEN", "RED", "YJ", "H", "K"]])
++        _, _ = PlotScene().from_source(DOMEFLAT)
++        _, _ = plot_readout_overview(domeflat_hduls[0],
++                                        titles=[f"domeflat {chan}" for chan in ["BLUE", "GREEN", "RED", "YJ", "H", "K"]])
++    del bias_hduls, domeflat_hduls, trace_hduls, arcs_hduls
++
+# %% code cell 33fcb1a50522f6d2
++# Removing sky emission leaves telescope/instrument thermal emission in the standard.
++# Subtract an independent blank exposure with the same settings, including its detector pedestal.
++if rebuild_cals:
++    STANDARD = sim_tp.misc.point_source(sed=source_templates.ab_spectrum(mag=16))
++    std_hduls, std_train = update_params_and_observe(object_name="standard_raw", imagetype="SCIENCE", source=STANDARD,
++                                                     exptimes=CALIBRATION_DITS[DETECTOR_MODE]["standard"], disable_backgrounds=["sky"], **args)
++    save_zshooter_readout(std_hduls[0], output_dir, object_name="standard_raw", imagetype="STANDARD_RAW",
++                         cmds=std_train.cmds, train=std_train)
++    blank_hduls, _ = update_params_and_observe(object_name="standard_background", imagetype="SKY", source=None,
++                                               exptimes=CALIBRATION_DITS[DETECTOR_MODE]["standard"], disable_backgrounds=["sky"], output_dir=output_dir, **args)
++    std_hduls = [combine_readouts([std_hduls[0], blank_hduls[0]], [1, -1], source_indices=[0])]
++    save_zshooter_readout(std_hduls[0], output_dir, object_name="standard", imagetype="SCIENCE",
++                         cmds=std_train.cmds, train=std_train, extra_headers={"SUBTRACTED": True})
++    if plot:
++        _, _ = PlotScene().from_source(STANDARD)
++        _, _ = plot_readout_overview(std_hduls[0], titles=[f"standard {chan}" for chan in ["BLUE", "GREEN", "RED", "YJ", "H", "K"]])
++    del std_hduls, blank_hduls, std_train
++
+# %% code cell 53429290fabacd2a
++# Each on-source integration has an independent matching blank exposure.
++# Combine unique detector frames before optimal extraction, so shared pixels are counted once.
++science_dits = [dit for dit, count in SCIENCE_EXPOSURES[DETECTOR_MODE]]
++science_ndits = [count for dit, count in SCIENCE_EXPOSURES[DETECTOR_MODE]]
++science_sources = {"FLAT_AB": sim_tp.misc.point_source(sed=source_templates.ab_spectrum(mag=20))}
++for objname, source in science_sources.items():
++    hduls, science_train = update_params_and_observe(object_name=objname, imagetype="RAW_OBJECT", source=source,
++                                        exptimes=science_dits, ndit=science_ndits, output_dir=output_dir, **args)
++    sky_hduls, _ = update_params_and_observe(object_name=f"{objname}_sky", imagetype="SKY", source=None,
++                                            exptimes=science_dits, ndit=science_ndits, output_dir=output_dir, **args)
++    sub_hdul = combine_readouts([hduls[0], sky_hduls[0]], [1, -1], source_indices=[0])
++    save_zshooter_readout(sub_hdul, output_dir, object_name=f"{objname}_SUB", imagetype="SCIENCE", extra_headers={"SUBTRACTED": True})
++    del hduls, sky_hduls
++_ = plot_readout_overview(sub_hdul, titles=[f"{objname}-Sky, {chan}" for chan in ["BLUE", "GREEN", "RED", "YJ", "H", "K"]])
++del sub_hdul
++exposure_table = pd.DataFrame(exposure_rows, columns=["object", "detector_mode", "arm", "DIT", "NDIT", "on_source_s", "peak_e_per_integration", "usable_well_e", "F", "read_noise_total_e", "dark_e_s"])
++exposure_table["well_fraction"] = exposure_table["peak_e_per_integration"]/exposure_table["usable_well_e"]
++exposure_table.to_csv(output_dir/"exposures.csv", index=False)
++display(exposure_table)
++
+# %% code cell 7206e1469d78387d
++REDUCED_DIR = output_dir / "reduced"
++REDUCED_DIR.mkdir(exist_ok=True)
++
+# %% code cell 38421dd1ab6ad0d0
++from zsdrp.ZSHOOTER import ZSHOOTER
++
++zspy = ZSHOOTER()
++files = {}
++for chan in zspy.config.channels:
++    stepnames = ['bias','flat','trace','wavecal_master','science']
++    file_groups = zspy.sort_files(str(output_dir), target='', night='', channel=chan, steps=stepnames)
++    # Calibration-only nights can precede the single science group returned by PyReduce.
++    (_, fls), = [entry for entry in file_groups if len(entry[1]['science'])]
++    files[chan] = {name: fls[name] for name in stepnames}
++    if DETECTOR_MODE == 'SPEC' and chan != 'YJ':
++        files[chan]['trace'] = files[chan]['flat']
++# files[chan]
++
+# %% code cell 234cfd999ef5c89b
++from scopesim.source.source_templates import ab_spectrum
++from synphot.units import convert_flux
++from pyreduce.spectra import Spectra
++
++reference = ab_spectrum(mag=16)
++reference_wave = reference.waveset
++reference_flux = convert_flux(reference_wave, reference(reference_wave), "FLAM")
++# Establish the flat-AB control before extracting the fainter science scenes.
++results = {}
++for channel, group in files.items():
++    controls = [path for path in group['science'] if fits.getheader(path)['OBJECT'] in ('STANDARD', 'FLAT_AB_SUB')]
++    selected = {channel: {**group, 'science': controls}}
++    reduced = zsdrp.pipe.run_reduction(selected, channels=[channel], output_dir=REDUCED_DIR, disable_steps=['mask'],
++                                      print_params=False, disable_all_plots=True, reuse_cals=not rebuild_cals, require_variance=True, trace_list=science_train['trace_list_analytical'])
++    # Flux calibration converts its inputs in place; preserve the standard in original electron units.
++    reduced[channel]['spectra']['STANDARD'].save(REDUCED_DIR / f'standard_{channel}_extracted_electrons.fits')
++    calibrated = zsdrp.pipe.run_flux_calibration_and_stitch(reduced, reference_wave=reference_wave, reference_flux=reference_flux,
++                                                          plot=False, output_dir=str(REDUCED_DIR))
++    cal = reduced[channel]
++    del cal['spectra'], cal['norm']
++    results[channel] = cal
++    del reduced, calibrated
++
+# %% markdown cell 34bdc922136dc55c
++## YJ arc exposure check
++
++The initial 2 s YJ arc above failed to measure the slit tilt in order 76 and PyReduce substituted zero. The explicit 3 s trial remains below the configured well and measures the tilt again. The final YJ reduction and diagnostics below use that 3 s arc; the production kilonova notebook starts with 3 s. This notebook retains the initial trial to make that choice inspectable.
++
+# %% code cell a7c43c85540dfd4f
++from zsdrp.steps import CurvatureWrapper, TraceWrapper
++from zsdrp.utils import load_instrument_settings
++from astropy.table import Table
++
++diagnostic_dir = REDUCED_DIR/"diagnostics"
++diagnostic_dir.mkdir(exist_ok=True)
++
++# Increase arc signal for the H2RG curvature fit; DIT is an explicit observing choice.
++ARC_YJ_TRIAL_DIT = 3.
++trial_dits = CALIBRATION_DITS[DETECTOR_MODE]["arcs"].copy()
++yj_index = zspy.config.channels.index("YJ")
++trial_dits[yj_index] = ARC_YJ_TRIAL_DIT
++trial_dir = output_dir/"yj_arc_3s"
++trial_hduls, trial_train = update_params_and_observe(object_name="arcs_3s", imagetype="ARCS", source=LAMP,
++    exptimes=trial_dits, output_dir=trial_dir, disable_effects=disable_effects_cals, **args)
++print("YJ trial peak / usable well:", trial_hduls[0][yj_index][1].header["PEAKDIT"], trial_hduls[0][yj_index][1].header["WELLDEP"])
++del trial_hduls, trial_train
++
++trial_bias, trial_bhead = results["YJ"]["master_bias"]
++trial_arc = zsdrp.pipe.combine_calibrate(files=[str(trial_dir/"arcs_3s_0_YJ.fits")], instrument=zspy, channel="YJ", bias=trial_bias, bhead=trial_bhead)
++trial_settings = load_instrument_settings(zspy)["YJ"]["curvature"].copy()
++trial_settings["plot"] = False
++trial_traces = TraceWrapper.load(REDUCED_DIR/"trace_YJ.fits")
++original_tilts = {trace.m: trace.slit[1, 0] for trace in trial_traces}
++trial_traces = CurvatureWrapper.run(trial_arc[0], trial_traces, step_cfg=trial_settings, print_params=False)
++curvature_trial = Table(rows=[(trace.m, original_tilts[trace.m], trace.slit[1, 0]) for trace in trial_traces],
++    names=("order", "tilt_2s_pix_per_pix", "tilt_3s_pix_per_pix"))
++curvature_trial.write(diagnostic_dir/"yj_arc_curvature_trial.ecsv", overwrite=True)
++display(curvature_trial)
++del trial_arc, trial_bias, trial_bhead, trial_traces
++
+# %% code cell 70636784c6839d22
++# Adopt the measured 3 s YJ arc and rebuild that channel's calibrations.
++channel = "YJ"
++files[channel]["wavecal_master"] = [str(trial_dir/"arcs_3s_0_YJ.fits")]
++group = files[channel]
++controls = [path for path in group["science"] if fits.getheader(path)["OBJECT"] in ("STANDARD", "FLAT_AB_SUB")]
++selected = {channel: {**group, "science": controls}}
++reduced = zsdrp.pipe.run_reduction(selected, channels=[channel], output_dir=REDUCED_DIR, disable_steps=["mask"],
++    print_params=False, disable_all_plots=True, reuse_cals=False, require_variance=True, trace_list=science_train["trace_list_analytical"])
++reduced[channel]["spectra"]["STANDARD"].save(REDUCED_DIR/f"standard_{channel}_extracted_electrons.fits")
++calibrated = zsdrp.pipe.run_flux_calibration_and_stitch(reduced, reference_wave=reference_wave, reference_flux=reference_flux,
++    plot=False, output_dir=str(REDUCED_DIR))
++cal = reduced[channel]
++del cal["spectra"], cal["norm"]
++results[channel] = cal
++del reduced, calibrated
++
++exposure_table = pd.DataFrame(exposure_rows, columns=["object", "detector_mode", "arm", "DIT", "NDIT", "on_source_s", "peak_e_per_integration", "usable_well_e", "F", "read_noise_total_e", "dark_e_s"])
++exposure_table["well_fraction"] = exposure_table["peak_e_per_integration"]/exposure_table["usable_well_e"]
++exposure_table.to_csv(output_dir/"exposures.csv", index=False)
++
+# %% code cell 80192510c01afd90
++from astropy.io import fits
++from astropy.table import Table
++from matplotlib.colors import LogNorm
++
++diagnostic_dir = REDUCED_DIR / "diagnostics"
++diagnostic_dir.mkdir(exist_ok=True)
++calibration_rows = []
++fig, axes = plt.subplots(2, 3, figsize=(15, 10))
++for ax, (channel, cal) in zip(axes.ravel(), results.items(), strict=True):
++    traces = [t for t in cal['traces'] if not t.invalid]
++    row_for_order = {t.m: i for i, t in enumerate(traces)}
++    residuals = []
++    for line in cal['arc_lines']:
++        order = int(line['order'].rsplit('_', 1)[1])
++        trace = traces[row_for_order[order]]
++        if not trace.column_range[0] <= line['x'] < trace.column_range[1]:
++            continue
++        wavelength = cal['wave_img'][row_for_order[order]]
++        x = np.arange(wavelength.size)
++        residuals.append((np.interp(line['x'], x, wavelength) - line['line']) / np.interp(line['x'], x, np.abs(np.gradient(wavelength))))
++    calibration_rows.append((channel, len(traces), len(residuals), np.median(np.abs(residuals)), np.percentile(np.abs(residuals), 95)))
++    image = fits.getdata(files[channel]['trace'][0], 1) - cal['master_bias'][0]
++    ax.imshow(np.maximum(image, 1), origin='lower', cmap='gray', norm=LogNorm(1, 60000))
++    for t in traces:
++        x = np.arange(*t.column_range)
++        ax.plot(x, t.y_at_x(x), color='tomato', linewidth=0.5)
++        xc = x[len(x)//2]
++        ax.text(xc, t.y_at_x(xc), str(t.m), color='cyan', fontsize=5)
++    ax.set_title(f"{channel}: {len(traces)} measured orders")
++    ax.set_xlabel("Detector x (pixel)")
++    ax.set_ylabel("Detector y (pixel)")
++    ax.set_xlim(0, image.shape[1]-1)
++    ax.set_ylim(0, image.shape[0]-1)
++calibration_summary = Table(rows=calibration_rows, names=['channel', 'orders', 'arc_lines', 'median_abs_residual_pix', 'p95_abs_residual_pix'])
++calibration_summary['median_abs_residual_pix'].info.format = '.3f'
++calibration_summary['p95_abs_residual_pix'].info.format = '.3f'
++display(calibration_summary)
++calibration_summary.write(diagnostic_dir / "calibration.csv", format='ascii.csv', overwrite=True)
++fig.tight_layout()
++fig.savefig(diagnostic_dir / "measured_traces.png", dpi=180)
++plt.show()
++
+# %% code cell a4f8d18012d44fa6
++from zs_scopesim_tools.reduction_checks import flat_ab_extraction_bins, flat_ab_band_integrals
++from zsdrp.steps import TraceWrapper
++
++# Fixed comparison windows exclude broad inter-band gaps but retain narrow transmission features.
++# Selection never uses the noisy recovered flux.
++flat_windows = {'BLUE': (3500, 4000), 'GREEN': (4800, 6000), 'RED': (8000, 8800), 'YJ': (12000, 13000), 'H': (15500, 17000), 'K': (21000, 22000)}
++flat_files = {channel: REDUCED_DIR / f'spectra_FLAT_AB_SUB_{channel}_fluxcal.fits' for channel in flat_windows}
++flat_intervals = {channel: [u.Quantity(limits, u.AA)] for channel, limits in flat_windows.items()}
++native_gap = {}
++for channel in flat_windows:
++    traces = [trace for trace in TraceWrapper.load(REDUCED_DIR / f'trace_{channel}.fits') if not trace.invalid]
++    with np.load(REDUCED_DIR / f'wavecal_{channel}.npz') as calibration:
++        native_steps = np.concatenate([np.diff(wave[trace.column_range[0]:trace.column_range[1]]) for wave, trace in zip(calibration['wave_img'], traces, strict=True)])
++    native_gap[channel] = np.max(np.abs(native_steps)) * u.AA
++flat_bins, flat_figure = flat_ab_extraction_bins(flat_files, intervals=flat_intervals, max_gap=native_gap, magnitude=20, bin_R=1000)
++flat_bins.write(diagnostic_dir / 'flat_ab_bins.ecsv', overwrite=True)
++flat_figure.savefig(diagnostic_dir / 'flat_ab_recovery.png', dpi=160)
++flat_bands = flat_ab_band_integrals(flat_files, intervals=flat_intervals, max_gap=native_gap, magnitude=20)
++flat_bands.write(diagnostic_dir / 'flat_ab_bands.ecsv', overwrite=True)
++display(flat_bands['arm', 'covered_width', 'ratio', 'ratio_uncertainty', 'snr'])
++plt.show()
++
+# %% code cell 42f8dc4a3206bb67
++# Check the order whose curvature fit failed with the initial arc exposure.
++with np.load(Path(zspy._inst_dir)/"free_spectral_ranges.npz") as fsrs:
++    order76_interval = fsrs["YJ"][np.flatnonzero(fsrs["YJ_orders"] == 76)[0]]*u.AA
++yj_files = {"YJ": flat_files["YJ"]}
++yj_intervals = {"YJ": [order76_interval]}
++yj_gap = {"YJ": native_gap["YJ"]}
++yj_order76 = flat_ab_band_integrals(yj_files, intervals=yj_intervals, max_gap=yj_gap, magnitude=20)
++yj_order76.write(diagnostic_dir/"yj_order76_flux.ecsv", overwrite=True)
++display(yj_order76["arm", "covered_width", "ratio", "ratio_uncertainty", "snr"])
++yj_bins, yj_figure = flat_ab_extraction_bins(yj_files, intervals=yj_intervals, max_gap=yj_gap, magnitude=20, bin_R=1000)
++yj_figure.savefig(diagnostic_dir/"yj_order76_recovery.png", dpi=160)
++plt.show()

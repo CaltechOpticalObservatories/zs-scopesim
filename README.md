@@ -7,6 +7,8 @@ It also includes a local copy of [PALACE](https://ui.adsabs.harvard.edu/abs/2025
 ZShooter is simulated with the ScopeSim framework, which observes simulated light sources through the atmosphere, telescope and instrument to produce raw detector images.
 The raw data is processed with a Pyreduce-based barebones pipeline to extract quick-look 1D spectra.
 
+Notebook readouts, FITS calibration tables and extracted spectra are saved as `.fits.gz`. Compression preserves the data, precision, headers, variance and full spectral covariance; Astropy reads these files directly. Existing uncompressed FITS inputs remain supported.
+
 The simulator setup uses Caltech Optical Observatories versions of [ScopeSim](https://github.com/CaltechOpticalObservatories/ScopeSim/) and [irdb](https://github.com/CaltechOpticalObservatories/irdb). 
 To keep this repo synced with latest changes in ScopeSim and IRDB, these packages are installed as editable checkouts so users can inspect the code and developers can reproduce science-ready environment.
 
