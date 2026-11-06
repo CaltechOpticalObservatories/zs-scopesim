@@ -224,5 +224,6 @@ validation/xshooter/data/comparison/*.fits
 validation/xshooter/data/comparison/*.fits.gz
 validation/xshooter/data/comparison/*.npz
 validation/xshooter/data/comparison/*.npy
+validation/xshooter/data/comparison/*_case.pkl
 validation/xshooter/data/lamps/*.npy
 validation/xshooter/data/comparison/*.csv.gz
