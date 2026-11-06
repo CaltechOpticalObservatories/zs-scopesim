@@ -1,0 +1,55 @@
+configuration,stage,seconds
+ZS natural .70,setup,5.038130125030875
+ZS natural .70,source + sky,81.27833266695961
+ZS natural .70,readout 300s case,1.4126195828430355
+ZS natural .70,readout 3600s case,1.5828647499438375
+ZS natural .70,sky,93.44406979205087
+ZS natural .70,boxcar extraction,3.5175097920000553
+ZS natural .70,throughput,9.338849999941885
+ZS natural .70,noise check,0.11208445904776454
+ZS natural .70,isolated line grid,22.811428084038198
+ZS AO .33,setup,6.633310416946188
+ZS AO .33,source + sky,146.26334779104218
+ZS AO .33,readout 300s case,1.4662451250478625
+ZS AO .33,readout 3600s case,1.6571376251522452
+ZS AO .33,sky,131.0519098751247
+ZS AO .33,boxcar extraction,2.5336765830870718
+ZS AO .33,throughput,7.669528000056744
+ZS AO .33,noise check,0.12326699984259903
+ZS AO .33,isolated line grid,32.68188820895739
+ZS natural .33,setup,5.757550959009677
+ZS natural .33,source + sky,90.08957108296454
+ZS natural .33,readout 300s case,1.4156727909576148
+ZS natural .33,readout 3600s case,1.6393469581380486
+ZS natural .33,sky,88.97170499991626
+ZS natural .33,boxcar extraction,2.9299701671116054
+ZS natural .33,throughput,7.417418916011229
+ZS natural .33,noise check,0.10201195906847715
+ZS natural .33,isolated line grid,22.69194429088384
+ZS alt natural .70,setup,5.972469249973074
+ZS alt natural .70,source + sky,96.6519959170837
+ZS alt natural .70,readout 300s case,2.0147455418482423
+ZS alt natural .70,readout 3600s case,2.3157480829395354
+ZS alt natural .70,sky,89.26774345804006
+ZS alt natural .70,boxcar extraction,3.0732645420357585
+ZS alt natural .70,throughput,7.542891249991953
+ZS alt natural .70,noise check,0.19837579200975597
+ZS alt natural .70,isolated line grid,22.3324694999028
+ZS alt AO .33,setup,6.41353033320047
+ZS alt AO .33,source + sky,131.09559745900333
+ZS alt AO .33,readout 300s case,1.9874339590314776
+ZS alt AO .33,readout 3600s case,2.239410249982029
+ZS alt AO .33,sky,136.26704591698945
+ZS alt AO .33,boxcar extraction,3.177009708015248
+ZS alt AO .33,throughput,9.0085059159901
+ZS alt AO .33,noise check,0.21608599997125566
+ZS alt AO .33,isolated line grid,35.667275291867554
+ZS alt natural .33,setup,5.514508582884446
+ZS alt natural .33,source + sky,89.63502216688357
+ZS alt natural .33,readout 300s case,1.9303657501004636
+ZS alt natural .33,readout 3600s case,2.3409541661385447
+ZS alt natural .33,sky,90.02162716607563
+ZS alt natural .33,boxcar extraction,2.8957767500542104
+ZS alt natural .33,throughput,7.044801082927734
+ZS alt natural .33,noise check,0.16011375002563
+ZS alt natural .33,isolated line grid,21.150507708080113

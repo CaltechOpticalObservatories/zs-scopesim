@@ -1,0 +1,7 @@
+channel,orders,arc_lines,median_abs_residual_pix,p95_abs_residual_pix
+BLUE,34,573,0.035,0.143
+GREEN,30,703,0.016,0.076
+RED,20,124,0.026,0.102
+YJ,22,136,0.017,0.060
+H,10,72,0.023,0.080
+K,8,53,0.028,0.063

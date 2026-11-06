@@ -1,0 +1,323 @@
+diff --git a/scopesim/effects/apertures.py b/scopesim/effects/apertures.py
+index d964faa..2a3e670 100644
+--- a/scopesim/effects/apertures.py
++++ b/scopesim/effects/apertures.py
+@@ -128,6 +128,8 @@ class ApertureMask(Effect):
+             for vol in obj.volumes:
+                 vol["meta"]["xi_min"] = min(x) * u.arcsec
+                 vol["meta"]["xi_max"] = max(x) * u.arcsec
++                vol["meta"]["eta_min"] = min(y) * u.arcsec
++                vol["meta"]["eta_max"] = max(y) * u.arcsec
+ 
+                 if "offset_type" in self.meta:
+                     vol["meta"]["offset_type"] = self.meta["offset_type"]
+@@ -304,6 +306,8 @@ class ApertureList(Effect):
+                     # ..todo: HUGE HACK - Get rid of this!
+                     vol["meta"]["xi_min"] = row["left"] * u.arcsec
+                     vol["meta"]["xi_max"] = row["right"] * u.arcsec
++                    vol["meta"]["eta_min"] = row["bottom"] * u.arcsec
++                    vol["meta"]["eta_max"] = row["top"] * u.arcsec
+                     vol["conserve_image"] = row["conserve_image"]
+                     vol["shape"] = row["shape"]
+                     vol["angle"] = row["angle"]
+diff --git a/scopesim/effects/detector_list.py b/scopesim/effects/detector_list.py
+index 8397927..7c20652 100644
+--- a/scopesim/effects/detector_list.py
++++ b/scopesim/effects/detector_list.py
+@@ -329,16 +329,17 @@ class DetectorList(Effect):
+                 hdr["PC2_1"] = -sang
+                 hdr["PC2_2"] = cang
+ 
+-            # hdr["GAIN"] = row["gain"]
+-            if "id" in row:
+-                hdr["DET_ID"] = row["id"]
+-                hdr["EXTNAME"] = f"DET_{row['id']}"
+-
+             row_dict = {
+                 f"HIERARCH {col.upper()}" if len(col) > 8 else col: row[col]
+                 for col in row.colnames
+             }
+             hdr.update(row_dict)
++            if "id" in row.colnames:
++                # Keep routing identifiers numeric when detector metadata is
++                # serialized to FITS (NumPy integers otherwise become strings).
++                hdr["ID"] = int(row["id"])
++                hdr["DET_ID"] = int(row["id"])
++                hdr["EXTNAME"] = f"DET_{row['id']}"
+             hdrs.append(hdr)
+ 
+         return hdrs
+diff --git a/scopesim/effects/electronic/dmps.py b/scopesim/effects/electronic/dmps.py
+index 296703a..f627d27 100644
+--- a/scopesim/effects/electronic/dmps.py
++++ b/scopesim/effects/electronic/dmps.py
+@@ -70,12 +70,13 @@ class DetectorModePropertiesSetter(Effect):
+         check_keys(self.meta, self.required_keys, action="error")
+ 
+         self.mode_properties = kwargs["mode_properties"]
++        self.mode_key = kwargs.get("mode_key", "!OBS.detector_readout_mode")
+ 
+     def apply_to(self, obj, **kwargs):
+         logger.debug("Entering DetectorModePropertiesSetter.apply_to")
+         mode_name = kwargs.get(
+             "detector_readout_mode",
+-            from_currsys("!OBS.detector_readout_mode", self.cmds),
++            from_currsys(self.mode_key, self.cmds),
+         )
+ 
+         if isinstance(obj, ImagePlane) and mode_name == "auto":
+@@ -84,7 +85,7 @@ class DetectorModePropertiesSetter(Effect):
+ 
+         self.meta["detector_readout_mode"] = mode_name
+         props_dict = self.mode_properties[mode_name]
+-        self.cmds["!OBS.detector_readout_mode"] = mode_name
++        self.cmds[self.mode_key] = mode_name
+         for key, value in props_dict.items():
+             self.cmds[key] = value
+             logger.debug("DMPS setting %s: %s", key, value)
+diff --git a/scopesim/effects/electronic/electrons.py b/scopesim/effects/electronic/electrons.py
+index c2bee25..ac3e132 100644
+--- a/scopesim/effects/electronic/electrons.py
++++ b/scopesim/effects/electronic/electrons.py
+@@ -263,7 +263,7 @@ class ADConversion(ElectronicEffect):
+         super().__init__(**kwargs)
+         params = {
+             "dtype": "uint16",
+-            "gain": 1.      # default, usually overridden from yaml
++            "gain": "!DET.gain"
+         }
+         self.meta.update(params)
+         self.meta.update(kwargs)
+@@ -297,17 +297,18 @@ class ADConversion(ElectronicEffect):
+         # Apply the gain value (copy from DarkCurrent)
+         # Note that this does not cater for the case where the gain is given
+         # as a plain dictionary. Should we implement that?
+-        if hasattr(self.cmds["!DET.gain"], "dic"):
+-            gain = self.cmds["!DET.gain"].dic[det_id]
++        configured_gain = from_currsys(self.meta["gain"], self.cmds)
++        if hasattr(configured_gain, "dic"):
++            gain = configured_gain.dic[det_id]
+             logger.info(f"Detector {det_id}: applying gain {gain}")
+             return gain
+-        if isinstance(self.cmds["!DET.gain"], Real):
+-            gain = self.cmds["!DET.gain"]
++        if isinstance(configured_gain, Real):
++            gain = configured_gain
+             logger.info(f"Applying gain {gain}")
+             return gain
+         raise ValueError(
+             f"{self.__class__.__name__}.meta['gain'] must be either "
+-            f"dict or float, but is {self.cmds['!DET.gain']}")
++            f"dict or float, but is {configured_gain}")
+ 
+     def _apply_to_det(self, det: Detector) -> None:
+         """Subclasses can override if more params needed in call."""
+diff --git a/scopesim/effects/fits_headers.py b/scopesim/effects/fits_headers.py
+index 9110f33..987117e 100644
+--- a/scopesim/effects/fits_headers.py
++++ b/scopesim/effects/fits_headers.py
+@@ -153,6 +153,9 @@ class ExtraFitsKeywords(Effect):
+           header['HIERARCH ESO DET DIT'] = (5, '[s] exposure length')
+           header['EXTNAME'] = "DET2.DATA"
+ 
++    A group may additionally specify ``detector_id``. It then applies only to
++    HDULists containing that ``DET_ID``, including their primary headers.
++
+     Resolved and un-resolved keywords
+     ---------------------------------
+     ScopeSim uses bang-strings to resolve global parameters.
+@@ -285,6 +288,12 @@ class ExtraFitsKeywords(Effect):
+             return hdul
+ 
+         for dic in self.dict_list:
++            # Each detector array produces its own HDUList. A detector selector
++            # also permits arm-specific metadata in that array's primary HDU.
++            if "detector_id" in dic:
++                detector_ids = [hdu.header["DET_ID"] for hdu in hdul if "DET_ID" in hdu.header]
++                if dic["detector_id"] not in detector_ids:
++                    continue
+             resolved = flatten_dict(dic.get("keywords", {}), resolve=True,
+                                     optics_manager=opt_train)
+             unresolved = flatten_dict(dic.get("unresolved_keywords", {}))
+diff --git a/scopesim/effects/metis_lms_trace_list.py b/scopesim/effects/metis_lms_trace_list.py
+index 92780da..d1b650e 100644
+--- a/scopesim/effects/metis_lms_trace_list.py
++++ b/scopesim/effects/metis_lms_trace_list.py
+@@ -144,6 +144,8 @@ class MetisLMSSpectralTraceList(SpectralTraceList):
+             slicefov.detector_header = obj.detector_header
+             slicefov.meta["xi_min"] = obj.meta["xi_min"]
+             slicefov.meta["xi_max"] = obj.meta["xi_max"]
++            slicefov.meta["eta_min"] = ymin * u.arcsec
++            slicefov.meta["eta_max"] = ymax * u.arcsec
+             slicefov.meta["trace_id"] = sptid
+             slicefov.cube = fits.ImageHDU(header=slicewcs.to_header(),
+                                           data=slicecube)
+diff --git a/scopesim/effects/spectral_trace_list_utils.py b/scopesim/effects/spectral_trace_list_utils.py
+index b3a4d75..f8ad744 100644
+--- a/scopesim/effects/spectral_trace_list_utils.py
++++ b/scopesim/effects/spectral_trace_list_utils.py
+@@ -769,8 +769,16 @@ class XiLamImage():
+         (n_lam, n_eta, n_xi) = fov.cube.data.shape
+ 
+         # arrays of cube coordinates
+-        cube_xi = d_xi * np.arange(n_xi) + fov.meta["xi_min"].value
+-        cube_eta = d_eta * (np.arange(n_eta) - (n_eta - 1) / 2)
++        cube_xi = cube_wcs.all_pix2world(np.arange(n_xi), np.zeros(n_xi), np.zeros(n_xi), 0)[0]
++        cube_eta = cube_wcs.all_pix2world(np.zeros(n_eta), np.arange(n_eta), np.zeros(n_eta), 0)[1]
++        if cube_wcs.has_celestial:
++            # Slit coordinates are offsets about zero; RA wraps at 360 degrees.
++            cube_xi = (cube_xi + 180) % 360 - 180
++        cube_xi *= u.Unit(cube_wcs.wcs.cunit[0]).to(u.arcsec)
++        cube_eta *= u.Unit(cube_wcs.wcs.cunit[1]).to(u.arcsec)
++        # Each IFU slice has its own optical axis, independent of sky position.
++        eta_center = (fov.meta["eta_min"] + fov.meta["eta_max"]) / 2
++        cube_eta -= eta_center.to_value(u.arcsec)
+         cube_lam = wcs_lam.all_pix2world(np.arange(n_lam), 1)[0]
+         cube_lam *= u.Unit(wcs_lam.wcs.cunit[0]).to(u.um)
+ 
+@@ -801,7 +809,7 @@ class XiLamImage():
+         # Default WCS with xi in arcsec
+         self.wcs = WCS(naxis=2)
+         self.wcs.wcs.crpix = [1, 1]
+-        self.wcs.wcs.crval = [self.lam[0], fov.meta["xi_min"].value]
++        self.wcs.wcs.crval = [self.lam[0], cube_xi[0]]
+         self.wcs.wcs.pc = [[1, 0], [0, 1]]
+         self.wcs.wcs.cdelt = [d_lam, d_xi]
+         self.wcs.wcs.ctype = ["LINEAR", "LINEAR"]
+diff --git a/scopesim/effects/ter_curves.py b/scopesim/effects/ter_curves.py
+index 5913018..0ac07fe 100644
+--- a/scopesim/effects/ter_curves.py
++++ b/scopesim/effects/ter_curves.py
+@@ -490,9 +490,14 @@ class SkycalcTERCurve(AtmosphericTERCurve):
+ 
+         else:
+             path = find_file(use_local_file)
+-            fits_tbl = fits.getdata(path, ext=1)
++            with fits.open(path) as sky_file:
++                fits_tbl = sky_file[1].data
++                # Older cached files require an explicit unit if TUNIT is absent.
++                unit = self.meta["local_skycalc_wavelength_unit"] if "local_skycalc_wavelength_unit" in self.meta else sky_file[1].columns["lam"].unit
++                wave_unit = u.Unit(unit)
+             fits_hdr = fits.getheader(path, ext=0)
+             tbl = Table(fits_tbl)
++            tbl["lam"] = tbl["lam"] * wave_unit.to(u.um)
+             tbl["lam"].unit = u.um
+             for colname in tbl.colnames:
+                 if "flux" in colname:
+diff --git a/scopesim/tests/tests_effects/test_SkycalcTERCurve.py b/scopesim/tests/tests_effects/test_SkycalcTERCurve.py
+index 689621b..b87995c 100644
+--- a/scopesim/tests/tests_effects/test_SkycalcTERCurve.py
++++ b/scopesim/tests/tests_effects/test_SkycalcTERCurve.py
+@@ -59,7 +59,9 @@ class TestInit:
+ 
+     def test_initialise_with_local_skycalc_file(self, mock_path):
+         sky_ter = SkycalcTERCurve(
+-            use_local_skycalc_file=str(mock_path / "skycalc_override.fits"))
++            use_local_skycalc_file=str(mock_path / "skycalc_override.fits"),
++            local_skycalc_wavelength_unit=u.um)
++        # This legacy fixture predates wavelength units in its FITS columns.
+         assert sky_ter.skycalc_table is not None
+ 
+ 
+diff --git a/scopesim/tests/tests_effects/test_SpectralTraceListUtils.py b/scopesim/tests/tests_effects/test_SpectralTraceListUtils.py
+index e1bcbb4..2dc5b13 100644
+--- a/scopesim/tests/tests_effects/test_SpectralTraceListUtils.py
++++ b/scopesim/tests/tests_effects/test_SpectralTraceListUtils.py
+@@ -172,7 +172,7 @@ class MockCubeFov:
+         hdr["CUNIT1"], hdr["CUNIT2"], hdr["CUNIT3"] = "arcsec", "arcsec", "um"
+         self.cube = fits.ImageHDU(
+             data=np.ones((n_lam, n_eta, n_xi)), header=hdr)
+-        self.meta = {"xi_min": -0.5 * u.arcsec, "xi_max": 0.5 * u.arcsec}
++        self.meta = {"xi_min": -0.5 * u.arcsec, "xi_max": 0.5 * u.arcsec, "eta_min": -0.5 * u.arcsec, "eta_max": 0.5 * u.arcsec}
+ 
+ 
+ class TestXiLamImage:
+diff --git a/scopesim/tests/tests_effects/test_detector_arm_configuration.py b/scopesim/tests/tests_effects/test_detector_arm_configuration.py
+new file mode 100644
+index 0000000..2b81134
+--- /dev/null
++++ b/scopesim/tests/tests_effects/test_detector_arm_configuration.py
+@@ -0,0 +1,53 @@
++import numpy as np
++import pytest
++from scopesim.detector import Detector
++from scopesim.optics.image_plane_utils import header_from_list_of_xy
++from astropy.io import fits
++from scopesim.commands import UserCommands
++from scopesim.effects import DetectorList, ExtraFitsKeywords, DetectorModePropertiesSetter
++from scopesim.effects.electronic import ADConversion
++
++
++def detector(nx=120, ny=80):
++    header = header_from_list_of_xy([-.015*nx/2, .015*nx/2], [-.015*ny/2, .015*ny/2], .015, 'D')
++    return Detector(header)
++
++
++
++def test_gain_uses_selected_arm_and_missing_gain_fails():
++    det = detector()
++    det.data[:] = 12
++    ADConversion(gain='!DET.gain_uvb', dtype='float32', cmds={'!DET.gain_uvb': .6}).apply_to(det)
++    np.testing.assert_allclose(det.data, 20)
++    with pytest.raises(ValueError, match='gain_uvb'):
++        ADConversion(gain='!DET.gain_uvb', dtype='float32', cmds={}).apply_to(det)
++
++
++
++def test_detector_specific_primary_headers():
++    eff = ExtraFitsKeywords(header_dict=[{'detector_id': 1, 'ext_number': [0, 1], 'keywords': {'ARM': 'VIS'}}])
++    for detector_id in [0, 1, 2]:
++        hdul = fits.HDUList([fits.PrimaryHDU(), fits.ImageHDU(header=fits.Header({'DET_ID': detector_id}))])
++        eff.apply_to(hdul)
++        assert ('ARM' in hdul[0].header) == (detector_id == 1)
++
++
++
++def test_detector_layout_sets_real_id_header():
++    effect = DetectorList(array_dict={'id': [2], 'x_cen': [0.], 'y_cen': [0.], 'x_size': [16], 'y_size': [8], 'pixel_size': [.018], 'angle': [0.], 'gain': [2.29]}, x_cen_unit='mm', y_cen_unit='mm', x_size_unit='pixel', y_size_unit='pixel', pixel_size_unit='mm', angle_unit='deg', gain_unit='electron/adu')
++    header = effect.detector_headers()[0]
++    assert header['DET_ID'] == 2
++    assert header['EXTNAME'] == 'DET_2'
++    det = Detector(header)
++    assert det.meta['ID'] == 2
++    assert det.hdu.header['DET_ID'] == 2
++
++
++
++def test_independent_detector_readout_modes():
++    cmds = UserCommands(properties={'!DET.mode_blue': 'slow', '!DET.mode_red': 'fast'})
++    for arm in ['blue', 'red']:
++        modes = {'slow': {f'!DET.gain_{arm}': .6}, 'fast': {f'!DET.gain_{arm}': 1.8}}
++        DetectorModePropertiesSetter(mode_properties=modes, mode_key=f'!DET.mode_{arm}', cmds=cmds).apply_to(None)
++    assert cmds['!DET.gain_blue'] == .6
++    assert cmds['!DET.gain_red'] == 1.8
+diff --git a/scopesim/tests/tests_effects/test_local_skycalc.py b/scopesim/tests/tests_effects/test_local_skycalc.py
+new file mode 100644
+index 0000000..8baab5b
+--- /dev/null
++++ b/scopesim/tests/tests_effects/test_local_skycalc.py
+@@ -0,0 +1,24 @@
++import numpy as np
++import pytest
++from astropy import units as u
++from astropy.table import Table
++from scopesim.effects import SkycalcTERCurve
++
++
++@pytest.mark.parametrize('wave_unit', [u.nm, u.um])
++def test_local_skycalc_respects_wavelength_unit(tmp_path, wave_unit):
++    wave = np.array([.5, 1., 2.]) * u.um
++    table = Table([wave.to(wave_unit), [.5, .8, .9], [100., 200., 300.]], names=['lam', 'trans', 'flux'])
++    path = tmp_path / 'sky.fits'
++    table.write(path)
++    sky = SkycalcTERCurve(use_local_skycalc_file=str(path))
++    np.testing.assert_allclose(sky.skycalc_table['wavelength'], wave.value)
++    assert sky.surface.transmission(1*u.um).value == pytest.approx(.8)
++
++
++
++def test_skycalc_missing_wavelength_unit_fails(tmp_path):
++    path = tmp_path / 'sky.fits'
++    Table([[500., 1000., 2000.], [.5, .8, .9], [100., 200., 300.]], names=['lam', 'trans', 'flux']).write(path)
++    with pytest.raises(TypeError, match='Unit'):
++        SkycalcTERCurve(use_local_skycalc_file=str(path))

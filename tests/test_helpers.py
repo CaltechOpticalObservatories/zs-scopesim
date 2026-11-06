@@ -72,3 +72,16 @@ def test_warning_prevent_sync_alt_ra_dec_can_fall_back_to_current_target(monkeyp
     assert cmd["!OBS.az"] == 23.0
     assert cmd["!OBS.ra"] is None
     assert cmd["!OBS.dec"] is None
+
+
+def test_observation_commands_preserve_each_arm_exposure_and_optional_time():
+    helpers.configure_irdb_path()
+    dits = [1200, 1200, 1200, 300, 90, 150]
+    counts = [3, 3, 3, 12, 40, 24]
+    commands = helpers.zshooter_commands("SPEC_ALTDETECT", dits, counts, airmass=1.3, params={"!OBS.mjdobs": 60310.25})
+    for arm, dit, count in zip(("blue", "green", "red", "yj", "h", "k"), dits, counts, strict=True):
+        assert commands[f"!OBS.dit_{arm}"] == dit
+        assert commands[f"!OBS.ndit_{arm}"] == count
+        assert commands[f"!OBS.dit_{arm}"]*commands[f"!OBS.ndit_{arm}"] == 3600
+    assert commands["!OBS.mjdobs"] == 60310.25
+    np.testing.assert_allclose(commands["!OBS.alt"], 90-airmass2zendist(1.3))
