@@ -1,6 +1,8 @@
 # Caltech simulator review series
 
-The 29 pull requests preserve the approved thematic order across five CaltechOpticalObservatories forks. Their first entries target `main`, `dev_master` or `master`; later entries target the preceding review branch in the same repository. The original X-shooter and ZImager working branches are unchanged. Existing PRs were left alone. No upstream PR was created.
+The 29 pull requests preserve the approved thematic order across five CaltechOpticalObservatories forks. Their first entries target `main`, `dev_master` or `master`; later entries target the preceding review branch in the same repository. The original X-shooter and ZImager working branches are retained as historical snapshots. No upstream PR was created.
+
+New development continues from these published review tips. The [H4RG continuation](h4rg-development.md) lists the follow-up branches and the original broad PRs they supersede. The 29-part numbering and existing review branches remain unchanged.
 
 Merge in the numbered order below, using merge commits so the pinned commits and descendant ancestry remain valid. After merging an entry, retarget the next entry in that repository to its default branch and check that its diff contains only its theme. Avoid squash/rebase merges while descendants depend on those commits. Nothing in this series is automatically merged.
 

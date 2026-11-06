@@ -262,11 +262,53 @@ def disable_background(name_or_names, train):
         palace.meta["only_line"] = saved["only_line"]
         palace.meta["only_continuum"] = saved["only_continuum"]
 
+def zshooter_commands(detector_mode, exptimes=None, ndit=1, *, airmass=None, seeing=None, brightness=None, vis_slit=None, nir_slit=None, pixel_scale=None, pupil_angle=None, ao_on=False, diffuse_emissivity_on=False, params=None):
+    """Configure DIT (seconds) and NDIT in BLUE/GREEN/RED/YJ/H/K order."""
+    config = sim.UserCommands(use_instrument="ZShooter_v2", set_modes=[detector_mode])
+    overrides = {"!OBS.airmass": airmass, "!OBS.seeing": seeing, "!OBS.brightness": brightness, "!OBS.pupil_angle": pupil_angle, "!INST.vis_curr_slit": vis_slit, "!INST.nir_curr_slit": nir_slit, "!INST.pixel_scale": pixel_scale}
+    for key, value in overrides.items():
+        if value is not None:
+            config[key] = value
+    config["!INST.include_diffuse_emissivity"] = diffuse_emissivity_on
+    config["!ATMO.ao_enabled"] = ao_on
+    dits = [0.]*6 if exptimes is None else exptimes if isinstance(exptimes, list) else [exptimes]*6
+    ndits = ndit if isinstance(ndit, list) else [ndit]*6
+    config["!OBS.dit"], config["!OBS.ndit"] = dits[0], ndits[0]
+    for dit, count, arm in zip(dits, ndits, ("blue", "green", "red", "yj", "h", "k"), strict=True):
+        config[f"!OBS.dit_{arm}"] = dit
+        config[f"!OBS.ndit_{arm}"] = count
+    if params is not None:
+        for key, value in params.items():
+            config[key] = value
+    warning_prevent_sync_alt_ra_dec(config)
+    return config
+
+
+def zshooter_channel_configuration(header, channel):
+    """Physical simulation settings in a saved ScopeSim header for one arm."""
+    arm_names = {"BLUE": ("b", "blue"), "GREEN": ("g", "green"), "RED": ("r", "red"), "YJ": ("yj",), "H": ("h",), "K": ("k",)}
+    other_arms = tuple("_" + name for arm, names in arm_names.items() if arm != channel for name in names)
+    configuration = {}
+    for key in header:
+        if not key.startswith("SIM CONFIG "):
+            continue
+        if key.startswith(("SIM CONFIG SIM file search_path", "SIM CONFIG SIM logging ", "SIM CONFIG SIM reports ")):
+            continue
+        setting = key.split()[3]
+        if key in ("SIM CONFIG OBS modes", "SIM CONFIG DET detector_mode", "SIM CONFIG OBS dit", "SIM CONFIG OBS ndit", "SIM CONFIG OBS exptime", "SIM CONFIG OBS roid"):
+            continue
+        if key.startswith(("SIM CONFIG DET ", "SIM CONFIG OBS ")) and setting.endswith(other_arms):
+            continue
+        configuration[key] = header[key]
+    return configuration
+
+
 def simulate(cmds, *,
              source=None,
              disable_effects=None,
              disable_backgrounds=None,
-             hide_progress_bars=True):
+             hide_progress_bars=True,
+             image_plane_ids=None):
     """
     Run a ScopeSim observation with optional effect disabling and progress bar suppression.
 
@@ -282,6 +324,8 @@ def simulate(cmds, *,
         A list of background selectors to disable during the observation, options are "sky", "sky_continuum", and "sky_lines".
     hide_progress_bars : bool, optional
         If True, suppress the tqdm progress bars during the observation.
+    image_plane_ids : sequence of int | None
+        Configured image planes to observe. Their physical detector IDs are retained.
     """
     train = sim.OpticalTrain(cmds)
 
@@ -293,10 +337,11 @@ def simulate(cmds, *,
             warnings.warn(f"Effect with name {effect} not present in the train.")
 
     with disable_background(disable_backgrounds, train), disable_scopesim_progress_bars(hide_progress_bars):
-        if source is None:
-            train.observe()
-        else:
-            train.observe(source)
+        if image_plane_ids is not None:
+            train.update()
+            train.fov_manager._fovs_list = [fov for fov in train.fov_manager.fovs if fov.meta["image_plane_id"] in image_plane_ids]
+            train.detector_managers = [manager for manager in train.detector_managers if manager._detector_list.image_plane_id in image_plane_ids]
+        train.observe(source, update=image_plane_ids is None)
         hdul = train.readout()
     return train, hdul
 
@@ -357,10 +402,11 @@ def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Pa
     outfiles = []
 
     for i, hdul in enumerate(list_of_hdul):
+        channel = channels[hdul[1].header['ID']].upper()
         hdul[0].header['OBJECT'] = object_name.upper()
         hdul[0].header['HIERARCH IMAGETYPE'] = imagetype.upper()
         hdul[0].header['HIERARCH IMAGENUM'] = ndit
-        hdul[0].header['CHANNEL'] = channels[i].upper()
+        hdul[0].header['CHANNEL'] = channel
 
         if train is not None and 'VARIANCE' not in hdul:
             from zs_scopesim_tools.comparison import detector_noise
@@ -390,7 +436,7 @@ def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Pa
                 hdul[0].header[key] = value
 
         filename_prefix = f"{object_name}_{ndit}"
-        filename = output_dir / f"{filename_prefix}_{channels[i].upper()}.fits.gz"
+        filename = output_dir / f"{filename_prefix}_{channel}.fits.gz"
         save_readout_to_fits(hdul, str(filename))
         outfiles.append(filename)
     return outfiles

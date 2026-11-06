@@ -16,6 +16,12 @@ this manifest is the Caltech fork containing the covariance changes; the
 upstream repository does not contain those feature commits. Restart existing
 notebook kernels after syncing or changing editable checkouts.
 
+Ongoing development now continues from the published review branches. The
+[H4RG continuation](h4rg-development.md) lists the active topic branches,
+their predecessor PRs, dependency commits and validation. Use those branches
+for development; the sync command below checks out exact manifest revisions
+for reproduction and can leave dependency checkouts at detached HEADs.
+
 The ScopeSim pin includes the pre-slit ADC correction `8727eafe` and its
 zero-shift optimization `aef3a53d`. Restart kernels
 to load it. The archived kilonova frames use the preceding `a0495f7` revision;
