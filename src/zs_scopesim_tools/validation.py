@@ -674,7 +674,7 @@ def trace_resolution_diagnostic_table(ztrain: Any, *, trace_list_name: str = "tr
     zenith_angle = _zenith_angle_from_airmass(_required_cmd_float(ztrain.cmds, "!OBS.airmass"))
     fwhm_func, _ = _configured_psf_fwhm_func(ztrain)
     trace_list = get_effect(ztrain, trace_list_name)
-    spectrographs = get_effect(ztrain, "trace_eff_analytical")._spectrographs
+    spectrographs = trace_list._spectrographs
     slit_selector = get_effect(ztrain, "slitwheel_selector")
     mapped = ztrain.trace_detector_coordinates(xi=0 * u.arcsec)
     mapped_trace_ids = np.asarray(mapped["trace_id"], dtype=str)
@@ -711,7 +711,6 @@ def trace_resolution_diagnostic_table(ztrain: Any, *, trace_list_name: str = "tr
             image_plane_id = int(trace.meta["image_plane_id"])
             image_plane_header = ztrain.image_planes[image_plane_id].header
             pixel_scale_arcsec = np.sqrt(_image_plane_pixel_area(ztrain, image_plane_id).to_value(u.arcsec**2))
-            spectral_fwhm_pix = trace.meta["nominal_fwhm_pix"] * active_slit_width_arcsec / trace.meta["nominal_slit_width"]
 
             readout_indices = np.unique(mapped["readout_index"][mapped_indices])
             if readout_indices.size != 1:
@@ -739,8 +738,15 @@ def trace_resolution_diagnostic_table(ztrain: Any, *, trace_list_name: str = "tr
             domain_x_low, domain_x_high = domain_coordinates["detector_x"].to_value(u.pixel)
             domain_x_low = max(domain_x_low, -0.5)
             domain_x_high = min(domain_x_high, detector_naxis1 - 0.5)
-            n_float_bins = int(np.floor((domain_x_high - domain_x_low) / spectral_fwhm_pix))
-            float_boundaries = domain_x_low + np.arange(n_float_bins + 1) * spectral_fwhm_pix
+            # One full-slit wavelength interval per element. The apparent
+            # interval comes from the same entrance-slit derivative used by
+            # the projection; its detector width varies with anamorphism.
+            slit_delta_nm = abs(trace.slit_dispersion(node_wave.to_value(u.um))) * 1000 * active_slit_width_arcsec
+            native_position = np.r_[0., np.cumsum(np.diff(node_wave.to_value(u.nm)) / ((slit_delta_nm[1:] + slit_delta_nm[:-1]) / 2))]
+            position_low = np.interp(domain_x_low, node_x_pix, native_position)
+            position_high = np.interp(domain_x_high, node_x_pix, native_position)
+            n_float_bins = int(np.floor(position_high - position_low))
+            float_boundaries = np.interp(position_low + np.arange(n_float_bins + 1), native_position, node_x_pix)
             raster_boundaries = np.floor(float_boundaries + 1).astype(int)
             detector_x0_pix = raster_boundaries[:-1]
             detector_x1_pix = raster_boundaries[1:]
@@ -772,7 +778,9 @@ def trace_resolution_diagnostic_table(ztrain: Any, *, trace_list_name: str = "tr
             if not np.all(np.isfinite(dispersion_nm_pix)) or np.any(dispersion_nm_pix <= 0):
                 raise ValueError(f"Trace {trace_id!r} has non-positive or non-finite native dispersion.")
 
-            resolving_power = wave_nm / (spectral_fwhm_pix * dispersion_nm_pix)
+            slit_delta_nm = abs(trace.slit_dispersion(wave_nm / 1000)) * 1000 * active_slit_width_arcsec
+            spectral_fwhm_pix = slit_delta_nm / dispersion_nm_pix
+            resolving_power = wave_nm / slit_delta_nm
             psf_fwhm = fwhm_func(wave_nm * u.nm).to_value(u.arcsec)
             spatial_fwhm_pix = psf_fwhm / pixel_scale_arcsec
             resel_footprint_pix = spectral_fwhm_pix * spatial_fwhm_pix
@@ -797,7 +805,7 @@ def trace_resolution_diagnostic_table(ztrain: Any, *, trace_list_name: str = "tr
                     "pixel_scale_arcsec_pix": pixel_scale_arcsec,
                     "dispersion_nm_pix": dispersion_nm_pix[idx],
                     "resolving_power_R": resolving_power[idx],
-                    "spectral_fwhm_pix": spectral_fwhm_pix,
+                    "spectral_fwhm_pix": spectral_fwhm_pix[idx],
                     "active_slit_width_arcsec": active_slit_width_arcsec,
                     "seeing_fwhm_arcsec": psf_fwhm[idx],
                     "spatial_fwhm_pix": spatial_fwhm_pix[idx],
@@ -817,7 +825,7 @@ def trace_resolution_summary_table(table: Table) -> Table:
         dispersion_nm_pix = group["dispersion_nm_pix"]
         resolving_power = group["resolving_power_R"]
         spatial_fwhm_pix = group["spatial_fwhm_pix"]
-        spectral_fwhm_pix = group["spectral_fwhm_pix"][0]
+        spectral_fwhm_pix = group["spectral_fwhm_pix"]
         resel_footprint_pix = spectral_fwhm_pix * spatial_fwhm_pix
 
         rows.append({
@@ -832,7 +840,9 @@ def trace_resolution_summary_table(table: Table) -> Table:
             "trace_R_min": np.min(resolving_power),
             "trace_R_median": np.median(resolving_power),
             "trace_R_max": np.max(resolving_power),
-            "spectral_fwhm_pix": spectral_fwhm_pix,
+            "spectral_fwhm_min_pix": np.min(spectral_fwhm_pix),
+            "spectral_fwhm_median_pix": np.median(spectral_fwhm_pix),
+            "spectral_fwhm_max_pix": np.max(spectral_fwhm_pix),
             "resel_footprint_min_pix": np.min(resel_footprint_pix),
             "resel_footprint_median_pix": np.median(resel_footprint_pix),
             "resel_footprint_max_pix": np.max(resel_footprint_pix),
@@ -869,7 +879,7 @@ def trace_resolution_summary_display_table(table: Table):
                 f"{float(row['wave_max_nm']):.0f}"
             ),
             "slit": f"{float(row['active_slit_width_arcsec']):.2f}\"",
-            "spec FWHM pix": f"{float(row['spectral_fwhm_pix']):.2f}",
+            "spec FWHM pix": _compact_range(row['spectral_fwhm_min_pix'], row['spectral_fwhm_max_pix'], precision=2),
             "disp nm/pix": _compact_range(row["dispersion_min_nm_pix"], row["dispersion_max_nm_pix"], precision=4),
             "R k": _compact_range(row["trace_R_min"], row["trace_R_max"], precision=1, scale=1000.0),
             "resel pix": _compact_range(row["resel_footprint_min_pix"], row["resel_footprint_max_pix"], precision=1),
@@ -1629,10 +1639,11 @@ def _natural_seeing_fwhm(wave: u.Quantity, seeing: u.Quantity, zenith_angle: u.Q
     return (u.Quantity(seeing).to(u.arcsec) * (u.Quantity(wave).to(u.nm) / u.Quantity(pivot).to(u.nm)) ** -0.2 / np.cos(z_rad) ** 0.6).to(u.arcsec)
 
 
-def _configured_psf_fwhm_func(train_or_cmds: Any) -> tuple[Callable[[u.Quantity, u.Quantity, u.Quantity], u.Quantity], Any | None]:
-    assert hasattr(train_or_cmds, "optics_manager")
+def _configured_psf_fwhm_func(train_or_cmds: Any) -> tuple[Callable[[u.Quantity], u.Quantity], Any]:
     ret_effect = None
-    for effect in active_effects(train_or_cmds):
+    for effect in train_or_cmds.optics_manager.all_effects:
+        if not effect.include:
+            continue
         if effect.__class__.__name__ in {"AOEnhanceablePSF",}:
             ret_effect = effect
             break
@@ -2145,16 +2156,20 @@ def detector_geometry_table(ztrain: Any) -> Table:
     for effect in active_effects(ztrain):
         if effect.__class__.__name__ != "DetectorList":
             continue
-        for row in effect.table:
+        for row in effect.active_table:
             rows.append({
                 "detector_id": int(_row_scalar(row, "id")),
                 "image_plane_id": int(effect.meta.get("image_plane_id")),
                 "channel": effect_name(effect).replace("detector_", "").upper(),
-                "detector": effect.meta.get("detector", ""),
+                "detector": from_currsys(effect.meta["detector"], ztrain.cmds),
                 "x_size": _row_scalar(row, "x_size"),
                 "y_size": _row_scalar(row, "y_size"),
                 "pixel_size_mm": _row_scalar(row, "pixel_size"),
                 "gain_e_per_adu": _row_scalar(row, "gain"),
+                "detector_mode": row["detmode"],
+                "excess_noise_factor": row["exnoise"],
+                "avalanche_gain": row["avgain"],
+                "usable_well_e": row["welldep"],
             })
     return Table(rows=sorted(rows, key=lambda row: row["detector_id"]))
 
@@ -2245,12 +2260,9 @@ def detector_background_budget_table(ztrain: Any, post_diffuse_data: Mapping[str
         diffuse_counts = diffuse_rate * exposure_time
         dark_counts = dark_rate * exposure_time
         additive_signal = diffuse_counts + dark_counts
-        full_well = _required_detector_cmd_float(ztrain.cmds, "!DET.full_well", detector_id)
-        if np.isfinite(full_well) and full_well > 0:
-            full_well_fraction = additive_signal / full_well
-        else:
-            full_well_fraction = np.nan
-        diffuse_noise = np.sqrt(max(diffuse_counts, 0.0))
+        full_well = detector["usable_well_e"]
+        full_well_fraction = (diffuse_rate + dark_rate) * dit / full_well
+        diffuse_noise = np.sqrt(detector["excess_noise_factor"] * diffuse_counts)
         dark_noise = np.sqrt(max(dark_counts, 0.0))
         read_noise_total = read_noise_single * np.sqrt(read_ndit)
         total_noise = np.sqrt(diffuse_noise**2 + dark_noise**2 + read_noise_total**2)
@@ -2260,6 +2272,8 @@ def detector_background_budget_table(ztrain: Any, post_diffuse_data: Mapping[str
             "image_plane_id": image_plane_id,
             "channel": str(detector["channel"]),
             "detector": str(detector["detector"]),
+            "detector_mode": detector["detector_mode"],
+            "excess_noise_factor": detector["excess_noise_factor"],
             "dit_s": dit,
             "ndit": ndit,
             "exposure_time_s": exposure_time,
