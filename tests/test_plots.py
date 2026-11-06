@@ -129,6 +129,7 @@ def test_plot_source_converts_photlam_like_spectra_to_human_units():
 
 def test_detector_background_budget_plot_handles_saturation_annotation():
     table = Table({
+        "ndit": [1, 1],
         "channel": ["B", "K"],
         "post_diffuse_e_pix": [60.0, 1.0e8],
         "dark_current_e_pix": [3.0, 20.0],
@@ -154,6 +155,7 @@ def test_detector_background_budget_plot_handles_saturation_annotation():
 
 def test_detector_background_budget_plot_omits_disabled_diffuse_terms():
     table = Table({
+        "ndit": [1, 1],
         "channel": ["B", "K"],
         "post_diffuse_e_pix": [0.0, 0.0],
         "dark_current_e_pix": [3.0, 20.0],
@@ -988,6 +990,8 @@ def test_show_and_save_hdul_saves_hdul_reference_and_delta(tmp_path):
     assert len(result["files"]["reference"]) == 2
     assert len(result["files"]["delta"]) == 2
     assert len(result["files"]["figures"]) == 2
+    for kind in ('hdul', 'reference', 'delta'):
+        assert all(path.name.endswith('.fits.gz') for path in result['files'][kind])
     for paths in result["files"].values():
         for path in paths:
             assert path.exists()
@@ -1128,14 +1132,14 @@ def test_resolving_power_echellogram_smoke():
         table, trace_width_fraction=0.25)
 
     assert axes[0, 0].collections
-    assert len(axes[0, 0].collections[0].get_segments()) == 2
+    assert len(axes[0, 0].collections[0].get_segments()) == 1
     assert "FWHM" in axes[0, 0].get_title()
     assert "spat" in axes[0, 0].get_title()
     assert axes[0, 0].get_xlabel() == "Pixel"
     assert axes[0, 0].get_ylabel() == "Pixel"
     np.testing.assert_allclose(axes[0, 0].get_xlim(), [0, 200])
     np.testing.assert_allclose(axes[0, 0].get_ylim(), [0, 50])
-    np.testing.assert_allclose(axes[0, 0].collections[0].get_segments()[0][1], [0, 45])
+    np.testing.assert_allclose(axes[0, 0].collections[0].get_segments()[0], [[0, 45], [200, 45]])
     fig.clf()
 
     dense_table = table[np.zeros(201, dtype=int)]
@@ -1150,9 +1154,10 @@ def test_resolving_power_echellogram_smoke():
 
     assert len(dense_table) == 201
     segments = axes[0, 0].collections[0].get_segments()
-    assert len(segments) == 17
-    np.testing.assert_allclose(segments[0][1, 0], 0)
+    assert len(segments) == 16
+    np.testing.assert_allclose(segments[0][0, 0], 0)
     np.testing.assert_allclose(segments[-1][1, 0], 200)
+    np.testing.assert_allclose(np.array(segments[:-1])[:, -1], np.array(segments[1:])[:, 0])
     fig.clf()
 
 

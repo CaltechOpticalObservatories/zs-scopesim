@@ -1,0 +1,7 @@
+arm,detector pair,median conventional/current QE,current detector variance [e2/pix],conventional detector variance [e2/pix],median retained detector pixels/bin,conventional sky variance [e2/bin],conventional detector variance [e2/bin],detector fraction of non-source variance,median conventional-current m5 [mag]
+B,qCCD -> CCD,0.611,1.24,25.02,560,3794,14011,78.9%,-1.056
+G,qCCD -> CCD,0.949,1.24,25.02,497,9458,12435,58.3%,-0.457
+R,qCCD -> CCD,0.953,1.24,25.02,480,14877,12010,43.6%,-0.345
+YJ,LMAPD -> H2RG,1.2,1.72,190.0,400,35810,76000,65.9%,-0.53
+H,LMAPD -> H2RG,1.2,1.72,190.0,310,64228,58900,47.6%,-0.259
+K,LMAPD -> H2RG,1.2,1.72,190.0,304,746176,57760,7.2%,0.059

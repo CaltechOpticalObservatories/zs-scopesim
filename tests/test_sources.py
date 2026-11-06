@@ -29,14 +29,14 @@ def test_read_lamp_lines_combines_pipe_delimited_tables(tmp_path):
     filenames = ["a.dat", "b.dat", "c.dat"]
     for idx, filename in enumerate(filenames):
         (tmp_path / filename).write_text(
-            f"wave|amplitude\n{5000 + idx}|{idx + 1}\n",
+            f"wave|amplitude\n{5000 + idx}|{idx + 1}\n{6000 + idx}|{2 * (idx + 1)}\n",
         )
 
     table = sources._read_lamp_lines(tmp_path, filenames=tuple(filenames))
 
-    assert len(table) == 3
-    np.testing.assert_allclose(table["wave"], [5000, 5001, 5002])
-    np.testing.assert_allclose(table["amplitude"], [1, 2, 3])
+    assert len(table) == 6
+    np.testing.assert_allclose(table["wave"], [5000, 6000, 5001, 6001, 5002, 6002])
+    np.testing.assert_allclose(table["amplitude"], [.5, 1, .5, 1, .5, 1])
 
 
 def test_numeric_wave_step_is_interpreted_as_angstrom(tmp_path, monkeypatch):

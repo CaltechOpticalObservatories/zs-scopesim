@@ -1,0 +1,11 @@
+notebook,kernel_state,resident_GiB,macOS_footprint_GiB,peak_footprint_GiB
+validation/xshooter/Performance.ipynb,idle,0.05,3.1,4.7
+validation/xshooter/Upstream_Adoption.ipynb,idle,0.05,0.305,5.2
+validation/xshooter/Upstream_Observations.ipynb,idle,0.05,0.237,3.4
+notebooks/extraction_demo.ipynb,idle,0.05,1.3,1.7
+notebooks/03_Slit_Illumination_Lamps.ipynb,idle,0.05,4.3,7.4
+notebooks/01_Kilonovae_XSHOOTER.ipynb,busy,0.76,11.3,15.0
+notebooks/zshooter_spie2026.ipynb,busy,2.69,29.1,29.6
+validation/xshooter/Detector_Package_Reduction.ipynb,busy,0.72,6.9,9.1
+notebooks/02_Flat_AB_Comparison.ipynb,busy,2.50,6.1,11.7
+notebooks/zshooter_performance.ipynb,busy,1.66,23.0,23.1
