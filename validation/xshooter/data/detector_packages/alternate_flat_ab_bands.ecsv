@@ -1,0 +1,54 @@
+# %ECSV 1.0
+# ---
+# datatype:
+# - {name: arm, datatype: string}
+# - {name: wavelength, unit: Angstrom, datatype: float64}
+# - {name: covered_width, unit: Angstrom, datatype: float64}
+# - {name: flux, unit: erg / (Angstrom s cm2), datatype: float64}
+# - {name: uncertainty, unit: erg / (Angstrom s cm2), datatype: float64}
+# - {name: expected_flux, unit: erg / (Angstrom s cm2), datatype: float64}
+# - {name: ratio, datatype: float64}
+# - {name: ratio_uncertainty, datatype: float64}
+# - {name: snr, datatype: float64}
+# meta: !!omap
+# - __serialized_columns__:
+#     covered_width:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: &id003 !astropy.units.Unit {unit: Angstrom}
+#       value: !astropy.table.SerializedColumn {name: covered_width}
+#     expected_flux:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: &id001 !astropy.units.Unit {unit: erg / (Angstrom s cm2)}
+#       value: !astropy.table.SerializedColumn {name: expected_flux}
+#     flux:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: *id001
+#       value: !astropy.table.SerializedColumn {name: flux}
+#     ratio:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: &id002 !astropy.units.Unit {unit: ''}
+#       value: !astropy.table.SerializedColumn {name: ratio}
+#     ratio_uncertainty:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: *id002
+#       value: !astropy.table.SerializedColumn {name: ratio_uncertainty}
+#     snr:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: *id002
+#       value: !astropy.table.SerializedColumn {name: snr}
+#     uncertainty:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: *id001
+#       value: !astropy.table.SerializedColumn {name: uncertainty}
+#     wavelength:
+#       __class__: astropy.units.quantity.Quantity
+#       unit: *id003
+#       value: !astropy.table.SerializedColumn {name: wavelength}
+# schema: astropy-2.0
+arm wavelength covered_width flux uncertainty expected_flux ratio ratio_uncertainty snr
+BLUE 3749.977941403088 499.9316085964556 7.808552273262651e-17 2.44975044317593e-19 7.774951235264263e-17 1.0043217040186678 0.0031508241904653765 318.74888705558965
+GREEN 5399.997493927917 1199.950809502926 3.7735847715874985e-17 4.9796378401545255e-20 3.779451933802172e-17 0.9984476156020932 0.0013175555417488675 757.8030557078421
+RED 8399.99999987482 800.0 1.5385040361106902e-17 5.33916733626384e-20 1.5461372513614003e-17 0.9950630416258395 0.0034532298678934302 288.1543018255129
+YJ 12499.991083876499 999.9648875882322 6.992206830321942e-18 8.819844985015096e-20 6.977449938393154e-18 1.0021149405669811 0.012640499126312942 79.27811477641264
+H 16250.000000122915 1500.0 4.08529528245027e-18 8.016954652783374e-20 4.130856261677716e-18 0.9889705726025572 0.019407488774560624 50.958193720503495
+K 21500.0000024001 1000.0 2.4211105654921056e-18 6.126452113084128e-20 2.3560186681852365e-18 1.0276279208589665 0.026003410736142988 39.51896661889176

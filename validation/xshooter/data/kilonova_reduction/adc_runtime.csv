@@ -1,0 +1,7 @@
+instrument,ordering,scopesim_revision,fov_count,observation_s
+ZShooter_v2,legacy,8727eafed5056e477278130ca4ffcdfa43e9f101,125,34.0068072079448
+ZShooter_v2,corrected,8727eafed5056e477278130ca4ffcdfa43e9f101,125,35.89847312506754
+XSHOOTER,legacy,8727eafed5056e477278130ca4ffcdfa43e9f101,43,72.00839170801919
+XSHOOTER,corrected,8727eafed5056e477278130ca4ffcdfa43e9f101,43,101.1071638748981
+ZShooter_v2,corrected,aef3a53debb21d6edd92e20e3702e54f5fb57d05,125,34.42716104199644
+XSHOOTER,corrected,aef3a53debb21d6edd92e20e3702e54f5fb57d05,43,82.11003654194064

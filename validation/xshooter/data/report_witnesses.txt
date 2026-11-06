@@ -1,0 +1,277 @@
+feature-zs01_transmission_twice.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/feature-scopesim/scopesim; irdb /Users/jibailey/src/irdb
+atmo_transmission is applied in the phases: ['source']
+
+
+ FOV effects:   0%|          | 0/7 [00:00<?, ?it/s][A
+
+ FOV effects: 100%|██████████| 7/7 [00:00<00:00, 39.07it/s][A
+ FOV effects: 100%|██████████| 7/7 [00:00<00:00, 39.03it/s]
+
+
+ FOV effects:   0%|          | 0/7 [00:00<?, ?it/s][A
+
+ FOV effects: 100%|██████████| 7/7 [00:00<00:00, 42.19it/s][A
+ FOV effects: 100%|██████████| 7/7 [00:00<00:00, 42.15it/s]
+detector counts, T = 0.5 relative to T = 1: 0.500000   (one application: 0.5, two applications: 0.25)
+
+ZS-01: issue absent (agrees with the reference)
+   phases ['source'] (expected ['source'])
+   T=0.5 ratio 0.500000 (expected 0.5; 0.25 = T applied twice)
+
+feature-zs02_slit_width.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/feature-scopesim/scopesim; irdb /Users/jibailey/src/irdb
+slit 0.30: FOV   2 rows x 0.1571" = 0.3141"  (error +4.7%); slit centre 0.46 rows from a row centre  WRONG
+slit 0.33: FOV   2 rows x 0.1571" = 0.3141"  (error -4.8%); slit centre 0.45 rows from a row centre  WRONG
+slit 0.37: FOV   2 rows x 0.1571" = 0.3141"  (error -15.1%); slit centre 0.32 rows from a row centre  WRONG
+slit 0.42: FOV   3 rows x 0.1571" = 0.4712"  (error +12.2%); slit centre 0.16 rows from a row centre  WRONG
+slit 0.50: FOV   3 rows x 0.1571" = 0.4712"  (error -5.8%); slit centre 0.09 rows from a row centre  WRONG
+slit 0.57: FOV   4 rows x 0.1571" = 0.6282"  (error +10.2%); slit centre 0.31 rows from a row centre  WRONG
+slit 0.70: FOV   4 rows x 0.1571" = 0.6282"  (error -10.3%); slit centre 0.27 rows from a row centre  WRONG
+slit 1.25: FOV   8 rows x 0.1571" = 1.2564"  (error +0.5%); slit centre 0.48 rows from a row centre  WRONG
+
+ZS-02: ISSUE PRESENT
+   slit 0.30: FOV   2 rows x 0.1571" = 0.3141"  (error +4.7%); slit centre 0.46 rows from a row centre  WRONG
+   slit 0.33: FOV   2 rows x 0.1571" = 0.3141"  (error -4.8%); slit centre 0.45 rows from a row centre  WRONG
+   slit 0.37: FOV   2 rows x 0.1571" = 0.3141"  (error -15.1%); slit centre 0.32 rows from a row centre  WRONG
+   slit 0.42: FOV   3 rows x 0.1571" = 0.4712"  (error +12.2%); slit centre 0.16 rows from a row centre  WRONG
+   slit 0.50: FOV   3 rows x 0.1571" = 0.4712"  (error -5.8%); slit centre 0.09 rows from a row centre  WRONG
+   slit 0.57: FOV   4 rows x 0.1571" = 0.6282"  (error +10.2%); slit centre 0.31 rows from a row centre  WRONG
+   slit 0.70: FOV   4 rows x 0.1571" = 0.6282"  (error -10.3%); slit centre 0.27 rows from a row centre  WRONG
+   slit 1.25: FOV   8 rows x 0.1571" = 1.2564"  (error +0.5%); slit centre 0.48 rows from a row centre  WRONG
+
+feature-zs04_moffat_kernel.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/feature-scopesim/scopesim; irdb /Users/jibailey/src/irdb
+FWHM 0.10": in-slit fraction 1.81254, exact 0.99879, ratio 1.8147  WRONG
+FWHM 0.14": in-slit fraction 1.19592, exact 0.99520, ratio 1.2017  WRONG
+FWHM 0.18": in-slit fraction 1.00351, exact 0.98749, ratio 1.0162  WRONG
+FWHM 0.26": in-slit fraction 0.93196, exact 0.95654, ratio 0.9743  WRONG
+
+ZS-04: ISSUE PRESENT
+   FWHM 0.10": in-slit fraction 1.81254, exact 0.99879, ratio 1.8147  WRONG
+   FWHM 0.14": in-slit fraction 1.19592, exact 0.99520, ratio 1.2017  WRONG
+   FWHM 0.18": in-slit fraction 1.00351, exact 0.98749, ratio 1.0162  WRONG
+   FWHM 0.26": in-slit fraction 0.93196, exact 0.95654, ratio 0.9743  WRONG
+
+feature-zs06_airmass.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/feature-scopesim/scopesim; irdb /Users/jibailey/src/irdb
+310 nm (1 nm window): <T(X=1)> 0.2737  <T(X=2)> 0.0749  expected <T(X=1)^2> 0.0749
+375 nm (1 nm window): <T(X=1)> 0.7468  <T(X=2)> 0.5577  expected <T(X=1)^2> 0.5577
+520 nm (1 nm window): <T(X=1)> 0.9145  <T(X=2)> 0.8364  expected <T(X=1)^2> 0.8364
+760 nm (1 nm window): <T(X=1)> 0.4555  <T(X=2)> 0.2924  expected <T(X=1)^2> 0.2924
+
+ZS-06: issue absent (agrees with the reference)
+   310 nm (1 nm window): <T(X=1)> 0.2737  <T(X=2)> 0.0749  expected <T(X=1)^2> 0.0749
+   375 nm (1 nm window): <T(X=1)> 0.7468  <T(X=2)> 0.5577  expected <T(X=1)^2> 0.5577
+   520 nm (1 nm window): <T(X=1)> 0.9145  <T(X=2)> 0.8364  expected <T(X=1)^2> 0.8364
+   760 nm (1 nm window): <T(X=1)> 0.4555  <T(X=2)> 0.2924  expected <T(X=1)^2> 0.2924
+
+feature-zs07_spectral_sampling.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/feature-scopesim/scopesim; irdb /Users/jibailey/src/irdb
+line at 5600.0000 A (phase 0.00 bins): prepared / exact line flux = 3.3083  WRONG
+line at 5600.0143 A (phase 0.14 bins): prepared / exact line flux = 1.3174  WRONG
+line at 5600.0286 A (phase 0.29 bins): prepared / exact line flux = 0.1240  WRONG
+line at 5600.0429 A (phase 0.43 bins): prepared / exact line flux = 0.0028  WRONG
+line at 5600.0571 A (phase 0.57 bins): prepared / exact line flux = 0.0091  WRONG
+line at 5600.0714 A (phase 0.71 bins): prepared / exact line flux = 0.2753  WRONG
+line at 5600.0857 A (phase 0.86 bins): prepared / exact line flux = 1.9631  WRONG
+
+ZS-07: ISSUE PRESENT
+   line at 5600.0000 A (phase 0.00 bins): prepared / exact line flux = 3.3083  WRONG
+   line at 5600.0143 A (phase 0.14 bins): prepared / exact line flux = 1.3174  WRONG
+   line at 5600.0286 A (phase 0.29 bins): prepared / exact line flux = 0.1240  WRONG
+   line at 5600.0429 A (phase 0.43 bins): prepared / exact line flux = 0.0028  WRONG
+   line at 5600.0571 A (phase 0.57 bins): prepared / exact line flux = 0.0091  WRONG
+   line at 5600.0714 A (phase 0.71 bins): prepared / exact line flux = 0.2753  WRONG
+   line at 5600.0857 A (phase 0.86 bins): prepared / exact line flux = 1.9631  WRONG
+
+feature-zs09_image_projection.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/feature-scopesim/scopesim; irdb /Users/jibailey/src/irdb
+uniform image of surface brightness 1: FOV plane min 1.0000 max 1.0000; rows with no light: 0 of 8
+bright pixel at RA offset +1.00": light at x > 0: 1.0000, at x < 0: 2.0000 (expected 2 on the bright side, 3 in total)
+
+ZS-09: ISSUE PRESENT
+   uniform image of surface brightness 1: FOV plane min 1.0000 max 1.0000; rows with no light: 0 of 8
+   bright pixel at RA offset +1.00": light at x > 0: 1.0000, at x < 0: 2.0000 (expected 2 on the bright side, 3 in total)
+
+feature-zs10_offslit_light.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/feature-scopesim/scopesim; irdb /Users/jibailey/src/irdb
+source 0.10" outside the slit edge: light in the slit 0.00000, exact 0.28009  WRONG
+source 0.25" outside the slit edge: light in the slit 0.00000, exact 0.16678  WRONG
+
+ZS-10: ISSUE PRESENT
+   source 0.10" outside the slit edge: light in the slit 0.00000, exact 0.28009  WRONG
+   source 0.25" outside the slit edge: light in the slit 0.00000, exact 0.16678  WRONG
+
+feature-zs11_slit_position.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/feature-scopesim/scopesim; irdb /Users/jibailey/src/irdb
+along-slit centroid of the detector image: 1.9730"  (true 2.0000")
+
+ZS-11: ISSUE PRESENT
+   along-slit centroid of the detector image: 1.9730"  (true 2.0000")
+
+feature-zs13_14_point_placement.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/feature-scopesim/scopesim; irdb /Users/jibailey/src/irdb
+ZS-13: source at x = 2.0628" put into column 44 [1.8847, 2.0417]; the column containing it is 45  WRONG
+ZS-14: source 0.05" inside the +y slit edge, flag on: IndexError (index 2 is out of bounds for axis 1 with size 2)  WRONG
+
+ZS-13/14: ISSUE PRESENT
+   ZS-13: source at x = 2.0628" put into column 44 [1.8847, 2.0417]; the column containing it is 45  WRONG
+   ZS-14: source 0.05" inside the +y slit edge, flag on: IndexError (index 2 is out of bounds for axis 1 with size 2)  WRONG
+
+feature-zs15_adc_shift.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/feature-scopesim/scopesim; irdb /Users/jibailey/src/irdb
+ADC residual across the slit: -0.0117" (-0.07 FOV rows)
+in-slit light before 0.33541 (exact 0.35505), after 0.33541 (exact 0.35628); change +0.00e+00, exact change +3.46e-03
+
+ZS-15: ISSUE PRESENT
+   ADC residual across the slit: -0.0117" (-0.07 FOV rows)
+   in-slit light before 0.33541 (exact 0.35505), after 0.33541 (exact 0.35628); change +0.00e+00, exact change +3.46e-03
+
+feature-zs16.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/feature-scopesim/scopesim; irdb /Users/jibailey/src/irdb
+FOV pixel scale x1.0: FOV grid 64 x 4, detector counts 7.985973e+06
+FOV pixel scale x0.5: FOV grid 127 x 9, detector counts 4.372039e+06
+detector counts with the FOV grid twice as fine / nominal = 0.54746 (expected 1)
+
+ZS-16: ISSUE PRESENT
+   detector counts with the FOV grid twice as fine / nominal = 0.54746 (expected 1)
+
+candidate-zs01_transmission_twice.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/candidate-scopesim/scopesim; irdb /private/tmp/xshooter-review/candidate-irdb
+atmo_transmission is applied in the phases: ['source']
+
+
+ FOV effects:   0%|          | 0/7 [00:00<?, ?it/s][A
+
+ FOV effects: 100%|██████████| 7/7 [00:00<00:00, 31.63it/s][A
+ FOV effects: 100%|██████████| 7/7 [00:00<00:00, 31.60it/s]
+
+
+ FOV effects:   0%|          | 0/7 [00:00<?, ?it/s][A
+
+ FOV effects: 100%|██████████| 7/7 [00:00<00:00, 32.49it/s][A
+ FOV effects: 100%|██████████| 7/7 [00:00<00:00, 32.47it/s]
+detector counts, T = 0.5 relative to T = 1: 0.500000   (one application: 0.5, two applications: 0.25)
+
+ZS-01: issue absent (agrees with the reference)
+   phases ['source'] (expected ['source'])
+   T=0.5 ratio 0.500000 (expected 0.5; 0.25 = T applied twice)
+
+candidate-zs02_slit_width.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/candidate-scopesim/scopesim; irdb /private/tmp/xshooter-review/candidate-irdb
+slit 0.30: FOV   2 rows x 0.1571" = 0.3141"  (error +4.7%); slit centre 0.46 rows from a row centre  WRONG
+slit 0.33: FOV   2 rows x 0.1571" = 0.3141"  (error -4.8%); slit centre 0.45 rows from a row centre  WRONG
+slit 0.37: FOV   2 rows x 0.1571" = 0.3141"  (error -15.1%); slit centre 0.32 rows from a row centre  WRONG
+slit 0.42: FOV   3 rows x 0.1571" = 0.4712"  (error +12.2%); slit centre 0.16 rows from a row centre  WRONG
+slit 0.50: FOV   3 rows x 0.1571" = 0.4712"  (error -5.8%); slit centre 0.09 rows from a row centre  WRONG
+slit 0.57: FOV   4 rows x 0.1571" = 0.6282"  (error +10.2%); slit centre 0.31 rows from a row centre  WRONG
+slit 0.70: FOV   4 rows x 0.1571" = 0.6282"  (error -10.3%); slit centre 0.27 rows from a row centre  WRONG
+slit 1.25: FOV   8 rows x 0.1571" = 1.2564"  (error +0.5%); slit centre 0.48 rows from a row centre  WRONG
+
+ZS-02: ISSUE PRESENT
+   slit 0.30: FOV   2 rows x 0.1571" = 0.3141"  (error +4.7%); slit centre 0.46 rows from a row centre  WRONG
+   slit 0.33: FOV   2 rows x 0.1571" = 0.3141"  (error -4.8%); slit centre 0.45 rows from a row centre  WRONG
+   slit 0.37: FOV   2 rows x 0.1571" = 0.3141"  (error -15.1%); slit centre 0.32 rows from a row centre  WRONG
+   slit 0.42: FOV   3 rows x 0.1571" = 0.4712"  (error +12.2%); slit centre 0.16 rows from a row centre  WRONG
+   slit 0.50: FOV   3 rows x 0.1571" = 0.4712"  (error -5.8%); slit centre 0.09 rows from a row centre  WRONG
+   slit 0.57: FOV   4 rows x 0.1571" = 0.6282"  (error +10.2%); slit centre 0.31 rows from a row centre  WRONG
+   slit 0.70: FOV   4 rows x 0.1571" = 0.6282"  (error -10.3%); slit centre 0.27 rows from a row centre  WRONG
+   slit 1.25: FOV   8 rows x 0.1571" = 1.2564"  (error +0.5%); slit centre 0.48 rows from a row centre  WRONG
+
+candidate-zs04_moffat_kernel.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/candidate-scopesim/scopesim; irdb /private/tmp/xshooter-review/candidate-irdb
+FWHM 0.10": in-slit fraction 1.81254, exact 0.99879, ratio 1.8147  WRONG
+FWHM 0.14": in-slit fraction 1.19592, exact 0.99520, ratio 1.2017  WRONG
+FWHM 0.18": in-slit fraction 1.00351, exact 0.98749, ratio 1.0162  WRONG
+FWHM 0.26": in-slit fraction 0.93196, exact 0.95654, ratio 0.9743  WRONG
+
+ZS-04: ISSUE PRESENT
+   FWHM 0.10": in-slit fraction 1.81254, exact 0.99879, ratio 1.8147  WRONG
+   FWHM 0.14": in-slit fraction 1.19592, exact 0.99520, ratio 1.2017  WRONG
+   FWHM 0.18": in-slit fraction 1.00351, exact 0.98749, ratio 1.0162  WRONG
+   FWHM 0.26": in-slit fraction 0.93196, exact 0.95654, ratio 0.9743  WRONG
+
+candidate-zs06_airmass.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/candidate-scopesim/scopesim; irdb /private/tmp/xshooter-review/candidate-irdb
+310 nm (1 nm window): <T(X=1)> 0.2737  <T(X=2)> 0.0749  expected <T(X=1)^2> 0.0749
+375 nm (1 nm window): <T(X=1)> 0.7468  <T(X=2)> 0.5577  expected <T(X=1)^2> 0.5577
+520 nm (1 nm window): <T(X=1)> 0.9145  <T(X=2)> 0.8364  expected <T(X=1)^2> 0.8364
+760 nm (1 nm window): <T(X=1)> 0.4555  <T(X=2)> 0.2924  expected <T(X=1)^2> 0.2924
+
+ZS-06: issue absent (agrees with the reference)
+   310 nm (1 nm window): <T(X=1)> 0.2737  <T(X=2)> 0.0749  expected <T(X=1)^2> 0.0749
+   375 nm (1 nm window): <T(X=1)> 0.7468  <T(X=2)> 0.5577  expected <T(X=1)^2> 0.5577
+   520 nm (1 nm window): <T(X=1)> 0.9145  <T(X=2)> 0.8364  expected <T(X=1)^2> 0.8364
+   760 nm (1 nm window): <T(X=1)> 0.4555  <T(X=2)> 0.2924  expected <T(X=1)^2> 0.2924
+
+candidate-zs07_spectral_sampling.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/candidate-scopesim/scopesim; irdb /private/tmp/xshooter-review/candidate-irdb
+line at 5600.0000 A (phase 0.00 bins): prepared / exact line flux = 3.3083  WRONG
+line at 5600.0143 A (phase 0.14 bins): prepared / exact line flux = 1.3174  WRONG
+line at 5600.0286 A (phase 0.29 bins): prepared / exact line flux = 0.1240  WRONG
+line at 5600.0429 A (phase 0.43 bins): prepared / exact line flux = 0.0028  WRONG
+line at 5600.0571 A (phase 0.57 bins): prepared / exact line flux = 0.0091  WRONG
+line at 5600.0714 A (phase 0.71 bins): prepared / exact line flux = 0.2753  WRONG
+line at 5600.0857 A (phase 0.86 bins): prepared / exact line flux = 1.9631  WRONG
+
+ZS-07: ISSUE PRESENT
+   line at 5600.0000 A (phase 0.00 bins): prepared / exact line flux = 3.3083  WRONG
+   line at 5600.0143 A (phase 0.14 bins): prepared / exact line flux = 1.3174  WRONG
+   line at 5600.0286 A (phase 0.29 bins): prepared / exact line flux = 0.1240  WRONG
+   line at 5600.0429 A (phase 0.43 bins): prepared / exact line flux = 0.0028  WRONG
+   line at 5600.0571 A (phase 0.57 bins): prepared / exact line flux = 0.0091  WRONG
+   line at 5600.0714 A (phase 0.71 bins): prepared / exact line flux = 0.2753  WRONG
+   line at 5600.0857 A (phase 0.86 bins): prepared / exact line flux = 1.9631  WRONG
+
+candidate-zs09_image_projection.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/candidate-scopesim/scopesim; irdb /private/tmp/xshooter-review/candidate-irdb
+uniform image of surface brightness 1: FOV plane min 1.0000 max 1.0000; rows with no light: 0 of 8
+bright pixel at RA offset +1.00": light at x > 0: 1.0000, at x < 0: 2.0000 (expected 2 on the bright side, 3 in total)
+
+ZS-09: ISSUE PRESENT
+   uniform image of surface brightness 1: FOV plane min 1.0000 max 1.0000; rows with no light: 0 of 8
+   bright pixel at RA offset +1.00": light at x > 0: 1.0000, at x < 0: 2.0000 (expected 2 on the bright side, 3 in total)
+
+candidate-zs10_offslit_light.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/candidate-scopesim/scopesim; irdb /private/tmp/xshooter-review/candidate-irdb
+source 0.10" outside the slit edge: light in the slit 0.00000, exact 0.28009  WRONG
+source 0.25" outside the slit edge: light in the slit 0.00000, exact 0.16678  WRONG
+
+ZS-10: ISSUE PRESENT
+   source 0.10" outside the slit edge: light in the slit 0.00000, exact 0.28009  WRONG
+   source 0.25" outside the slit edge: light in the slit 0.00000, exact 0.16678  WRONG
+
+candidate-zs11_slit_position.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/candidate-scopesim/scopesim; irdb /private/tmp/xshooter-review/candidate-irdb
+along-slit centroid of the detector image: 2.0000"  (true 2.0000")
+
+ZS-11: issue absent (agrees with the reference)
+   along-slit centroid of the detector image: 2.0000"  (true 2.0000")
+
+candidate-zs13_14_point_placement.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/candidate-scopesim/scopesim; irdb /private/tmp/xshooter-review/candidate-irdb
+ZS-13: source at x = 2.0628" put into column 44 [1.8847, 2.0417]; the column containing it is 45  WRONG
+ZS-14: source 0.05" inside the +y slit edge, flag on: IndexError (index 2 is out of bounds for axis 1 with size 2)  WRONG
+
+ZS-13/14: ISSUE PRESENT
+   ZS-13: source at x = 2.0628" put into column 44 [1.8847, 2.0417]; the column containing it is 45  WRONG
+   ZS-14: source 0.05" inside the +y slit edge, flag on: IndexError (index 2 is out of bounds for axis 1 with size 2)  WRONG
+
+candidate-zs15_adc_shift.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/candidate-scopesim/scopesim; irdb /private/tmp/xshooter-review/candidate-irdb
+ADC residual across the slit: -0.0117" (-0.07 FOV rows)
+in-slit light before 0.33541 (exact 0.35505), after 0.33541 (exact 0.35628); change +0.00e+00, exact change +3.46e-03
+
+ZS-15: ISSUE PRESENT
+   ADC residual across the slit: -0.0117" (-0.07 FOV rows)
+   in-slit light before 0.33541 (exact 0.35505), after 0.33541 (exact 0.35628); change +0.00e+00, exact change +3.46e-03
+
+candidate-zs16.log
+scopesim 0.11.5a3 from /private/tmp/xshooter-review/candidate-scopesim/scopesim; irdb /private/tmp/xshooter-review/candidate-irdb
+FOV pixel scale x1.0: FOV grid 64 x 4, detector counts 7.987162e+06
+FOV pixel scale x0.5: FOV grid 127 x 9, detector counts 8.746056e+06
+detector counts with the FOV grid twice as fine / nominal = 1.09501 (expected 1)
+
+ZS-16: ISSUE PRESENT
+   detector counts with the FOV grid twice as fine / nominal = 1.09501 (expected 1)
