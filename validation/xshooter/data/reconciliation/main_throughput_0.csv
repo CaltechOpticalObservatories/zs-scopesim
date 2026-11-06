@@ -1,0 +1,7 @@
+channel,best order,best wave [nm],peak instrument,peak total with telescope+slit,peak pre-disperser instrument,peak telescope,detector QE used by orders
+B,b_94,388,0.803,0.403,0.852,0.923,slit-center trace detector pixels
+G,g_66,552,0.795,0.418,0.839,0.923,slit-center trace detector pixels
+R,r_38,958,0.796,0.446,0.839,0.923,slit-center trace detector pixels
+YJ,yj_63,1204,0.644,0.429,0.817,0.923,slit-center trace detector pixels
+H,h_45,1686,0.605,0.437,0.775,0.923,slit-center trace detector pixels
+K,k_33,2300,0.595,0.446,0.749,0.923,slit-center trace detector pixels

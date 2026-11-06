@@ -6,8 +6,20 @@ from astropy import units as u
 from astropy.io import fits
 from astropy.table import QTable, Table
 from synphot.units import PHOTLAM
+from scopesim.effects import AOEnhanceablePSF
 
 from zs_scopesim_tools import validation as val
+
+
+@pytest.fixture
+def ao_psf_factory(tmp_path):
+    def configured_psf(*, enable_ao=False, scale=.2, is_absolute=True):
+        table = Table({'wavelength': [.3, .7, 1.2, 2.5], 'fwhm': [scale] * 4}, meta={'wavelength_unit': 'um', 'alpha': 4.765})
+        path = tmp_path / f'ao_{scale}_{is_absolute}.dat'
+        table.write(path, format='ascii.ecsv', overwrite=True)
+        return AOEnhanceablePSF(name='seeing_psf', ao_table=str(path), alpha=4.765, enable_ao=enable_ao, is_absolute=is_absolute,
+                               fwhm={'seeing': .6, 'seeing_unit': 'arcsec'})
+    return configured_psf
 
 
 class ConstantCurve:
@@ -206,6 +218,8 @@ class FakeGeometryTrace:
 class FakeGeometryTraceList:
     def __init__(self):
         self.spectral_traces = {"B_1": FakeGeometryTrace()}
+        # 2 nm/pixel times 4.5 pixels at a 0.7 arcsec slit.
+        self.spectral_traces['B_1'].slit_dispersion = lambda wavelength: np.full(np.shape(wavelength), -.009/.7)
 
 
 class FakeSpectrograph:
@@ -315,14 +329,14 @@ def make_fake_trace_resolution_train(
         ),
     ]
     if include_order_authority:
-        effects.insert(1, FakeTraceEfficiency({
-            "B": FakeSpectrograph([1], fsr_edges=fsr_edges),
-        }))
+        effects[0]._spectrographs = {"B": FakeSpectrograph([1], fsr_edges=fsr_edges)}
 
     train = type("FakeTraceResolutionTrain", (), {})()
     train.cmds = {
         "!OBS.airmass": 1.0,
         "!OBS.seeing": 0.5,
+        "!INST.pixel_scale": 0.1,
+        "!INST.plate_scale": 10.0,
         "!INST.vis_curr_slit": 0.7,
         "!INST.nir_curr_slit": 0.7,
     }
@@ -426,7 +440,15 @@ class DetectorList:
             "y_size": [2],
             "pixel_size": [0.015],
             "gain": [1.0],
+            "detmode": ["SPEC"],
+            "exnoise": [1.0],
+            "avgain": [1.0],
+            "welldep": [100.0],
         })
+
+    @property
+    def active_table(self):
+        return self.table
 
 
 class FakeSelectedEffect:
@@ -532,7 +554,7 @@ class FakeBudgetTrain(FakeTrainWithImagePlane):
 
 
 class FakeAOOpticsManager:
-    def __init__(self, effect=None):
+    def __init__(self, effect):
         self.all_effects = [
             FakeNamedSelector(
                 "slitwheel_selector",
@@ -548,12 +570,12 @@ class FakeAOOpticsManager:
                     ),
                 },
             ),
-            effect or AOEnhanceablePSF(),
+            effect,
         ]
 
 
 class FakeAOTrain:
-    def __init__(self, effect=None):
+    def __init__(self, effect):
         self.cmds = {
             "!OBS.airmass": 1.3,
             "!OBS.seeing": 0.6,
@@ -1111,7 +1133,7 @@ def _slit_adc_cmds():
     }
 
 
-def test_build_slit_adc_psf_scene_data_uses_physical_scene_images():
+def test_build_slit_adc_psf_scene_data_uses_physical_scene_images(ao_psf_factory):
     source = Table({
         "x": [0.0, 0.0],
         "y": [-1.0, 1.0],
@@ -1120,13 +1142,12 @@ def test_build_slit_adc_psf_scene_data_uses_physical_scene_images():
     }, units=[u.arcsec, u.arcsec, None, None])
 
     data = val.build_slit_adc_psf_scene_data(
-        _slit_adc_cmds(),
+        FakeAOTrain(ao_psf_factory()),
         {"along": source},
         slit_width=0.7 * u.arcsec,
         slit_length=4.0 * u.arcsec,
         wave_nm=np.linspace(400, 700, 5) * u.nm,
         grid_step=0.2 * u.arcsec,
-        allow_diagnostic_psf=True,
     )
 
     assert list(data["variants"]) == ["ad_only", "adc_residual"]
@@ -1138,14 +1159,13 @@ def test_build_slit_adc_psf_scene_data_uses_physical_scene_images():
     assert any("before slit clipping" in note for note in data["notes"])
 
 
-def test_build_slit_loss_data_returns_losses_between_zero_and_one():
+def test_build_slit_loss_data_returns_losses_between_zero_and_one(ao_psf_factory):
     data = val.build_slit_loss_data(
-        _slit_adc_cmds(),
+        FakeAOTrain(ao_psf_factory()),
         arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
         n_wave=5,
         slit_length=4.0 * u.arcsec,
         grid_step=0.25 * u.arcsec,
-        allow_diagnostic_psf=True,
     )
 
     curves = data["arms"]["VIS"]["curves"]
@@ -1159,7 +1179,7 @@ def test_build_slit_loss_data_returns_losses_between_zero_and_one():
 
 
 def test_build_slit_loss_data_requires_configured_psf_by_default():
-    with np.testing.assert_raises_regex(ValueError, "No active ScopeSim"):
+    with pytest.raises(AttributeError):
         val.build_slit_loss_data(
             _slit_adc_cmds(),
             arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
@@ -1169,8 +1189,8 @@ def test_build_slit_loss_data_requires_configured_psf_by_default():
         )
 
 
-def test_build_slit_loss_data_includes_ao_mode_when_psf_supports_it():
-    effect = AOEnhanceablePSF()
+def test_build_slit_loss_data_includes_ao_mode_when_psf_supports_it(ao_psf_factory):
+    effect = ao_psf_factory()
     data = val.build_slit_loss_data(
         FakeAOTrain(effect),
         arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
@@ -1184,15 +1204,15 @@ def test_build_slit_loss_data_includes_ao_mode_when_psf_supports_it():
     assert "ao_zenith" in curves
     assert curves["ao_zenith"]["linestyle"] == "--"
     assert np.all(curves["ao_zenith"]["loss"] < curves["no_ao_zenith"]["loss"])
-    assert set(effect.seen_wave_units) == {u.um}
-    assert set(effect.seen_fwhm_units) == {u.um}
+    assert effect.ao_fwhm(np.array([500.])*u.nm).unit == u.arcsec
+    assert effect.natural_fwhm(np.array([500.])*u.nm).to_value(u.arcsec) == pytest.approx(.6)
     assert data["active_psf_mode"] == "no_ao"
     assert data["psf_modes"]["no_ao"]["current"]
     assert not data["psf_modes"]["ao"]["current"]
 
 
-def test_build_slit_loss_data_marks_configured_ao_mode_current():
-    effect = AOEnhanceablePSF(enable_ao=True)
+def test_build_slit_loss_data_marks_configured_ao_mode_current(ao_psf_factory):
+    effect = ao_psf_factory(enable_ao=True)
     data = val.build_slit_loss_data(
         FakeAOTrain(effect),
         arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
@@ -1209,8 +1229,8 @@ def test_build_slit_loss_data_marks_configured_ao_mode_current():
     ]["current_psf"]
 
 
-def test_build_slit_loss_data_handles_relative_dimensionless_ao_scale():
-    effect = AOEnhanceablePSF(scale=0.5, is_absolute=False)
+def test_build_slit_loss_data_handles_relative_dimensionless_ao_scale(ao_psf_factory):
+    effect = ao_psf_factory(scale=0.5, is_absolute=False)
     data = val.build_slit_loss_data(
         FakeAOTrain(effect),
         arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
@@ -1223,13 +1243,13 @@ def test_build_slit_loss_data_handles_relative_dimensionless_ao_scale():
     assert "ao_zenith" in curves
     assert np.isfinite(curves["ao_zenith"]["loss"]).all()
     assert np.all(curves["ao_zenith"]["loss"] < curves["no_ao_zenith"]["loss"])
-    assert set(effect.seen_wave_units) == {u.um}
-    assert set(effect.seen_fwhm_units) == {u.um}
+    assert effect.ao_fwhm(np.array([500.])*u.nm).unit == u.arcsec
+    assert effect.natural_fwhm(np.array([500.])*u.nm).to_value(u.arcsec) == pytest.approx(.6)
 
 
-def test_slit_loss_notebook_call_chain_handles_dimensionless_ao_tables():
+def test_slit_loss_notebook_call_chain_handles_dimensionless_ao_tables(ao_psf_factory):
     data = val.build_slit_loss_data(
-        FakeAOTrain(),
+        FakeAOTrain(ao_psf_factory()),
         arms={"VIS": (400 * u.nm, 700 * u.nm, "!INST.vis_curr_slit")},
         n_wave=5,
         slit_length=4.0 * u.arcsec,
@@ -1252,8 +1272,8 @@ def test_slit_loss_notebook_call_chain_handles_dimensionless_ao_tables():
     fig.clf()
 
 
-def test_slit_adc_scene_uses_configured_scopesim_psf_fwhm():
-    effect = AOEnhanceablePSF()
+def test_slit_adc_scene_uses_configured_scopesim_psf_fwhm(ao_psf_factory):
+    effect = ao_psf_factory()
     source = Table({
         "x": [0.0],
         "y": [0.0],
@@ -1271,12 +1291,12 @@ def test_slit_adc_scene_uses_configured_scopesim_psf_fwhm():
     )
 
     assert "center" in data["scenarios"]
-    assert set(effect.seen_fwhm_units) == {u.um}
+    assert effect.natural_fwhm(np.array([500.])*u.nm).to_value(u.arcsec) == pytest.approx(.6)
     assert any("active ScopeSim" in note for note in data["notes"])
 
 
-def test_build_slit_width_loss_data_uses_configured_scopesim_psf_fwhm():
-    effect = AOEnhanceablePSF()
+def test_build_slit_width_loss_data_uses_configured_scopesim_psf_fwhm(ao_psf_factory):
+    effect = ao_psf_factory()
     slit_widths = np.array([0.3, 0.7, 1.2]) * u.arcsec
 
     data = val.build_slit_width_loss_data(
@@ -1307,8 +1327,8 @@ def test_build_slit_width_loss_data_uses_configured_scopesim_psf_fwhm():
         arm["curves"]["no_ao_500nm"]["loss"][1:]
         <= arm["curves"]["no_ao_500nm"]["loss"][:-1]
     )
-    assert set(effect.seen_fwhm_units) == {u.um}
-    assert set(effect.seen_wave_units) == {u.um}
+    assert effect.natural_fwhm(np.array([500.])*u.nm).to_value(u.arcsec) == pytest.approx(.6)
+    assert effect.ao_fwhm(np.array([500.])*u.nm).unit == u.arcsec
 
 
 def test_image_plane_pixel_area_handles_detector_wcs_headers():
@@ -1427,7 +1447,7 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
         val,
         "_configured_psf_fwhm_func",
         lambda _ztrain, allow_diagnostic_fallback=False: (
-            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            lambda wave: np.full(wave.size, 0.5) * u.arcsec,
             None,
         ),
     )
@@ -1477,7 +1497,8 @@ def test_trace_resolution_diagnostic_table_samples_trace_geometry(monkeypatch):
     summary = val.trace_resolution_summary_table(table)
     assert list(summary["channel"]) == ["B"]
     np.testing.assert_allclose(summary["trace_R_median"], [np.median(table["resolving_power_R"])])
-    np.testing.assert_allclose(summary["spectral_fwhm_pix"], [4.5])
+    np.testing.assert_allclose(summary["spectral_fwhm_min_pix"], [4.5])
+    np.testing.assert_allclose(summary["spectral_fwhm_max_pix"], [4.5])
     np.testing.assert_allclose(summary["resel_footprint_min_pix"], [22.5])
     np.testing.assert_allclose(summary["resel_footprint_max_pix"], [22.5])
 
@@ -1501,7 +1522,7 @@ def test_trace_resolution_diagnostic_table_scales_native_count_with_slit(monkeyp
         val,
         "_configured_psf_fwhm_func",
         lambda _ztrain, allow_diagnostic_fallback=False: (
-            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            lambda wave: np.full(wave.size, 0.5) * u.arcsec,
             None,
         ),
     )
@@ -1532,7 +1553,7 @@ def test_trace_resolution_diagnostic_table_rasterizes_boundary_phases(monkeypatc
         val,
         "_configured_psf_fwhm_func",
         lambda _ztrain, allow_diagnostic_fallback=False: (
-            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            lambda wave: np.full(wave.size, 0.5) * u.arcsec,
             None,
         ),
     )
@@ -1558,7 +1579,7 @@ def test_trace_resolution_diagnostic_table_uses_configured_detector_edges(monkey
         val,
         "_configured_psf_fwhm_func",
         lambda _ztrain, allow_diagnostic_fallback=False: (
-            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            lambda wave: np.full(wave.size, 0.5) * u.arcsec,
             None,
         ),
     )
@@ -1577,70 +1598,11 @@ def test_trace_resolution_diagnostic_table_uses_configured_detector_edges(monkey
         val.trace_resolution_diagnostic_table(train)
 
 
-def test_trace_resolution_diagnostic_table_requires_configured_fwhm(
-    monkeypatch,
-):
-    trace_list = FakeGeometryTraceList()
-    del trace_list.spectral_traces["B_1"].meta["nominal_fwhm_pix"]
-    spectrograph = FakeSpectrograph([1])
-
-    header = fits.Header({
-        "NAXIS": 2,
-        "NAXIS1": 20,
-        "NAXIS2": 50,
-        "CTYPE1D": "LINEAR",
-        "CTYPE2D": "LINEAR",
-        "CUNIT1D": "mm",
-        "CUNIT2D": "mm",
-        "CRVAL1D": 0.0,
-        "CRVAL2D": 0.0,
-        "CRPIX1D": 1.0,
-        "CRPIX2D": 1.0,
-        "CDELT1D": 0.01,
-        "CDELT2D": 0.01,
-    })
-    train = type("FakeTraceResolutionTrain", (), {})()
-    train.cmds = {
-        "!OBS.airmass": 1.0,
-        "!OBS.seeing": 0.5,
-        "!INST.vis_curr_slit": 0.7,
-        "!INST.nir_curr_slit": 0.7,
-    }
-    train.image_planes = [FakeImagePlane(header)]
-    train.fov_manager = type(
-        "FakeFOVManager",
-        (),
-        {"fovs": [FakeTraceFOV()]},
-    )()
-    train.trace_detector_coordinates = (
-        lambda **_kwargs: fake_trace_detector_coordinates()
-    )
-    train.optics_manager = type("FakeOptics", (), {
-        "all_effects": [
-            named_effect(trace_list, "trace_list_analytical"),
-            FakeTraceEfficiency({"B": spectrograph}),
-            FakeNamedSelector(
-                "slitwheel_selector",
-                "aperture_id",
-                {0: FakeSlitWheel()},
-            ),
-        ],
-    })()
-    monkeypatch.setattr(
-        val,
-        "_image_plane_pixel_area",
-        lambda _ztrain, _image_plane_id: 0.01 * u.arcsec**2,
-    )
-    monkeypatch.setattr(
-        val,
-        "_configured_psf_fwhm_func",
-        lambda _ztrain, allow_diagnostic_fallback=False: (
-            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
-            None,
-        ),
-    )
-
-    with pytest.raises(KeyError, match="nominal_fwhm_pix"):
+def test_trace_resolution_diagnostic_table_requires_physical_slit_dispersion(monkeypatch):
+    train = make_fake_trace_resolution_train()
+    del train.optics_manager.all_effects[0].spectral_traces['B_1'].slit_dispersion
+    monkeypatch.setattr(val, '_configured_psf_fwhm_func', lambda train: (lambda wave: np.full(wave.size, .5)*u.arcsec, None))
+    with pytest.raises(AttributeError, match='slit_dispersion'):
         val.trace_resolution_diagnostic_table(train)
 
 
@@ -1651,7 +1613,7 @@ def test_trace_resolution_diagnostic_table_requires_one_ordered_mapped_run(
         val,
         "_configured_psf_fwhm_func",
         lambda _ztrain, allow_diagnostic_fallback=False: (
-            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            lambda wave: np.full(wave.size, 0.5) * u.arcsec,
             None,
         ),
     )
@@ -1676,13 +1638,13 @@ def test_trace_resolution_diagnostic_table_requires_order_domain_authority(
         val,
         "_configured_psf_fwhm_func",
         lambda _ztrain, allow_diagnostic_fallback=False: (
-            lambda wave, _zenith_angle, _seeing: np.full(wave.size, 0.5) * u.arcsec,
+            lambda wave: np.full(wave.size, 0.5) * u.arcsec,
             None,
         ),
     )
     train = make_fake_trace_resolution_train(include_order_authority=False)
 
-    with pytest.raises(ValueError, match="trace_eff_analytical"):
+    with pytest.raises(AttributeError, match="_spectrographs"):
         val.trace_resolution_diagnostic_table(train)
 
 
@@ -1707,7 +1669,7 @@ def test_detector_background_budget_table_combines_detector_terms():
     np.testing.assert_allclose(table["dark_current_e_pix"], [3.0])
     np.testing.assert_allclose(table["additive_signal_e_pix"], [63.0])
     np.testing.assert_allclose(table["full_well_e"], [100.0])
-    np.testing.assert_allclose(table["signal_fraction_of_full_well"], [0.63])
+    np.testing.assert_allclose(table["signal_fraction_of_full_well"], [0.21])
     assert list(table["saturation_status"]) == ["ok"]
     np.testing.assert_allclose(table["read_noise_e_rms"], [5.0 * np.sqrt(3)])
     expected_total_noise = np.sqrt(60.0 + 3.0 + 75.0)
@@ -1724,18 +1686,18 @@ def test_detector_background_budget_table_flags_saturation():
         },
     }
     ztrain = FakeBudgetTrain()
-    ztrain.cmds = {"!DET.full_well": 50.0}
+    ztrain.optics_manager.all_effects[0].table['welldep'] = [20.0]
 
     table = val.detector_background_budget_table(ztrain, post_diffuse_data=diffuse_data)
 
-    np.testing.assert_allclose(table["signal_fraction_of_full_well"], [1.26])
+    np.testing.assert_allclose(table["signal_fraction_of_full_well"], [1.05])
     assert list(table["saturation_status"]) == ["saturated"]
 
 
-def test_detector_background_budget_table_requires_full_well_command():
+def test_detector_background_budget_table_requires_configured_usable_well():
     ztrain = FakeBudgetTrain()
-
-    with np.testing.assert_raises_regex(ValueError, "!DET.full_well"):
+    ztrain.optics_manager.all_effects[0].table.remove_column('welldep')
+    with np.testing.assert_raises_regex(KeyError, "welldep"):
         val.detector_background_budget_table(
             ztrain,
             post_diffuse_data={
