@@ -13,6 +13,8 @@ from astropy.table import Table
 from synphot.units import PHOTLAM
 
 from scopesim.utils import from_currsys
+from scopesim.effects.illumination import (
+    _representative_positional_qe, effective_diffuse_qe as _effective_diffuse_qe)
 
 from .plots import (plot_detector_background_budget, plot_detector_image_grid, plot_emissivity_sanity,
                     plot_post_disperser_diffuse_background, plot_readout_delta_overview,
@@ -91,13 +93,6 @@ def evaluate_throughput(effect: Any, wave: u.Quantity) -> np.ndarray:
         return evaluate_curve(effect.surface.throughput, wave)
     raise TypeError(f"Cannot evaluate throughput for {effect!r}")
 
-
-def _evaluate_diffuse_throughput(effect: Any, wave: u.Quantity, *, footprint: Any = None) -> np.ndarray:
-    if hasattr(effect, "effective_diffuse_throughput"):
-        with u.set_enabled_equivalencies(u.spectral()):
-            values = effect.effective_diffuse_throughput(wave, footprint=footprint)
-        return _as_float_array(values)
-    return evaluate_throughput(effect, wave)
 
 def _looks_like_qe_effect(effect: Any) -> bool:
     def _candidate_qe_effects(effect: Any) -> list[Any]:
@@ -513,15 +508,13 @@ def optical_surface_emissivity_terms(rows: list[dict[str, Any]], wave: u.Quantit
     return phase_terms, dict(counts), details
 
 
-def representative_positional_qe(positional_qe: Any, wave: u.Quantity) -> float | np.ndarray:
-    """Return an average positional QE factor for diffuse, non-trace light."""
-    if positional_qe is None:
-        return 1.0
-    values = positional_qe(wave) if callable(positional_qe) else positional_qe
-    values = _as_float_array(values)
-    if values.shape == wave.shape:
-        return values
-    return float(np.nanmean(values))
+def representative_positional_qe(positional_qe: Any, wave: u.Quantity, footprint: Any = None) -> float | np.ndarray:
+    """Return an average positional QE factor for diffuse, non-trace light.
+
+    Thin wrapper over ScopeSim's implementation so this package cannot drift
+    from the simulator it is validating.
+    """
+    return _representative_positional_qe(positional_qe, wave, footprint=footprint)
 
 
 def effective_diffuse_qe(detector_qe: Any, wave: u.Quantity, positional_qe: Callable[[u.Quantity], Any] | np.ndarray | None = None, footprint: Any = None) -> np.ndarray:
@@ -531,8 +524,8 @@ def effective_diffuse_qe(detector_qe: Any, wave: u.Quantity, positional_qe: Call
     pass a positional QE map or callable; this function applies its average
     positional response instead of skipping QE for non-dispersed light.
     """
-    spectral_qe = _evaluate_diffuse_throughput(detector_qe, wave, footprint=footprint)
-    return spectral_qe * representative_positional_qe(positional_qe, wave)
+    return _effective_diffuse_qe(detector_qe, wave, positional_qe=positional_qe,
+                                 footprint=footprint)
 
 
 def detector_qe_accounting_summary(detector_qe: Any) -> dict[str, Any]:

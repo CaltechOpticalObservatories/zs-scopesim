@@ -177,9 +177,8 @@ def test_three_rows_plot_every_full_fsr_on_common_axes(comparison, monkeypatch, 
 def test_full_fsr_is_not_truncated_to_the_detector():
     model = spectrograph_factory(1990, 2450, 225, 18000, 65.6, 31, 38, 1/24, 4.46,
                                 2048, 2048, .015, xdisp_groove_length=1/270, dispersion_focal_len=270)
-    model._slit_offset_pix = np.array([-32., 0., 32.])
-    model._detector_cos, model._detector_sin = 1., 0.
-    model._detector_center = (1024., 1024.)
+    model.set_slit_rotation(np.array([-32., 0., 32.]), 0.)
+    model.set_detector_center((1024., 1024.))
     footprints = fsr_footprints(model)
     assert [order for order, wave, x, y in footprints] == list(range(31, 39))
     for order, wave, x, y in footprints:
@@ -198,7 +197,17 @@ def test_full_fsr_is_not_truncated_to_the_detector():
 
 
 def test_footprint_requires_the_trace_generators_placement():
+    # A factory-built model is not placed on a detector yet; the trace
+    # generator configures that in a second step.
     model = spectrograph_factory(1990, 2450, 225, 18000, 65.6, 31, 38, 1/24, 4.46,
                                 2048, 2048, .015, xdisp_groove_length=1/270, dispersion_focal_len=270)
-    with pytest.raises(AttributeError):
+    with pytest.raises(AttributeError, match="set_slit_rotation"):
         fsr_footprints(model)
+
+
+def test_detector_center_is_required_separately_from_the_rotation():
+    model = spectrograph_factory(1990, 2450, 225, 18000, 65.6, 31, 38, 1/24, 4.46,
+                                2048, 2048, .015, xdisp_groove_length=1/270, dispersion_focal_len=270)
+    model.set_slit_rotation(np.array([-32., 0., 32.]), 0.)
+    with pytest.raises(AttributeError, match="set_detector_center"):
+        model._detector_pixels(np.array([2000.])*u.nm, 35)
