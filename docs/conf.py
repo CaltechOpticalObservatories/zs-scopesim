@@ -18,6 +18,9 @@ else:
 html_title = "ZShooter ScopeSim"
 html_static_path = ["_static"]
 
+# Match section links used by GitHub and the combined instrument site.
+myst_heading_anchors = 4
+
 source_suffix = {
     ".md": "markdown",
 }
