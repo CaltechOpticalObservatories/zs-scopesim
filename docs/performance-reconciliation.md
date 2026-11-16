@@ -1,6 +1,6 @@
 # ZShooter performance reconciliation
 
-This compares three saved states: committed `main` (`6a616eab`), your rerun preserved before this repair, and the corrected execution on `xshooter`. Your notebook edits and original output directories are preserved. Corrected figures are written locally to `notebooks/zshooter_performance_corrected/`; the figures embedded here and the displayed numerical tables are committed under [reconciliation data](../validation/xshooter/data/reconciliation/). The performance notebook's source repairs are committed separately from your outstanding source edits and local executed outputs.
+This compares three saved states: committed `main` (`6a616eab`), your rerun preserved before this repair, and the corrected execution on `xshooter`. Your notebook edits and original output directories are preserved. Corrected figures are written locally to `notebooks/zshooter_performance_corrected/`; the figures embedded here and the displayed numerical tables are committed under [reconciliation data](https://github.com/CaltechOpticalObservatories/zs-scopesim/tree/d28f077bfa868e06eb2a29663dd84f4251846006/validation/xshooter/data/reconciliation/). The performance notebook's source repairs are committed separately from your outstanding source edits and local executed outputs.
 
 ## Slit configuration and resolving power
 
