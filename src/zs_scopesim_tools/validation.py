@@ -1556,8 +1556,6 @@ def _selector_scope(selector_key: str, values: list[Any]) -> str:
 
 
 def _resolved_for_display(value: Any, cmds: Any) -> Any:
-    from scopesim.utils import from_currsys
-
     try:
         return from_currsys(value, cmds=cmds)
     except Exception:
@@ -1565,8 +1563,6 @@ def _resolved_for_display(value: Any, cmds: Any) -> Any:
 
 
 def _required_cmd_value(cmds: Any, key: str) -> Any:
-    from scopesim.utils import from_currsys
-
     try:
         value = from_currsys(key, cmds)
     except Exception as exc:
@@ -2177,8 +2173,6 @@ def _selector_value_for_detector(selector: Any, detector_row: Any) -> int | None
 
 
 def _resolved_meta_summary(effect: Any, cmds: Any) -> str:
-    from scopesim.utils import from_currsys
-
     keys = ("filename", "dit", "ndit", "value", "noise_std", "bias", "binx", "biny", "current_slit", "fwhm", "alpha", "strehl", "wavelength")
     parts = []
     for key in keys:
@@ -2476,8 +2470,6 @@ def _selected_detector_effect(ztrain: Any, selector_name: str, detector_row: Any
 
 
 def _resolved_detector_meta(effect: Any, key: str, cmds: Any, detector_id: int, *, default: float | None = None) -> float:
-    from scopesim.utils import from_currsys
-
     if key not in getattr(effect, "meta", {}):
         if default is not None:
             return float(default)

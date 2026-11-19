@@ -41,12 +41,23 @@ because the ZShooter configuration passes no `positional_qe`, so the dropped
 branch was never reached. The drift was latent rather than active. Worth saying
 plainly: it was a real divergence that happened not to bite yet.
 
+## 3. Redundant `from_currsys` imports removed
+
+`validation.py` imported `from scopesim.utils import from_currsys` five times —
+once at module level and again as the first statement of `_resolved_for_display`,
+`_required_cmd_value`, `_resolved_meta_summary` and `_resolved_detector_meta`.
+The four local imports shadowed the module-level one with the same object, so
+they were pure noise; they are deleted and all four functions now resolve the
+name from module scope. There is no circular-import reason for them —
+`validation.py` already imports from `scopesim.effects.illumination` at module
+level.
+
 ## Noted, not fixed
 
-`validation.py` imports `from scopesim.utils import from_currsys` five times —
-once at module level and four more inside functions. Harmless, but it suggests
-the module-level import was forgotten rather than deliberately shadowed. Out of
-scope here.
+Three function-local `from scopesim.effects.illumination import ...` statements
+remain (`integrate_spectral_background` twice, `image_plane_pixel_area` once),
+alongside the module-level import from the same module. Same class of
+redundancy, but left for a separate pass.
 
 ## Verification
 
