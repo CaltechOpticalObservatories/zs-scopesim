@@ -14,7 +14,8 @@ from synphot.units import PHOTLAM
 
 from scopesim.utils import from_currsys
 from scopesim.effects.illumination import (
-    _representative_positional_qe, effective_diffuse_qe as _effective_diffuse_qe)
+    _representative_positional_qe, effective_diffuse_qe as _effective_diffuse_qe,
+    image_plane_pixel_area, integrate_spectral_background)
 
 from .plots import (plot_detector_background_budget, plot_detector_image_grid, plot_emissivity_sanity,
                     plot_post_disperser_diffuse_background, plot_readout_delta_overview,
@@ -913,9 +914,6 @@ def build_emissivity_sanity_data(
     metadata wins; conflicting overrides raise instead of silently replacing
     the instrument definition.
     """
-
-    from scopesim.effects.illumination import integrate_spectral_background
-
     wave_nm = wave_nm if wave_nm is not None else np.linspace(300, 2500, 5000) * u.nm
     wave = wave_nm.to(u.um)
     positional_qe_by_aperture = positional_qe_by_aperture or {}
@@ -1074,8 +1072,6 @@ def optical_surface_post_disperser_diffuse_terms(rows: list[dict[str, Any]], wav
 
 
 def _image_plane_pixel_area(ztrain: Any, image_plane_id: int) -> u.Quantity:
-    from scopesim.effects.illumination import image_plane_pixel_area
-
     return image_plane_pixel_area(ztrain.image_planes[image_plane_id].header, ztrain.cmds)
 
 
@@ -1098,8 +1094,6 @@ def build_post_disperser_diffuse_background_data(
     metadata wins; conflicting overrides raise instead of silently replacing
     the instrument definition.
     """
-    from scopesim.effects.illumination import integrate_spectral_background
-
     wave_nm = wave_nm if wave_nm is not None else np.linspace(300, 2500, 5000) * u.nm
     wave = wave_nm.to(u.um)
     positional_qe_by_aperture = positional_qe_by_aperture or {}

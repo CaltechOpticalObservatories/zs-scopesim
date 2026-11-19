@@ -21,8 +21,10 @@ from functools import wraps
 
 import scopesim as sim
 import scopesim.optics.optical_train as optical_train
+from scopesim.effects import SelectorWheel
 from scopesim.utils import from_currsys
 
+from zs_scopesim_tools.comparison import detector_noise
 from zs_scopesim_tools.paths import resolve_irdb_path, make_output_dir
 
 ####### Path abstractions ########
@@ -99,6 +101,9 @@ def warning_prevent_sync_alt_ra_dec(cmd: Any) -> None:
     """Populate AltAz command keys without letting RA/Dec override airmass."""
     from astropy import units as u
     from astropy.coordinates import AltAz
+    # Imported here, not at module level: tests/test_helpers.py replaces
+    # scopesim.utils.get_observation_info_from_cmds, which only takes effect if the
+    # name is looked up per call.
     from scopesim.utils import airmass2zendist, from_currsys, get_observation_info_from_cmds
 
     def degree_value(value: Any) -> float:
@@ -368,7 +373,6 @@ def save_readout_to_fits(hdul: fits.HDUList, filename: str):
 
 
 def _detector_dark_rate(train, index):
-    from scopesim.effects import SelectorWheel
     from scopesim.effects.electronic import DarkCurrent
     from scopesim.effects.electronic.pixels import BinnedImageBase
 
@@ -409,7 +413,6 @@ def save_zshooter_readout(list_of_hdul: list[fits.HDUList], output_dir: str | Pa
         hdul[0].header['CHANNEL'] = channel
 
         if train is not None and 'VARIANCE' not in hdul:
-            from zs_scopesim_tools.comparison import detector_noise
             exptime, dark, read_variance = detector_noise(train, i)
             dark_rate = _detector_dark_rate(train, i)
             for header in (hdul[0].header, hdul[1].header):
@@ -470,9 +473,10 @@ def electron_readouts(train, readouts):
     Poisson mean, including source, sky and thermal background. Random draws
     in the science image are retained. Gain and NIR ramp averaging are undone.
     """
-    from scopesim.effects import SelectorWheel
     from scopesim.effects.electronic import ADConversion, ExposureOutput
-    from zs_scopesim_tools.comparison import detector_noise, detector_rates
+    # Imported here, not at module level: tests/test_reduction_readouts.py replaces
+    # comparison.detector_rates, which only takes effect if the name is looked up per call.
+    from zs_scopesim_tools.comparison import detector_rates
 
     rates = detector_rates(train)
     result = []

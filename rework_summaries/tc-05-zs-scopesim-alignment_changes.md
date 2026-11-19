@@ -52,12 +52,39 @@ name from module scope. There is no circular-import reason for them —
 `validation.py` already imports from `scopesim.effects.illumination` at module
 level.
 
-## Noted, not fixed
-
 Three function-local `from scopesim.effects.illumination import ...` statements
-remain (`integrate_spectral_background` twice, `image_plane_pixel_area` once),
-alongside the module-level import from the same module. Same class of
-redundancy, but left for a separate pass.
+went the same way (`integrate_spectral_background` imported twice,
+`image_plane_pixel_area` once), folded into the module-level import from that
+same module at the top of the file.
+
+In `helpers.py`, `SelectorWheel` was imported locally in two functions and
+`detector_noise` in two more; both are now module-level.
+
+## Some local imports are load-bearing
+
+Hoisting every local import breaks nine tests, and the reason is worth
+recording because the next person to tidy these will hit it again.
+
+`tests/test_helpers.py` replaces `scopesim.utils.get_observation_info_from_cmds`
+and `tests/test_reduction_readouts.py` replaces `comparison.detector_rates`.
+Both substitutions only take effect because the consuming function imports the
+name when it runs, rather than binding it once at module import. Moving those
+imports to the top of `helpers.py` silently defeats the substitution and the
+tests fail against the real implementation.
+
+Those two statements therefore stay where they are, now with a comment saying
+why. `detector_noise` and `detector_rates` came from one local import
+statement; `detector_noise` is hoisted and `detector_rates` stays local, which
+looks asymmetric but is the point.
+
+## Verification of the import changes
+
+- Every hoisted name is the identical object the local import produced
+  (checked by `is`), so no call site resolves to anything different.
+- The suite's failing set is byte-identical before and after, isolated by
+  stashing only the touched files. The count moves between 20 and 22 depending
+  on whether the working tree has uncommitted notebook edits, which
+  `tests/test_notebook_noise.py` reads; that is unrelated to this branch.
 
 ## Verification
 
